@@ -10,6 +10,7 @@ Pages:
   🏠 Health         — index stats, per-repo breakdown, auto-refresh
   🔍 Query Tester   — live search UI with results + assembled context
   📡 Activity Feed  — webhook events with status + timing
+  🧩 Planning Mode  — generate implementation plans for bugs/features
 """
 from __future__ import annotations
 
@@ -50,6 +51,7 @@ PAGES = [
     "🏠 Health",
     "🔍 Query Tester",
     "📡 Activity Feed",
+    "🧩 Planning Mode",
 ]
 
 page = st.sidebar.radio("Navigate", PAGES, label_visibility="collapsed")
@@ -528,3 +530,7 @@ elif page == "🔍 Query Tester":
 
 elif page == "📡 Activity Feed":
     _render_activity_feed()
+
+elif page == "🧩 Planning Mode":
+    from src.ui._pages.planning import render
+    render()

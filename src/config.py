@@ -40,8 +40,11 @@ class Settings(BaseSettings):
     embedding_dimensions: int = Field(1536)
     embedding_batch_size: int = Field(128, description="Max chunks per Voyage API call")
 
-    # ── LLM (optional) ───────────────────────────────────────────────────────
+    # ── LLM / Planning ───────────────────────────────────────────────────────
     anthropic_api_key: str | None = Field(None)
+    anthropic_model: str = Field("claude-sonnet-4-6", description="Claude model for planning")
+    planning_context_budget: int = Field(12000, description="Token budget for planning context")
+    planning_max_output_tokens: int = Field(4096, description="Max output tokens for plan generation")
 
     # ── MCP Auth ─────────────────────────────────────────────────────────────
     jwt_secret: str = Field(..., description="Secret for signing internal JWTs")

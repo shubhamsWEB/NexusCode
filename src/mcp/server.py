@@ -32,7 +32,8 @@ mcp_server = FastMCP(
         "Use get_symbol for exact function/class lookup. "
         "Use find_callers to trace usage of a symbol. "
         "Use get_file_context for a structural overview of a file. "
-        "Use get_agent_context to get pre-assembled context before starting a task."
+        "Use get_agent_context to get pre-assembled context before starting a task. "
+        "Use plan_implementation to generate a complete implementation plan for a bug/feature/refactor."
     ),
     warn_on_duplicate_tools=False,
 )
@@ -484,3 +485,123 @@ async def get_agent_context(
         "tokens_used": ctx.tokens_used,
         "retrieval_log": ctx.retrieval_log,
     }, indent=2)
+
+
+# ── Tool 6: plan_implementation ───────────────────────────────────────────────
+
+@mcp_server.tool()
+async def plan_implementation(
+    query: Annotated[str, "Bug report, feature request, or refactoring task description (min 10 chars)"],
+    repo: Annotated[Optional[str], "Scope to 'owner/name' — defaults to all repos"] = None,
+) -> str:
+    """
+    Generate a complete, grounded implementation plan for a coding task.
+
+    Retrieves relevant code context from the live codebase index, then calls
+    Claude to produce a structured plan with:
+    - Exact file paths and symbol names to change
+    - Step-by-step execution order with dependencies
+    - Pseudocode for complex logic
+    - Risk assessment and mitigation strategies
+    - A concrete test plan
+
+    Use this BEFORE starting any non-trivial implementation to get a
+    Cursor-style planning overview grounded in your actual codebase.
+    """
+    from src.planning.claude_planner import generate_plan
+    from src.planning.retriever import retrieve_planning_context
+
+    repo_owner = repo_name = None
+    if repo and "/" in repo:
+        repo_owner, repo_name = repo.split("/", 1)
+
+    try:
+        ctx = await retrieve_planning_context(
+            query=query,
+            repo_owner=repo_owner,
+            repo_name=repo_name,
+        )
+    except Exception as exc:
+        return json.dumps({"error": f"Retrieval failed: {exc}"})
+
+    try:
+        plan = await generate_plan(
+            query=query,
+            ctx=ctx,
+            repo_owner=repo_owner,
+            repo_name=repo_name,
+        )
+    except RuntimeError as exc:
+        return json.dumps({"error": str(exc)})
+    except Exception as exc:
+        logger.exception("plan_implementation MCP tool failed")
+        return json.dumps({"error": f"Plan generation failed: {exc}"})
+
+    # Format as markdown for readability in Claude Desktop
+    return _format_plan_markdown(plan)
+
+
+def _format_plan_markdown(plan) -> str:
+    """Format an ImplementationPlan as a clean markdown string for MCP consumers."""
+    lines = [
+        f"# Implementation Plan",
+        f"**Query:** {plan.query}",
+        f"",
+        f"## Summary",
+        plan.summary,
+        f"",
+    ]
+
+    if plan.clarifying_assumptions:
+        lines += ["## Assumptions"]
+        for a in plan.clarifying_assumptions:
+            lines.append(f"- {a}")
+        lines.append("")
+
+    if plan.files:
+        lines += ["## Files to Change"]
+        for f in plan.files:
+            lines.append(f"### `{f.path}` — {f.action.upper()}")
+            lines.append(f"_{f.reason}_")
+            for c in f.changes:
+                sym = f" `{c.symbol}`" if c.symbol else ""
+                lines.append(f"- **{c.kind.upper()}**{sym}: {c.description}")
+                if c.pseudocode:
+                    lines.append(f"  ```\n  {c.pseudocode}\n  ```")
+        lines.append("")
+
+    if plan.steps:
+        lines += ["## Execution Steps"]
+        for s in plan.steps:
+            deps = f" _(after steps {s.depends_on_steps})_" if s.depends_on_steps else ""
+            lines.append(f"### Step {s.step_number}: {s.title}{deps}")
+            lines.append(s.description)
+            if s.files_involved:
+                lines.append(f"_Files: {', '.join(f'`{f}`' for f in s.files_involved)}_")
+            if s.verification:
+                lines.append(f"✅ **Verify:** {s.verification}")
+        lines.append("")
+
+    if plan.risks:
+        lines += ["## Risks"]
+        severity_emoji = {"low": "🟡", "medium": "🟠", "high": "🔴"}
+        for r in plan.risks:
+            emoji = severity_emoji.get(r.severity, "⬜")
+            lines.append(f"- {emoji} **{r.severity.upper()}**: {r.description}")
+            if r.affected_symbols:
+                lines.append(f"  _Affected: {', '.join(r.affected_symbols)}_")
+            lines.append(f"  _Mitigation: {r.mitigation}_")
+        lines.append("")
+
+    if plan.test_plan:
+        lines += ["## Test Plan", plan.test_plan, ""]
+
+    if plan.metadata:
+        m = plan.metadata
+        lines.append(
+            f"---\n_Plan ID: `{plan.plan_id}` · Model: {m.model} · "
+            f"Context: {m.context_tokens} tokens · {m.context_files} chunks · "
+            f"{m.elapsed_ms:.0f}ms_"
+        )
+
+    return "\n".join(lines)
