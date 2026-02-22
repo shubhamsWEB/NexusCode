@@ -1,0 +1,486 @@
+"""
+MCP server — exposes 5 codebase intelligence tools via FastMCP.
+
+Tools:
+  1. search_codebase   — hybrid semantic+keyword search + rerank
+  2. get_symbol        — fuzzy symbol lookup (like "Go to Definition")
+  3. find_callers      — who calls this function/method?
+  4. get_file_context  — structural map of a file (symbols + imports + imported_by)
+  5. get_agent_context — pre-assembled token-budget-aware context for a task
+
+Mount the Starlette SSE app via:
+    app.mount("/mcp", mcp_server.sse_app())
+"""
+from __future__ import annotations
+
+import json
+import logging
+from typing import Annotated, Optional
+
+from mcp.server.fastmcp import FastMCP
+from sqlalchemy import text
+
+from src.storage.db import AsyncSessionLocal
+
+logger = logging.getLogger(__name__)
+
+mcp_server = FastMCP(
+    name="codebase-intelligence",
+    instructions=(
+        "A live, always-fresh index of your GitHub codebase. "
+        "Use search_codebase for natural-language or identifier queries. "
+        "Use get_symbol for exact function/class lookup. "
+        "Use find_callers to trace usage of a symbol. "
+        "Use get_file_context for a structural overview of a file. "
+        "Use get_agent_context to get pre-assembled context before starting a task."
+    ),
+    warn_on_duplicate_tools=False,
+)
+
+
+# ── Tool 1: search_codebase ───────────────────────────────────────────────────
+
+@mcp_server.tool()
+async def search_codebase(
+    query: Annotated[str, "Natural language or identifier query"],
+    repo: Annotated[Optional[str], "Scope to 'owner/name' — defaults to all repos"] = None,
+    language: Annotated[Optional[str], "Filter by language: python, typescript, javascript…"] = None,
+    top_k: Annotated[int, "Number of results to return (1–20)"] = 5,
+    mode: Annotated[str, "Search mode: 'semantic', 'keyword', or 'hybrid'"] = "hybrid",
+) -> str:
+    """
+    Search the codebase using semantic vector search, keyword search, or both.
+    Returns ranked code chunks with file locations, symbol names, and source previews.
+    Use this for any question like 'where is auth handled?' or 'find the payment logic'.
+    """
+    from src.retrieval.assembler import assemble
+    from src.retrieval.reranker import rerank
+    from src.retrieval.searcher import embed_query, search
+
+    top_k = max(1, min(20, top_k))
+
+    repo_owner = repo_name = None
+    if repo and "/" in repo:
+        repo_owner, repo_name = repo.split("/", 1)
+
+    query_vector: list[float] = []
+    if mode in ("semantic", "hybrid"):
+        query_vector = await embed_query(query)
+
+    results = await search(
+        query=query,
+        query_vector=query_vector,
+        top_k=top_k,
+        mode=mode,
+        repo_owner=repo_owner,
+        repo_name=repo_name,
+        language=language,
+    )
+
+    if not results:
+        return json.dumps({"results": [], "context": "", "tokens_used": 0})
+
+    if mode in ("semantic", "hybrid"):
+        results = rerank(query, results, top_n=top_k)
+
+    ctx = assemble(results, token_budget=8000, query=query)
+
+    output = {
+        "query": query,
+        "mode": mode,
+        "results": [
+            {
+                "file": r.file_path,
+                "repo": f"{r.repo_owner}/{r.repo_name}",
+                "symbol": r.symbol_name,
+                "kind": r.symbol_kind,
+                "scope": r.scope_chain,
+                "lines": f"{r.start_line}-{r.end_line}",
+                "language": r.language,
+                "score": round(r.rerank_score or r.score, 4),
+                "commit": r.commit_sha[:7] if r.commit_sha else "",
+                "preview": r.raw_content[:400],
+            }
+            for r in results
+        ],
+        "context": ctx.context_text,
+        "tokens_used": ctx.tokens_used,
+        "retrieval_log": ctx.retrieval_log,
+    }
+    return json.dumps(output, indent=2)
+
+
+# ── Tool 2: get_symbol ────────────────────────────────────────────────────────
+
+@mcp_server.tool()
+async def get_symbol(
+    name: Annotated[str, "Symbol name — exact ('authenticate'), qualified ('UserService.authenticate'), or natural language"],
+    repo: Annotated[Optional[str], "Scope to 'owner/name' — defaults to all repos"] = None,
+) -> str:
+    """
+    Look up a function, class, or method by name (like IDE 'Go to Definition').
+    Returns the symbol's file location, full signature, and docstring.
+    Supports fuzzy matching — 'auth' will find 'authenticate', 'Authorization', etc.
+    """
+    repo_owner = repo_name = None
+    if repo and "/" in repo:
+        repo_owner, repo_name = repo.split("/", 1)
+
+    params: dict = {"name": name}
+    where_clauses = ["similarity(name, :name) > 0.1 OR name ILIKE :name_like OR qualified_name ILIKE :name_like"]
+    params["name_like"] = f"%{name}%"
+
+    if repo_owner:
+        where_clauses.append("repo_owner = :repo_owner")
+        params["repo_owner"] = repo_owner
+    if repo_name:
+        where_clauses.append("repo_name = :repo_name")
+        params["repo_name"] = repo_name
+
+    where = " AND ".join(where_clauses)
+
+    sql = text(f"""
+        SELECT
+            name, qualified_name, kind, file_path,
+            repo_owner, repo_name,
+            start_line, end_line,
+            signature, docstring, is_exported,
+            GREATEST(
+                similarity(name, :name),
+                similarity(qualified_name, :name)
+            ) AS sim_score
+        FROM symbols
+        WHERE {where}
+        ORDER BY sim_score DESC, name
+        LIMIT 10
+    """)
+
+    async with AsyncSessionLocal() as session:
+        rows = (await session.execute(sql, params)).mappings().all()
+
+    if not rows:
+        return json.dumps({"symbols": [], "message": f"No symbols matching '{name}' found."})
+
+    symbols = [
+        {
+            "name": r["name"],
+            "qualified_name": r["qualified_name"],
+            "kind": r["kind"],
+            "file": r["file_path"],
+            "repo": f"{r['repo_owner']}/{r['repo_name']}",
+            "lines": f"{r['start_line']}-{r['end_line']}",
+            "signature": r["signature"],
+            "docstring": r["docstring"],
+            "is_exported": r["is_exported"],
+            "match_score": round(float(r["sim_score"] or 0), 4),
+        }
+        for r in rows
+    ]
+    return json.dumps({"symbols": symbols, "count": len(symbols)}, indent=2)
+
+
+# ── Tool 3: find_callers ──────────────────────────────────────────────────────
+
+@mcp_server.tool()
+async def find_callers(
+    symbol: Annotated[str, "Symbol name to find callers of (e.g. 'authenticate', 'PaymentService.charge')"],
+    repo: Annotated[Optional[str], "Scope to 'owner/name' — defaults to all repos"] = None,
+    depth: Annotated[int, "How many call hops deep (default 1, max 3)"] = 1,
+) -> str:
+    """
+    Find all code that calls or imports a given function or method.
+    Answers: 'what breaks if I change this function's signature?'
+    Returns file locations and code snippets around each call site.
+    """
+    from src.retrieval.searcher import _keyword_search
+
+    depth = max(1, min(3, depth))
+
+    repo_owner = repo_name = None
+    if repo and "/" in repo:
+        repo_owner, repo_name = repo.split("/", 1)
+
+    # Phase 1: keyword search for symbol name in chunk content
+    results = await _keyword_search(
+        query=symbol,
+        limit=20,
+        repo_owner=repo_owner,
+        repo_name=repo_name,
+        language=None,
+    )
+
+    # Filter out chunks that ARE the symbol definition (start_line match unlikely)
+    # Keep chunks that contain the symbol name but aren't just defining it
+    callers = []
+    for r in results:
+        # Check if symbol appears in the content (it must — keyword search ensures this)
+        lines = r.raw_content.split("\n")
+        call_lines = [
+            {"line_no": r.start_line + i, "text": line.strip()}
+            for i, line in enumerate(lines)
+            if symbol in line and not line.strip().startswith(("def ", "class ", "function ", "const ", "export "))
+        ]
+        if call_lines:
+            callers.append({
+                "file": r.file_path,
+                "repo": f"{r.repo_owner}/{r.repo_name}",
+                "symbol_context": r.symbol_name or "<module>",
+                "kind": r.symbol_kind,
+                "lines": f"{r.start_line}-{r.end_line}",
+                "call_sites": call_lines[:5],
+                "preview": r.raw_content[:300],
+            })
+
+    if not callers:
+        return json.dumps({
+            "symbol": symbol,
+            "callers": [],
+            "message": f"No call sites found for '{symbol}'. It may not be used in the indexed codebase."
+        })
+
+    return json.dumps({
+        "symbol": symbol,
+        "depth": depth,
+        "caller_count": len(callers),
+        "callers": callers,
+    }, indent=2)
+
+
+# ── Tool 4: get_file_context ──────────────────────────────────────────────────
+
+@mcp_server.tool()
+async def get_file_context(
+    path: Annotated[str, "File path relative to repo root (e.g. 'app/shopify.server.ts')"],
+    repo: Annotated[Optional[str], "Scope to 'owner/name'"] = None,
+    include_deps: Annotated[bool, "Include files this file imports (default true)"] = True,
+) -> str:
+    """
+    Get the complete structural map of a file: all symbols, imports, and what imports it.
+    Answers: 'what is in this file and how does it relate to others?'
+    """
+    repo_owner = repo_name = None
+    if repo and "/" in repo:
+        repo_owner, repo_name = repo.split("/", 1)
+
+    # Build WHERE for file_path match (support partial paths)
+    params: dict = {"path": path, "path_like": f"%{path}%"}
+    file_where = "file_path = :path OR file_path ILIKE :path_like"
+    repo_filter = ""
+    if repo_owner:
+        repo_filter += " AND repo_owner = :repo_owner"
+        params["repo_owner"] = repo_owner
+    if repo_name:
+        repo_filter += " AND repo_name = :repo_name"
+        params["repo_name"] = repo_name
+
+    async with AsyncSessionLocal() as session:
+        # 1. Symbols in this file
+        sym_sql = text(f"""
+            SELECT name, qualified_name, kind, start_line, end_line,
+                   signature, docstring, is_exported, file_path, repo_owner, repo_name
+            FROM symbols
+            WHERE ({file_where}){repo_filter}
+            ORDER BY start_line
+            LIMIT 100
+        """)
+        sym_rows = (await session.execute(sym_sql, params)).mappings().all()
+
+        # 2. Chunk metadata — imports + commit info
+        chunk_sql = text(f"""
+            SELECT imports, commit_sha, commit_author, language, token_count, file_path
+            FROM chunks
+            WHERE ({file_where}){repo_filter}
+              AND is_deleted = FALSE
+            ORDER BY start_line
+            LIMIT 1
+        """)
+        chunk_row = (await session.execute(chunk_sql, params)).mappings().first()
+
+        # 3. Files that import this file (imported_by)
+        if include_deps and sym_rows:
+            # Look for chunks where raw_content contains a reference to this file's name
+            file_stem = path.split("/")[-1].rsplit(".", 1)[0]
+            dep_params = {**params, "stem": f"%{file_stem}%"}
+            dep_sql = text(f"""
+                SELECT DISTINCT file_path, repo_owner, repo_name
+                FROM chunks
+                WHERE raw_content ILIKE :stem
+                  AND file_path NOT ILIKE :path_like
+                  AND is_deleted = FALSE
+                  {repo_filter.replace('AND ', 'AND ', 1)}
+                LIMIT 20
+            """)
+            dep_rows = (await session.execute(dep_sql, dep_params)).mappings().all()
+            imported_by = [
+                f"{r['repo_owner']}/{r['repo_name']}:{r['file_path']}" for r in dep_rows
+            ]
+        else:
+            imported_by = []
+
+    if not sym_rows and not chunk_row:
+        return json.dumps({
+            "error": f"File '{path}' not found in index.",
+            "hint": "Use search_codebase to find the correct path.",
+        })
+
+    resolved_path = sym_rows[0]["file_path"] if sym_rows else (chunk_row["file_path"] if chunk_row else path)
+
+    result = {
+        "file": resolved_path,
+        "language": chunk_row["language"] if chunk_row else None,
+        "last_commit": chunk_row["commit_sha"][:7] if chunk_row and chunk_row["commit_sha"] else None,
+        "commit_author": chunk_row["commit_author"] if chunk_row else None,
+        "chunk_count": 0,  # filled below
+        "imports": list(chunk_row["imports"] or []) if chunk_row and chunk_row["imports"] else [],
+        "symbols": [
+            {
+                "name": r["name"],
+                "qualified_name": r["qualified_name"],
+                "kind": r["kind"],
+                "lines": f"{r['start_line']}-{r['end_line']}",
+                "signature": r["signature"],
+                "docstring": (r["docstring"] or "")[:200] if r["docstring"] else None,
+                "is_exported": r["is_exported"],
+            }
+            for r in sym_rows
+        ],
+        "imported_by": imported_by,
+    }
+
+    # Count total chunks for this file
+    async with AsyncSessionLocal() as session:
+        cnt_sql = text(f"""
+            SELECT COUNT(*) FROM chunks
+            WHERE ({file_where}){repo_filter} AND is_deleted = FALSE
+        """)
+        result["chunk_count"] = (await session.execute(cnt_sql, params)).scalar() or 0
+
+    return json.dumps(result, indent=2)
+
+
+# ── Tool 5: get_agent_context ─────────────────────────────────────────────────
+
+@mcp_server.tool()
+async def get_agent_context(
+    task: Annotated[str, "Natural language description of the task you are about to perform"],
+    focal_files: Annotated[Optional[list[str]], "Files you are actively working on — their chunks get priority"] = None,
+    token_budget: Annotated[int, "Max tokens to return (default 8000)"] = 8000,
+    repo: Annotated[Optional[str], "Scope to 'owner/name' — defaults to all repos"] = None,
+) -> str:
+    """
+    Pre-assembled, token-budget-aware context for a specific coding task.
+    Call this at the START of a task before you begin reasoning.
+    It combines focal file content + semantic search + import graph to give you
+    everything relevant in one shot, deduplicated and ranked.
+    """
+    from src.retrieval.assembler import assemble
+    from src.retrieval.reranker import rerank
+    from src.retrieval.searcher import SearchResult, _semantic_search, embed_query
+    from src.storage.db import AsyncSessionLocal
+    from sqlalchemy import text
+
+    repo_owner = repo_name = None
+    if repo and "/" in repo:
+        repo_owner, repo_name = repo.split("/", 1)
+
+    token_budget = max(1000, min(32000, token_budget))
+    all_results: list[SearchResult] = []
+    seen_ids: set[str] = set()
+
+    # 1. Chunks from focal files (highest priority — always include)
+    if focal_files:
+        for fpath in focal_files[:5]:  # cap at 5 focal files
+            params: dict = {"path": fpath, "path_like": f"%{fpath}%"}
+            if repo_owner:
+                params["repo_owner"] = repo_owner
+            if repo_name:
+                params["repo_name"] = repo_name
+
+            repo_filter = ""
+            if repo_owner:
+                repo_filter += " AND repo_owner = :repo_owner"
+            if repo_name:
+                repo_filter += " AND repo_name = :repo_name"
+
+            focal_sql = text(f"""
+                SELECT
+                    id, file_path, repo_owner, repo_name, language,
+                    symbol_name, symbol_kind, scope_chain,
+                    start_line, end_line, raw_content, enriched_content,
+                    commit_sha, commit_author, token_count
+                FROM chunks
+                WHERE (file_path = :path OR file_path ILIKE :path_like)
+                  AND is_deleted = FALSE
+                  {repo_filter}
+                ORDER BY start_line
+                LIMIT 20
+            """)
+
+            async with AsyncSessionLocal() as session:
+                rows = (await session.execute(focal_sql, params)).mappings().all()
+
+            for row in rows:
+                if row["id"] not in seen_ids:
+                    seen_ids.add(row["id"])
+                    all_results.append(SearchResult(
+                        chunk_id=row["id"],
+                        file_path=row["file_path"],
+                        repo_owner=row["repo_owner"],
+                        repo_name=row["repo_name"],
+                        language=row["language"],
+                        symbol_name=row.get("symbol_name"),
+                        symbol_kind=row.get("symbol_kind"),
+                        scope_chain=row.get("scope_chain"),
+                        start_line=row["start_line"],
+                        end_line=row["end_line"],
+                        raw_content=row["raw_content"],
+                        enriched_content=row.get("enriched_content", ""),
+                        commit_sha=row.get("commit_sha", ""),
+                        commit_author=row.get("commit_author"),
+                        token_count=row.get("token_count", 0),
+                        score=1.0,  # focal files get top score
+                        rerank_score=10.0,
+                    ))
+
+    # 2. Semantic search for the task description
+    query_vector = await embed_query(task)
+    semantic_results = await _semantic_search(
+        vector=query_vector,
+        limit=15,
+        repo_owner=repo_owner,
+        repo_name=repo_name,
+        language=None,
+    )
+    for r in semantic_results:
+        if r.chunk_id not in seen_ids:
+            seen_ids.add(r.chunk_id)
+            all_results.append(r)
+
+    if not all_results:
+        return json.dumps({
+            "task": task,
+            "context": "",
+            "tokens_used": 0,
+            "message": "No relevant context found. Try a different task description or check that repos are indexed.",
+        })
+
+    # 3. Rerank everything (except focal file chunks, which stay at the top)
+    focal_chunks = [r for r in all_results if r.rerank_score == 10.0]
+    search_chunks = [r for r in all_results if r.rerank_score != 10.0]
+
+    if search_chunks:
+        search_chunks = rerank(task, search_chunks, top_n=10)
+
+    final_results = focal_chunks + search_chunks
+
+    # 4. Assemble within token budget
+    ctx = assemble(final_results, token_budget=token_budget, query=task)
+
+    return json.dumps({
+        "task": task,
+        "focal_files": focal_files or [],
+        "context_text": ctx.context_text,
+        "chunks_used": ctx.chunks_used,
+        "tokens_used": ctx.tokens_used,
+        "retrieval_log": ctx.retrieval_log,
+    }, indent=2)

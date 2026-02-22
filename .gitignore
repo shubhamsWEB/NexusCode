@@ -1,0 +1,29 @@
+# Environment
+.env
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+*.egg
+
+# IDE
+.vscode/
+.idea/
+
+# Docker
+postgres_data/
+redis_data/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
