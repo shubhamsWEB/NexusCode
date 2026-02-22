@@ -1,13 +1,29 @@
 ---
 name: plan-implementation
-description: Generate a complete, grounded implementation plan for a bug fix, new feature, or refactoring task. Use this BEFORE writing any code when the task is non-trivial. Returns exact file paths, symbol names, ordered steps with dependencies, pseudocode for complex logic, risk assessment, and a test plan — all grounded in the live codebase index.
+description: Generate a complete, grounded implementation plan for a bug fix, new feature, or refactoring task. Use this BEFORE writing any code when the task is non-trivial. Searches the web for the best library and approach, then combines that with live codebase context to return exact file paths, symbol names, ordered steps with dependencies, pseudocode for complex logic, risk assessment, and a test plan.
 metadata:
   author: nexuscode
-  version: "1.0"
+  version: "1.1"
 compatibility: Requires a running NexusCode API server at http://localhost:8000 with ANTHROPIC_API_KEY and VOYAGE_API_KEY configured.
 ---
 
 # Plan Implementation Skill
+
+## How it works
+
+Each planning request runs two things **in parallel**, then combines them:
+
+1. **🌐 Web research** — Claude searches the web for the best library, approach, and 2025
+   best practices for the task. This answers "what should I use?" before the codebase
+   answers "where does it go?"
+
+2. **🔍 Codebase retrieval** — 5-phase pipeline: embed query → hybrid search (15 candidates)
+   → cross-encoder rerank (top 10) → file structure maps → caller context.
+   This grounds the plan in the actual files and symbols that exist.
+
+Claude then receives both sets of context and generates a structured plan that
+is simultaneously *correct* (uses the right library/pattern) and *precise*
+(references real file paths and symbol names).
 
 ## When to use this skill
 
@@ -26,7 +42,8 @@ The `plan_implementation` MCP tool is the fastest path. Call it with a plain-Eng
 ```
 plan_implementation(
   query="Add rate limiting to the /search endpoint — 100 req/min per IP",
-  repo="owner/name"   # optional: scope to one repo
+  repo="owner/name",    # optional: scope to one repo
+  web_research=True     # default True — search web for best approach
 )
 ```
 
@@ -46,9 +63,12 @@ curl -X POST http://localhost:8000/plan \
     "query": "Add rate limiting to the /search endpoint — 100 req/min per IP",
     "repo_owner": "owner",
     "repo_name": "myrepo",
-    "stream": false
+    "stream": false,
+    "web_research": true
   }'
 ```
+
+Set `web_research: false` to skip the web search phase (useful when offline or testing).
 
 ### Streaming mode (SSE)
 

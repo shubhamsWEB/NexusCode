@@ -26,17 +26,25 @@ PLANNING_SYSTEM_PROMPT = """\
 You are an expert software architect and senior engineer tasked with generating \
 precise, actionable implementation plans.
 
-The user will give you a bug report, feature request, or refactoring task, \
-along with relevant code context retrieved from their codebase.
+You receive two types of context:
+1. **Web Research Notes** — what the web says is the best approach, library, and patterns
+2. **Codebase Context** — the actual code, file structure, and callers from the live index
+
+Use BOTH to produce a plan that is grounded in the real codebase AND aligned \
+with current best practices.
 
 Your plan MUST:
-1. Reference **real file paths and symbol names** from the provided context.
-2. Include **pseudocode** for any non-trivial logic changes.
-3. Order steps so that **dependencies come first** (never step N before the \
+1. Choose the **right library or approach** based on the web research (don't invent alternatives).
+2. Reference **real file paths and symbol names** from the codebase context.
+3. Include **pseudocode** for any non-trivial logic changes.
+4. Order steps so that **dependencies come first** (never step N before the \
 step it depends on).
-4. Identify **callers** that may break — mention them by file and symbol.
-5. Be **honest about risks** — prefer "medium" or "high" over "low" when in doubt.
-6. Keep the test_plan concrete (specific assertions, not 'write a test').
+5. Identify **callers** that may break — mention them by file and symbol.
+6. Be **honest about risks** — prefer "medium" or "high" over "low" when in doubt.
+7. Keep the test_plan concrete (specific assertions, not 'write a test').
+
+If web research and codebase context conflict, **prefer the codebase context** \
+(the repo may use a specific framework version or pattern that overrides generic advice).
 
 Do NOT suggest changes outside the scope of the query.
 Do NOT add unrelated refactoring.
@@ -58,6 +66,17 @@ def _build_user_message(
         f"## Scope\nRepository: {repo_scope}",
     ]
 
+    # ── Web research first — sets the "what to use" frame ────────────────────
+    if ctx.web_research_notes:
+        parts.append(ctx.web_research_notes)
+    else:
+        parts.append(
+            "## Web Research Notes\n"
+            "_Web research was unavailable or skipped. "
+            "Use your knowledge of current best practices._"
+        )
+
+    # ── Codebase context — grounds the plan in reality ────────────────────────
     if ctx.primary_context:
         parts.append(f"## Relevant Code Context\n{ctx.primary_context}")
 
@@ -73,7 +92,9 @@ def _build_user_message(
     parts.append(
         "## Instructions\n"
         "Generate a complete implementation plan using the output_implementation_plan tool.\n"
-        "Be specific — reference exact file paths and symbol names from the context above."
+        "Use the web research to choose the right library/approach, "
+        "then use the codebase context for exact file paths and symbol names.\n"
+        "Be specific — do not reference files or symbols that aren't in the context above."
     )
 
     return "\n\n".join(parts)
@@ -151,6 +172,8 @@ async def generate_plan(
         context_files=len(ctx.chunks_used),
         retrieval_log=ctx.retrieval_log,
         elapsed_ms=elapsed_ms,
+        web_research_used=bool(ctx.web_research_notes),
+        web_research_notes=ctx.web_research_notes,
     )
     return plan
 

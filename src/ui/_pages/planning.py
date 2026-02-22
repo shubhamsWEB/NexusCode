@@ -32,13 +32,14 @@ def render():
     st.title("🧩 Planning Mode")
     st.markdown(
         "Describe a bug, feature, or refactoring task. "
-        "The server will retrieve relevant code context and generate a "
-        "complete implementation plan grounded in your actual codebase."
+        "The planner **searches the web** for the best approach and libraries, "
+        "then combines that with your **live codebase index** to generate a "
+        "grounded, step-by-step implementation plan."
     )
 
     st.info(
-        "**Requires:** `ANTHROPIC_API_KEY` set in your `.env` file. "
-        "Uses Claude to reason over retrieved code context.",
+        "**Requires:** `ANTHROPIC_API_KEY` in `.env` — used for both web research "
+        "and plan generation. Web research runs in parallel with codebase retrieval.",
         icon="ℹ️",
     )
 
@@ -60,18 +61,27 @@ def render():
         query = st.text_area(
             "Describe your task",
             placeholder=(
-                "e.g. 'Add rate limiting to the /search endpoint'\n"
+                "e.g. 'Add rate limiting to the /search endpoint — 100 req/min per IP'\n"
                 "or 'Fix the bug where webhook events stay in queued status'\n"
-                "or 'Refactor the chunker to support Ruby files'"
+                "or 'Add TypeScript support to the Tree-sitter parser'"
             ),
-            height=120,
+            height=130,
         )
 
-        col1, col2 = st.columns([2, 1])
+        col1, col2, col3 = st.columns([2, 1, 1])
         with col1:
             repo_label = st.selectbox("Scope to repository (optional)", options=repo_options)
         with col2:
-            st.markdown("&nbsp;", unsafe_allow_html=True)  # vertical alignment spacer
+            web_research = st.checkbox(
+                "🌐 Web research",
+                value=True,
+                help=(
+                    "Search the web for best practices and library recommendations "
+                    "before generating the plan. Runs in parallel — no extra wait time."
+                ),
+            )
+        with col3:
+            st.markdown("&nbsp;", unsafe_allow_html=True)
             submitted = st.form_submit_button(
                 "Generate Plan", type="primary", use_container_width=True
             )
@@ -86,7 +96,7 @@ def render():
             st.stop()
 
         # Build request payload
-        payload: dict = {"query": query.strip(), "stream": False}
+        payload: dict = {"query": query.strip(), "stream": False, "web_research": web_research}
         if repo_label != "All repos":
             owner, name = repo_map.get(repo_label, (None, None))
             if owner and name:
@@ -94,7 +104,8 @@ def render():
                 payload["repo_name"] = name
 
         # Call API
-        with st.spinner("Retrieving code context and generating plan… (this may take 20–60s)"):
+        research_label = " + web research" if web_research else ""
+        with st.spinner(f"Retrieving code context{research_label} and generating plan… (20–60s)"):
             t0 = time.monotonic()
             plan_data, err = api_post("/plan", json=payload, timeout=120)
             elapsed = time.monotonic() - t0
@@ -128,16 +139,25 @@ def _render_plan(plan: dict, elapsed: float):
     # Metadata bar
     meta = plan.get("metadata") or {}
     if meta:
-        mc1, mc2, mc3 = st.columns(3)
+        mc1, mc2, mc3, mc4 = st.columns(4)
         mc1.metric("Context tokens", f"{meta.get('context_tokens', 0):,}")
         mc2.metric("Code chunks", meta.get("context_files", 0))
         mc3.metric("Model", meta.get("model", "—").split("-")[-1])
+        web_used = meta.get("web_research_used", False)
+        mc4.metric("Web research", "✅ yes" if web_used else "⬜ no")
 
     # Plan ID for reference
     if plan.get("plan_id"):
         st.caption(f"Plan ID: `{plan['plan_id']}`")
 
     st.divider()
+
+    # ── Web Research Notes ────────────────────────────────────────────────────
+    web_notes = (meta or {}).get("web_research_notes", "")
+    if web_notes:
+        with st.expander("🌐 Web Research Notes (what the internet says)", expanded=True):
+            st.markdown(web_notes)
+        st.divider()
 
     # ── Summary ───────────────────────────────────────────────────────────────
     st.subheader("Summary")

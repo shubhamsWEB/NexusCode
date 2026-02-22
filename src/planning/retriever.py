@@ -1,17 +1,22 @@
 """
-5-phase context retrieval pipeline for implementation planning.
+Context retrieval pipeline for implementation planning.
 
+Phase 0  — fire web research as a background asyncio task (parallel with phases 1-5)
 Phase 1  — embed the query with voyage-code-2
 Phase 2  — hybrid search → 15 candidates (vector + keyword + RRF)
 Phase 3  — cross-encoder rerank → top 10
 Phase 4  — file structure maps for the top-5 unique files
 Phase 5  — caller context for the top-3 unique symbols
            + optional second semantic pass using discovered symbol names
+Phase 6  — collect web research notes (awaits the Phase-0 task)
 
 The assembled context is split across three token-budget slices:
   65 %  primary chunks  (phases 2–3)
   20 %  caller context  (phase 5)
   15 %  expansion       (second semantic pass)
+
+Web research runs in parallel with phases 1-5, so it adds zero extra
+wall-clock time on the happy path.
 """
 from __future__ import annotations
 
@@ -32,6 +37,7 @@ class PlanningContext:
     file_maps: str                # structural file summaries (phase 4)
     caller_contexts: str          # call-site context (phase 5)
     expansion_context: str        # second-pass symbol context
+    web_research_notes: str       # phase 0 — web search results (may be "")
     chunks_used: list[dict]       # chunk metadata for telemetry
     tokens_used: int
     retrieval_log: str
@@ -43,11 +49,18 @@ async def retrieve_planning_context(
     query: str,
     repo_owner: Optional[str] = None,
     repo_name: Optional[str] = None,
+    web_research: bool = True,
 ) -> PlanningContext:
     """
-    Run the 5-phase retrieval and return a PlanningContext ready to inject
+    Run the retrieval pipeline and return a PlanningContext ready to inject
     into the Claude prompt.
+
+    Web research (Phase 0) fires immediately as a background task and runs
+    in parallel with codebase retrieval (Phases 1-5), adding no extra latency.
+    Set web_research=False to skip it entirely.
     """
+    import asyncio
+
     from src.retrieval.assembler import assemble
     from src.retrieval.reranker import rerank
     from src.retrieval.searcher import embed_query, search
@@ -56,6 +69,13 @@ async def retrieve_planning_context(
     primary_budget   = int(total_budget * 0.65)
     caller_budget    = int(total_budget * 0.20)
     expansion_budget = int(total_budget * 0.15)
+
+    # ── Phase 0: fire web research in background ─────────────────────────────
+    web_research_task = None
+    if web_research:
+        from src.planning.web_researcher import research_implementation
+        logger.info("planning retriever: starting web research (background)")
+        web_research_task = asyncio.create_task(research_implementation(query))
 
     # ── Phase 1: embed query ─────────────────────────────────────────────────
     logger.info("planning retriever: embedding query")
@@ -118,17 +138,31 @@ async def retrieve_planning_context(
     else:
         expansion_text = ""
 
+    # ── Phase 6: collect web research notes ─────────────────────────────────
+    web_research_notes = ""
+    if web_research_task is not None:
+        try:
+            web_research_notes = await web_research_task
+            if web_research_notes:
+                logger.info("planning retriever: web research complete (%d chars)", len(web_research_notes))
+            else:
+                logger.info("planning retriever: web research returned empty (continuing)")
+        except Exception as exc:
+            logger.warning("planning retriever: web research task failed: %s", exc)
+
     retrieval_log = (
         f"{primary_ctx.retrieval_log}\n"
         f"file_maps: {len(top_files)} files\n"
         f"caller_context_symbols: {top_symbols}\n"
-        f"expansion_chunks: {len(expansion_results)}"
+        f"expansion_chunks: {len(expansion_results)}\n"
+        f"web_research: {'yes' if web_research_notes else 'no'}"
     )
 
     logger.info(
-        "planning retriever done: %d chunks, %d tokens",
+        "planning retriever done: %d chunks, %d tokens, web_research=%s",
         len(primary_ctx.chunks_used),
         primary_ctx.tokens_used,
+        bool(web_research_notes),
     )
 
     return PlanningContext(
@@ -136,6 +170,7 @@ async def retrieve_planning_context(
         file_maps=file_maps,
         caller_contexts=caller_ctx_text,
         expansion_context=expansion_text,
+        web_research_notes=web_research_notes,
         chunks_used=primary_ctx.chunks_used,
         tokens_used=primary_ctx.tokens_used,
         retrieval_log=retrieval_log,

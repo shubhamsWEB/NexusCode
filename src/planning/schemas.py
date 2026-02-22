@@ -66,6 +66,8 @@ class PlanMetadata(BaseModel):
     context_files: int
     retrieval_log: str
     elapsed_ms: float
+    web_research_used: bool = False
+    web_research_notes: str = ""
 
 
 # ── Top-level plan ────────────────────────────────────────────────────────────
@@ -102,6 +104,14 @@ class PlanRequest(BaseModel):
     repo_owner: Optional[str] = Field(None, description="Scope to a specific repo owner")
     repo_name: Optional[str] = Field(None, description="Scope to a specific repo name")
     stream: bool = Field(False, description="If true, return an SSE stream instead of JSON")
+    web_research: bool = Field(
+        True,
+        description=(
+            "Search the web for best practices before generating the plan. "
+            "Runs in parallel with codebase retrieval at no extra latency. "
+            "Set false to skip (useful when offline or for speed tests)."
+        ),
+    )
 
 
 # ── JSON Schema used as Claude's tool input ───────────────────────────────────

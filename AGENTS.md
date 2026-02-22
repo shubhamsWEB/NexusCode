@@ -11,7 +11,7 @@ push webhooks and exposes them through MCP tools and a REST API.
 
 | Skill | When to use | Primary interface |
 |---|---|---|
-| `plan-implementation` | Before writing code for any bug/feature/refactor — get a grounded plan | `POST /plan` or MCP `plan_implementation` |
+| `plan-implementation` | Before writing code for any bug/feature/refactor — web searches for best approach + retrieves codebase context → grounded plan | `POST /plan` or MCP `plan_implementation` |
 | `search-codebase` | Find relevant code, symbols, callers, or pre-assembled task context | `POST /search` or any of the 6 MCP tools |
 | `manage-repos` | Register a new repo, trigger indexing, inspect stats, or delete a repo | `GET/POST /repos`, dashboard |
 
@@ -22,12 +22,12 @@ push webhooks and exposes them through MCP tools and a REST API.
 ## MCP Tools (6 total)
 
 ```
-search_codebase(query, repo?, language?, top_k?, mode?)   — hybrid semantic+keyword search
+search_codebase(query, repo?, language?, top_k?, mode?)    — hybrid semantic+keyword search
 get_symbol(name, repo?)                                    — fuzzy symbol lookup (Go to Definition)
 find_callers(symbol, repo?, depth?)                        — who calls this function?
 get_file_context(path, repo?, include_deps?)               — structural file map
 get_agent_context(task, focal_files?, token_budget?, repo?) — pre-assembled context for a task
-plan_implementation(query, repo?)                          — Cursor-style implementation plan
+plan_implementation(query, repo?, web_research?)           — web research + codebase → implementation plan
 ```
 
 MCP endpoint: `http://localhost:8000/mcp` (SSE transport)

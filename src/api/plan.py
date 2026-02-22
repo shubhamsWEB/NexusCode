@@ -57,6 +57,7 @@ async def _sync_plan(req: PlanRequest) -> JSONResponse:
             query=req.query,
             repo_owner=req.repo_owner,
             repo_name=req.repo_name,
+            web_research=req.web_research,
         )
     except Exception as exc:
         logger.exception("planning retriever failed")
@@ -96,7 +97,8 @@ async def _sse_generator(req: PlanRequest):
     def _event(data: dict) -> str:
         return f"data: {json.dumps(data)}\n\n"
 
-    yield _event({"type": "status", "message": "Retrieving relevant code context…"})
+    web_label = " + web research" if req.web_research else ""
+    yield _event({"type": "status", "message": f"Retrieving code context{web_label}…"})
 
     try:
         from src.planning.claude_planner import generate_plan
@@ -111,12 +113,14 @@ async def _sse_generator(req: PlanRequest):
             query=req.query,
             repo_owner=req.repo_owner,
             repo_name=req.repo_name,
+            web_research=req.web_research,
         )
         yield _event({
             "type": "retrieval_complete",
             "log": ctx.retrieval_log,
             "chunks": len(ctx.chunks_used),
             "tokens": ctx.tokens_used,
+            "web_research_used": bool(ctx.web_research_notes),
         })
     except Exception as exc:
         logger.exception("planning retriever failed (SSE)")

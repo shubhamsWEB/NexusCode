@@ -493,13 +493,18 @@ async def get_agent_context(
 async def plan_implementation(
     query: Annotated[str, "Bug report, feature request, or refactoring task description (min 10 chars)"],
     repo: Annotated[Optional[str], "Scope to 'owner/name' — defaults to all repos"] = None,
+    web_research: Annotated[bool, "Search the web for best practices before generating the plan (default true)"] = True,
 ) -> str:
     """
     Generate a complete, grounded implementation plan for a coding task.
 
-    Retrieves relevant code context from the live codebase index, then calls
-    Claude to produce a structured plan with:
-    - Exact file paths and symbol names to change
+    Combines two information sources:
+    1. Web research — searches for the best library, pattern, and current best practices
+    2. Codebase context — retrieves the actual files, symbols, and callers from the index
+
+    Returns a structured plan with:
+    - Exact file paths and symbol names to change (from codebase)
+    - Library/approach recommendation (from web research)
     - Step-by-step execution order with dependencies
     - Pseudocode for complex logic
     - Risk assessment and mitigation strategies
@@ -520,6 +525,7 @@ async def plan_implementation(
             query=query,
             repo_owner=repo_owner,
             repo_name=repo_name,
+            web_research=web_research,
         )
     except Exception as exc:
         return json.dumps({"error": f"Retrieval failed: {exc}"})
@@ -551,6 +557,11 @@ def _format_plan_markdown(plan) -> str:
         plan.summary,
         f"",
     ]
+
+    # Web research notes (if available) — shown before the plan for context
+    if plan.metadata and plan.metadata.web_research_used and plan.metadata.web_research_notes:
+        lines.append(plan.metadata.web_research_notes)
+        lines.append("")
 
     if plan.clarifying_assumptions:
         lines += ["## Assumptions"]
