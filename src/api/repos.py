@@ -1,0 +1,435 @@
+"""
+Repository management, config inspection, and webhook test endpoints.
+Used by the admin dashboard for all configuration flows.
+
+Endpoints
+---------
+GET    /repos                     — list all repos with live stats
+POST   /repos                     — register a new repo
+DELETE /repos/{owner}/{name}      — unregister repo + delete all indexed data
+POST   /repos/{owner}/{name}/index — trigger a fresh full-index job via RQ
+GET    /config                    — current (masked) env configuration
+POST   /webhook/ping              — send a self-test ping to /webhook
+"""
+from __future__ import annotations
+
+import hashlib
+import hmac
+import uuid
+from typing import Optional
+
+import httpx
+from fastapi import APIRouter, BackgroundTasks, HTTPException, status
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
+
+from src.config import settings
+
+router = APIRouter(tags=["management"])
+
+
+# ── Request / response models ─────────────────────────────────────────────────
+
+class RegisterRepoRequest(BaseModel):
+    owner: str = Field(..., description="GitHub owner (org or user)")
+    name: str = Field(..., description="GitHub repository name")
+    branch: str = Field("main", description="Branch to track")
+    description: Optional[str] = Field(None, description="Optional description")
+
+
+class IndexJobResponse(BaseModel):
+    job_id: str
+    repo: str
+    files_found: int
+    message: str
+
+
+# ── Helper: build and enqueue a full-index job ────────────────────────────────
+
+async def _enqueue_full_index(owner: str, name: str, branch: str) -> dict:
+    """
+    Fetches the repo file tree from GitHub and enqueues one RQ job
+    covering all indexable files. Returns job metadata.
+    """
+    import redis
+    from rq import Queue
+
+    from src.github.fetcher import (
+        _GITHUB_API,
+        _make_client,
+        fetch_full_tree,
+        filter_indexable_paths,
+    )
+    from src.storage.db import update_repo_status
+
+    await update_repo_status(owner, name, "indexing")
+
+    tree = await fetch_full_tree(owner, name, ref=branch)
+    all_paths = [item["path"] for item in tree]
+    indexable = filter_indexable_paths(all_paths)
+
+    if not indexable:
+        await update_repo_status(owner, name, "error")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"No indexable files found in {owner}/{name}@{branch}. "
+                   "Check SUPPORTED_EXTENSIONS in your config.",
+        )
+
+    # Resolve HEAD commit metadata
+    async with _make_client() as client:
+        resp = await client.get(
+            f"{_GITHUB_API}/repos/{owner}/{name}/commits/{branch}",
+            params={"per_page": 1},
+        )
+        if resp.status_code == 404:
+            await update_repo_status(owner, name, "error")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Repository {owner}/{name} not found or branch '{branch}' doesn't exist.",
+            )
+        resp.raise_for_status()
+        commit_data = resp.json()
+
+    head_sha = commit_data.get("sha", branch)
+    commit_author = commit_data.get("commit", {}).get("author", {}).get("email", "")
+    commit_message = commit_data.get("commit", {}).get("message", "").splitlines()[0]
+    delivery_id = f"full-index-{owner}-{name}-{head_sha[:7]}-{uuid.uuid4().hex[:6]}"
+
+    job_payload = {
+        "repo_owner": owner,
+        "repo_name": name,
+        "commit_sha": head_sha,
+        "commit_author": commit_author,
+        "commit_message": commit_message,
+        "files_to_upsert": indexable,
+        "files_to_delete": [],
+        "delivery_id": delivery_id,
+    }
+
+    conn = redis.from_url(settings.redis_url)
+    queue = Queue("indexing", connection=conn)
+    job = queue.enqueue(
+        "src.pipeline.pipeline.run_incremental_index",
+        job_payload,
+        job_timeout=3600,
+        result_ttl=3600,
+    )
+
+    return {
+        "job_id": job.id,
+        "repo": f"{owner}/{name}",
+        "branch": branch,
+        "head_sha": head_sha[:7],
+        "files_found": len(indexable),
+        "delivery_id": delivery_id,
+        "message": f"Full index job enqueued for {len(indexable)} files. Start the RQ worker to process.",
+    }
+
+
+# ── GET /repos ────────────────────────────────────────────────────────────────
+
+@router.get("/repos", summary="List all registered repositories with stats")
+async def list_repos() -> JSONResponse:
+    from src.storage.db import get_repo_stats
+
+    rows = await get_repo_stats()
+
+    def _fmt(row: dict) -> dict:
+        return {
+            "owner": row["owner"],
+            "name": row["name"],
+            "repo": f"{row['owner']}/{row['name']}",
+            "branch": row["branch"],
+            "status": row["status"],
+            "active_chunks": row["active_chunks"] or 0,
+            "deleted_chunks": row["deleted_chunks"] or 0,
+            "files": row["files"] or 0,
+            "symbols": row["symbols"] or 0,
+            "registered_at": row["registered_at"].isoformat() if row["registered_at"] else None,
+            "last_indexed": row["last_indexed"].isoformat() if row["last_indexed"] else None,
+        }
+
+    return JSONResponse([_fmt(r) for r in rows])
+
+
+# ── POST /repos ───────────────────────────────────────────────────────────────
+
+@router.post("/repos", summary="Register a new repository (and optionally trigger indexing)")
+async def register_repo_endpoint(req: RegisterRepoRequest) -> JSONResponse:
+    from src.storage.db import register_repo
+
+    repo = await register_repo(
+        owner=req.owner,
+        name=req.name,
+        branch=req.branch,
+        description=req.description or "",
+    )
+    return JSONResponse(
+        {
+            "repo": f"{repo.owner}/{repo.name}",
+            "branch": repo.branch,
+            "status": repo.status,
+            "registered_at": repo.registered_at.isoformat(),
+            "message": f"Registered {repo.owner}/{repo.name}. "
+                       f"Call POST /repos/{repo.owner}/{repo.name}/index to start indexing.",
+        },
+        status_code=status.HTTP_201_CREATED,
+    )
+
+
+# ── DELETE /repos/{owner}/{name} ──────────────────────────────────────────────
+
+@router.delete(
+    "/repos/{owner}/{name}",
+    summary="Unregister a repo and permanently delete all its indexed data",
+)
+async def delete_repo_endpoint(owner: str, name: str) -> JSONResponse:
+    from src.storage.db import delete_repo
+
+    deleted = await delete_repo(owner, name)
+    if not deleted:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Repository {owner}/{name} is not registered.",
+        )
+    return JSONResponse(
+        {
+            "repo": f"{owner}/{name}",
+            "deleted": True,
+            "message": f"All chunks, symbols, merkle nodes, and the repo record for {owner}/{name} have been permanently deleted.",
+        }
+    )
+
+
+# ── POST /repos/{owner}/{name}/index ─────────────────────────────────────────
+
+@router.post(
+    "/repos/{owner}/{name}/index",
+    summary="Trigger a fresh full-index job for an already-registered repository",
+)
+async def trigger_index(owner: str, name: str) -> JSONResponse:
+    from src.storage.db import get_repos
+
+    # Confirm the repo is registered
+    repos = await get_repos()
+    repo = next((r for r in repos if r.owner == owner and r.name == name), None)
+    if repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Repository {owner}/{name} is not registered. Call POST /repos first.",
+        )
+
+    result = await _enqueue_full_index(owner, name, repo.branch)
+    return JSONResponse(result, status_code=status.HTTP_202_ACCEPTED)
+
+
+# ── GET /config ───────────────────────────────────────────────────────────────
+
+def _mask(value: str | None, show: int = 4) -> str:
+    """Show first `show` chars then *** — or 'not set' if empty."""
+    if not value:
+        return "not set"
+    if len(value) <= show:
+        return "***"
+    return value[:show] + "***"
+
+
+@router.get("/config", summary="Show current (masked) server configuration")
+async def get_config() -> JSONResponse:
+    s = settings
+    return JSONResponse({
+        "github": {
+            "token": _mask(s.github_token),
+            "app_id": str(s.github_app_id) if s.github_app_id else "not set",
+            "app_private_key_path": s.github_app_private_key_path or "not set",
+            "webhook_secret": _mask(s.github_webhook_secret),
+            "default_branch": s.github_default_branch,
+        },
+        "database": {
+            "url": _mask(s.database_url, show=20),
+            "pool_size": s.db_pool_size,
+            "max_overflow": s.db_max_overflow,
+        },
+        "redis": {
+            "url": s.redis_url,
+        },
+        "embeddings": {
+            "voyage_api_key": _mask(s.voyage_api_key),
+            "model": s.embedding_model,
+            "dimensions": s.embedding_dimensions,
+            "batch_size": s.embedding_batch_size,
+        },
+        "auth": {
+            "jwt_secret": _mask(s.jwt_secret),
+            "jwt_expiry_hours": s.jwt_expiry_hours,
+            "oauth_client_id": _mask(s.github_oauth_client_id) if s.github_oauth_client_id else "not set",
+        },
+        "indexing": {
+            "chunk_target_tokens": s.chunk_target_tokens,
+            "chunk_overlap_tokens": s.chunk_overlap_tokens,
+            "chunk_min_tokens": s.chunk_min_tokens,
+            "context_token_budget": s.context_token_budget,
+            "supported_extensions": s.supported_extensions,
+            "ignore_patterns": s.ignore_patterns,
+        },
+        "reranker": {
+            "model": s.reranker_model,
+            "top_n": s.reranker_top_n,
+        },
+        "optional": {
+            "anthropic_api_key": _mask(s.anthropic_api_key) if s.anthropic_api_key else "not set",
+        },
+    })
+
+
+# ── POST /config/env ──────────────────────────────────────────────────────────
+
+class EnvUpdateRequest(BaseModel):
+    updates: dict[str, str] = Field(
+        ...,
+        description="Key-value pairs to write to the .env file",
+        examples=[{"VOYAGE_API_KEY": "pa-xxx", "GITHUB_TOKEN": "ghp-xxx"}],
+    )
+
+
+@router.post("/config/env", summary="Write one or more values to the .env file")
+async def update_env(req: EnvUpdateRequest) -> JSONResponse:
+    """
+    Reads the existing .env file, updates or appends the given keys,
+    and writes it back. Does not restart the server — a restart is needed
+    for changes to take effect.
+    """
+    import os
+    from pathlib import Path
+
+    env_path = Path(".env")
+
+    # Read existing lines
+    if env_path.exists():
+        lines = env_path.read_text().splitlines()
+    else:
+        lines = []
+
+    # Build a map of existing keys → line index
+    key_to_line: dict[str, int] = {}
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            key = stripped.split("=", 1)[0].strip().upper()
+            key_to_line[key] = i
+
+    # Apply updates
+    updated_keys = []
+    for key, value in req.updates.items():
+        key = key.upper()
+        new_line = f"{key}={value}"
+        if key in key_to_line:
+            lines[key_to_line[key]] = new_line
+        else:
+            lines.append(new_line)
+        updated_keys.append(key)
+
+    env_path.write_text("\n".join(lines) + "\n")
+
+    return JSONResponse({
+        "updated": updated_keys,
+        "message": "Values written to .env. Restart the server for changes to take effect.",
+    })
+
+
+# ── POST /webhook/ping ────────────────────────────────────────────────────────
+
+@router.post("/webhook/ping", summary="Send a self-test ping to verify the webhook endpoint is live")
+async def webhook_ping() -> JSONResponse:
+    """
+    Constructs a valid GitHub-style ping payload, signs it with
+    GITHUB_WEBHOOK_SECRET, and POSTs it to /webhook.
+    Returns the response from the webhook handler.
+    """
+    import json
+
+    payload = {
+        "zen": "Non-blocking is better than blocking.",
+        "hook_id": 0,
+        "hook": {"type": "Repository", "events": ["push"]},
+    }
+    body = json.dumps(payload).encode()
+
+    # Sign exactly as GitHub does
+    sig = "sha256=" + hmac.new(
+        settings.github_webhook_secret.encode(),
+        body,
+        hashlib.sha256,
+    ).hexdigest()
+
+    delivery_id = f"self-test-{uuid.uuid4().hex[:8]}"
+
+    try:
+        async with httpx.AsyncClient(base_url="http://localhost:8000", timeout=10.0) as client:
+            resp = await client.post(
+                "/webhook",
+                content=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-GitHub-Event": "ping",
+                    "X-Hub-Signature-256": sig,
+                    "X-GitHub-Delivery": delivery_id,
+                },
+            )
+        return JSONResponse({
+            "ok": resp.status_code == 200,
+            "status_code": resp.status_code,
+            "delivery_id": delivery_id,
+            "response": resp.json(),
+        })
+    except httpx.ConnectError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not connect to /webhook — is the API server running on port 8000?",
+        )
+
+
+# ── GET /jobs ─────────────────────────────────────────────────────────────────
+
+@router.get("/jobs", summary="List recent RQ indexing jobs and their status")
+async def list_jobs() -> JSONResponse:
+    """
+    Returns the last 20 jobs from the RQ indexing queue:
+    queued, started, finished, and failed.
+    """
+    import redis
+    from rq import Queue
+    from rq.job import Job
+    from rq.registry import FailedJobRegistry, FinishedJobRegistry, StartedJobRegistry
+
+    conn = redis.from_url(settings.redis_url)
+    queue = Queue("indexing", connection=conn)
+
+    jobs: list[dict] = []
+
+    def _fetch(job_ids: list[str], state: str) -> None:
+        for jid in job_ids[:20]:
+            try:
+                j = Job.fetch(jid, connection=conn)
+                jobs.append({
+                    "id": jid,
+                    "state": state,
+                    "enqueued_at": j.enqueued_at.isoformat() if j.enqueued_at else None,
+                    "started_at": j.started_at.isoformat() if j.started_at else None,
+                    "ended_at": j.ended_at.isoformat() if j.ended_at else None,
+                    "result": j.result if state == "finished" else None,
+                    "exc_info": str(j.exc_info)[:200] if j.exc_info else None,
+                })
+            except Exception:
+                pass
+
+    _fetch(queue.job_ids, "queued")
+    _fetch(StartedJobRegistry("indexing", connection=conn).get_job_ids(), "started")
+    _fetch(FinishedJobRegistry("indexing", connection=conn).get_job_ids(), "finished")
+    _fetch(FailedJobRegistry("indexing", connection=conn).get_job_ids(), "failed")
+
+    # Sort by enqueued_at desc
+    jobs.sort(key=lambda j: j.get("enqueued_at") or "", reverse=True)
+
+    return JSONResponse({"jobs": jobs[:20], "queued_count": queue.count})

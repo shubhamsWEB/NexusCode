@@ -222,6 +222,75 @@ async def update_repo_status(owner: str, name: str, status: str) -> None:
         await session.commit()
 
 
+async def delete_repo(owner: str, name: str) -> bool:
+    """
+    Permanently remove a repository and all its indexed data.
+    Deletes chunks (hard), symbols, merkle nodes, and the repo row.
+    Returns True if the repo existed, False if not found.
+    """
+    async with AsyncSessionLocal() as session:
+        # Verify repo exists first
+        result = await session.execute(
+            select(Repo).where(Repo.owner == owner, Repo.name == name)
+        )
+        if result.scalar_one_or_none() is None:
+            return False
+
+        # Hard-delete all data for this repo
+        await session.execute(
+            delete(Chunk).where(Chunk.repo_owner == owner, Chunk.repo_name == name)
+        )
+        await session.execute(
+            delete(Symbol).where(Symbol.repo_owner == owner, Symbol.repo_name == name)
+        )
+        await session.execute(
+            delete(MerkleNode).where(
+                MerkleNode.repo_owner == owner, MerkleNode.repo_name == name
+            )
+        )
+        await session.execute(
+            delete(Repo).where(Repo.owner == owner, Repo.name == name)
+        )
+        await session.commit()
+        return True
+
+
+async def get_repo_stats() -> list[dict[str, Any]]:
+    """Per-repo breakdown: chunk counts, file counts, last indexed."""
+    async with AsyncSessionLocal() as session:
+        rows = (await session.execute(text("""
+            SELECT
+                r.owner,
+                r.name,
+                r.branch,
+                r.status,
+                r.registered_at,
+                r.last_indexed,
+                COALESCE(c.active_chunks,  0) AS active_chunks,
+                COALESCE(c.deleted_chunks, 0) AS deleted_chunks,
+                COALESCE(c.files,          0) AS files,
+                COALESCE(s.symbols,        0) AS symbols
+            FROM repos r
+            LEFT JOIN (
+                SELECT
+                    repo_owner, repo_name,
+                    COUNT(*) FILTER (WHERE is_deleted = FALSE) AS active_chunks,
+                    COUNT(*) FILTER (WHERE is_deleted = TRUE)  AS deleted_chunks,
+                    COUNT(DISTINCT file_path)
+                        FILTER (WHERE is_deleted = FALSE)      AS files
+                FROM chunks
+                GROUP BY repo_owner, repo_name
+            ) c ON c.repo_owner = r.owner AND c.repo_name = r.name
+            LEFT JOIN (
+                SELECT repo_owner, repo_name, COUNT(*) AS symbols
+                FROM symbols
+                GROUP BY repo_owner, repo_name
+            ) s ON s.repo_owner = r.owner AND s.repo_name = r.name
+            ORDER BY r.registered_at DESC
+        """))).mappings().all()
+        return [dict(row) for row in rows]
+
+
 # ── Webhook event log ────────────────────────────────────────────────────────
 
 async def log_webhook_event(
