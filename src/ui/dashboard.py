@@ -505,19 +505,19 @@ if page == "🚀 Get Started":
     _render_get_started()
 
 elif page == "⚙️  Settings":
-    from src.ui.pages.settings import render
+    from src.ui._pages.settings import render
     render()
 
 elif page == "📦 Repositories":
-    from src.ui.pages.repos import render
+    from src.ui._pages.repos import render
     render()
 
 elif page == "🔗 Webhook Setup":
-    from src.ui.pages.webhook import render
+    from src.ui._pages.webhook import render
     render()
 
 elif page == "🔑 MCP Tokens":
-    from src.ui.pages.tokens import render
+    from src.ui._pages.tokens import render
     render()
 
 elif page == "🏠 Health":

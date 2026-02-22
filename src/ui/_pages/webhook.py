@@ -2,11 +2,12 @@ import asyncio
 import os
 import sys
 
+# Ensure repo root is on the path (no-op when launched via dashboard.py)
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")))
+
 import streamlit as st
 
 from src.ui.helpers import api_get, api_post, time_ago
-
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")))
 
 
 async def _fetch_events(owner, name):
