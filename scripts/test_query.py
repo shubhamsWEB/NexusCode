@@ -8,6 +8,7 @@ Usage:
     python scripts/test_query.py "JWT token validation" --top-k 10
     python scripts/test_query.py "payment processing" --repo myorg/my-backend
 """
+
 from __future__ import annotations
 
 import argparse
@@ -18,9 +19,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import logging
+
 logging.basicConfig(level=logging.WARNING)
 
-from sqlalchemy import select, text
+from sqlalchemy import text
+
 from src.config import settings
 from src.storage.db import AsyncSessionLocal, get_index_stats
 
@@ -28,6 +31,7 @@ from src.storage.db import AsyncSessionLocal, get_index_stats
 async def embed_query(query: str) -> list[float]:
     """Embed the query string using voyage-code-2."""
     import voyageai
+
     client = voyageai.Client(api_key=settings.voyage_api_key)
     result = client.embed([query], model=settings.embedding_model, input_type="query")
     return result.embeddings[0]
@@ -83,7 +87,7 @@ async def search(
 
 
 def _print_results(results: list[dict], query: str) -> None:
-    print(f"\nQuery: \"{query}\"")
+    print(f'\nQuery: "{query}"')
     print(f"Results: {len(results)}\n")
 
     for i, r in enumerate(results, 1):
@@ -104,11 +108,11 @@ def _print_results(results: list[dict], query: str) -> None:
         content = r.get("raw_content", "")
         preview_lines = content.splitlines()[:6]
         preview = "\n       ".join(preview_lines)
-        print(f"       ┌─────")
+        print("       ┌─────")
         print(f"       {preview}")
         if len(content.splitlines()) > 6:
             print(f"       ... ({len(content.splitlines())} lines total)")
-        print(f"       └─────\n")
+        print("       └─────\n")
 
 
 async def main() -> None:
@@ -134,7 +138,9 @@ async def main() -> None:
         print("Index is empty. Run scripts/full_index.py first.")
         sys.exit(1)
 
-    print(f"Index has {stats['chunks']} chunks across {stats['files']} files in {stats['repos']} repo(s).")
+    print(
+        f"Index has {stats['chunks']} chunks across {stats['files']} files in {stats['repos']} repo(s)."
+    )
 
     results = await search(args.query, top_k=args.top_k, repo=args.repo, language=args.language)
 

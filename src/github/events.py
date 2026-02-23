@@ -2,10 +2,10 @@
 Dataclasses for GitHub webhook push event payloads.
 We only model the fields we actually use; unknown fields are ignored.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 
 @dataclass
@@ -18,7 +18,7 @@ class GitHubCommit:
     removed: list[str] = field(default_factory=list)
 
     @classmethod
-    def from_dict(cls, d: dict) -> "GitHubCommit":
+    def from_dict(cls, d: dict) -> GitHubCommit:
         return cls(
             id=d.get("id", ""),
             message=(d.get("message") or "").splitlines()[0],  # first line only
@@ -32,12 +32,13 @@ class GitHubCommit:
 @dataclass
 class PushEvent:
     """Parsed representation of a GitHub push webhook payload."""
-    ref: str                   # "refs/heads/main"
-    after: str                 # HEAD commit SHA after the push
+
+    ref: str  # "refs/heads/main"
+    after: str  # HEAD commit SHA after the push
     repo_owner: str
     repo_name: str
     commits: list[GitHubCommit]
-    delivery_id: str = ""      # X-GitHub-Delivery header (set by webhook handler)
+    delivery_id: str = ""  # X-GitHub-Delivery header (set by webhook handler)
 
     @property
     def branch(self) -> str:
@@ -75,7 +76,7 @@ class PushEvent:
         return self.commits[-1].message if self.commits else ""
 
     @classmethod
-    def from_dict(cls, payload: dict, delivery_id: str = "") -> "PushEvent":
+    def from_dict(cls, payload: dict, delivery_id: str = "") -> PushEvent:
         repo = payload.get("repository", {})
         owner = repo.get("owner", {})
         return cls(

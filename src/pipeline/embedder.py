@@ -7,12 +7,11 @@ Features:
   - Exponential backoff on rate limits (429) and transient errors
   - Returns only the (chunk_id → vector) pairs that were newly embedded
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
-import time
-from typing import Optional
 
 import voyageai
 
@@ -27,11 +26,11 @@ _MAX_TOKENS_PER_BATCH = 120_000
 # Free-tier limits (no payment method): 3 RPM, 10K TPM
 # We conservatively cap below 10K tokens/batch and wait 21s between calls
 _FREE_TIER_MAX_TOKENS = 8_000
-_FREE_TIER_RPM_DELAY  = 21.0   # seconds between API calls
+_FREE_TIER_RPM_DELAY = 21.0  # seconds between API calls
 
 # Retry config
 _MAX_RETRIES = 5
-_BASE_BACKOFF = 2.0            # seconds
+_BASE_BACKOFF = 2.0  # seconds
 
 # Detected at runtime: True once we see the "payment method" message
 _is_free_tier: bool = False
@@ -43,9 +42,10 @@ def _make_client() -> voyageai.Client:
 
 # ── Main public function ──────────────────────────────────────────────────────
 
+
 async def embed_chunks(
-    chunks: list,                  # list[EnrichedChunk]
-    existing_ids: set[str],        # chunk_ids already in the DB → skip embedding
+    chunks: list,  # list[EnrichedChunk]
+    existing_ids: set[str],  # chunk_ids already in the DB → skip embedding
 ) -> dict[str, list[float]]:
     """
     Embed a list of EnrichedChunks via the Voyage AI API.
@@ -92,6 +92,7 @@ async def embed_chunks(
 
 # ── Batching ──────────────────────────────────────────────────────────────────
 
+
 def _build_batches(chunks: list) -> list[list]:
     """
     Group chunks into batches respecting both count and token limits.
@@ -125,6 +126,7 @@ def _build_batches(chunks: list) -> list[list]:
 
 
 # ── API call with retry ───────────────────────────────────────────────────────
+
 
 async def _embed_with_retry(
     client: voyageai.Client,
@@ -175,7 +177,10 @@ async def _embed_with_retry(
                 backoff = _FREE_TIER_RPM_DELAY * attempt
                 logger.warning(
                     "Free-tier rate limit on batch %d/%d, attempt %d — waiting %.0fs",
-                    batch_num, total, attempt, backoff,
+                    batch_num,
+                    total,
+                    attempt,
+                    backoff,
                 )
                 await asyncio.sleep(backoff)
                 continue
@@ -183,14 +188,21 @@ async def _embed_with_retry(
             if not is_transient or attempt == _MAX_RETRIES:
                 logger.error(
                     "Embedding batch %d/%d failed after %d attempts: %s",
-                    batch_num, total, attempt, exc,
+                    batch_num,
+                    total,
+                    attempt,
+                    exc,
                 )
                 raise
 
             backoff = _BASE_BACKOFF * (2 ** (attempt - 1))
             logger.warning(
                 "Embedding batch %d/%d attempt %d failed (%s) — retrying in %.1fs",
-                batch_num, total, attempt, exc, backoff,
+                batch_num,
+                total,
+                attempt,
+                exc,
+                backoff,
             )
             await asyncio.sleep(backoff)
 
@@ -200,12 +212,14 @@ async def _embed_with_retry(
 
 # ── Utility: check existing IDs in DB ────────────────────────────────────────
 
+
 async def get_existing_chunk_ids(chunk_ids: list[str]) -> set[str]:
     """
     Query the DB for which chunk_ids already have embeddings stored.
     Used to skip the Voyage API call for unchanged chunks.
     """
-    from sqlalchemy import select, text
+    from sqlalchemy import select
+
     from src.storage.db import AsyncSessionLocal
     from src.storage.models import Chunk
 

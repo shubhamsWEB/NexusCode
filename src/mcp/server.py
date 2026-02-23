@@ -11,11 +11,12 @@ Tools:
 Mount the Starlette SSE app via:
     app.mount("/mcp", mcp_server.sse_app())
 """
+
 from __future__ import annotations
 
 import json
 import logging
-from typing import Annotated, Optional
+from typing import Annotated
 
 from mcp.server.fastmcp import FastMCP
 from sqlalchemy import text
@@ -41,12 +42,13 @@ mcp_server = FastMCP(
 
 # ── Tool 1: search_codebase ───────────────────────────────────────────────────
 
+
 @mcp_server.tool()
 async def search_codebase(
     query: Annotated[str, "Natural language or identifier query"],
-    repo: Annotated[Optional[str], "Scope to 'owner/name' — defaults to all repos"] = None,
-    language: Annotated[Optional[str], "Filter by language: python, typescript, javascript…"] = None,
-    top_k: Annotated[int, "Number of results to return (1–20)"] = 5,
+    repo: Annotated[str | None, "Scope to 'owner/name' — defaults to all repos"] = None,
+    language: Annotated[str | None, "Filter by language: python, typescript, javascript…"] = None,
+    top_k: Annotated[int, "Number of results to return (1-20)"] = 5,
     mode: Annotated[str, "Search mode: 'semantic', 'keyword', or 'hybrid'"] = "hybrid",
 ) -> str:
     """
@@ -113,10 +115,14 @@ async def search_codebase(
 
 # ── Tool 2: get_symbol ────────────────────────────────────────────────────────
 
+
 @mcp_server.tool()
 async def get_symbol(
-    name: Annotated[str, "Symbol name — exact ('authenticate'), qualified ('UserService.authenticate'), or natural language"],
-    repo: Annotated[Optional[str], "Scope to 'owner/name' — defaults to all repos"] = None,
+    name: Annotated[
+        str,
+        "Symbol name — exact ('authenticate'), qualified ('UserService.authenticate'), or natural language",
+    ],
+    repo: Annotated[str | None, "Scope to 'owner/name' — defaults to all repos"] = None,
 ) -> str:
     """
     Look up a function, class, or method by name (like IDE 'Go to Definition').
@@ -128,7 +134,9 @@ async def get_symbol(
         repo_owner, repo_name = repo.split("/", 1)
 
     params: dict = {"name": name}
-    where_clauses = ["similarity(name, :name) > 0.1 OR name ILIKE :name_like OR qualified_name ILIKE :name_like"]
+    where_clauses = [
+        "similarity(name, :name) > 0.1 OR name ILIKE :name_like OR qualified_name ILIKE :name_like"
+    ]
     params["name_like"] = f"%{name}%"
 
     if repo_owner:
@@ -182,10 +190,13 @@ async def get_symbol(
 
 # ── Tool 3: find_callers ──────────────────────────────────────────────────────
 
+
 @mcp_server.tool()
 async def find_callers(
-    symbol: Annotated[str, "Symbol name to find callers of (e.g. 'authenticate', 'PaymentService.charge')"],
-    repo: Annotated[Optional[str], "Scope to 'owner/name' — defaults to all repos"] = None,
+    symbol: Annotated[
+        str, "Symbol name to find callers of (e.g. 'authenticate', 'PaymentService.charge')"
+    ],
+    repo: Annotated[str | None, "Scope to 'owner/name' — defaults to all repos"] = None,
     depth: Annotated[int, "How many call hops deep (default 1, max 3)"] = 1,
 ) -> str:
     """
@@ -219,40 +230,49 @@ async def find_callers(
         call_lines = [
             {"line_no": r.start_line + i, "text": line.strip()}
             for i, line in enumerate(lines)
-            if symbol in line and not line.strip().startswith(("def ", "class ", "function ", "const ", "export "))
+            if symbol in line
+            and not line.strip().startswith(("def ", "class ", "function ", "const ", "export "))
         ]
         if call_lines:
-            callers.append({
-                "file": r.file_path,
-                "repo": f"{r.repo_owner}/{r.repo_name}",
-                "symbol_context": r.symbol_name or "<module>",
-                "kind": r.symbol_kind,
-                "lines": f"{r.start_line}-{r.end_line}",
-                "call_sites": call_lines[:5],
-                "preview": r.raw_content[:300],
-            })
+            callers.append(
+                {
+                    "file": r.file_path,
+                    "repo": f"{r.repo_owner}/{r.repo_name}",
+                    "symbol_context": r.symbol_name or "<module>",
+                    "kind": r.symbol_kind,
+                    "lines": f"{r.start_line}-{r.end_line}",
+                    "call_sites": call_lines[:5],
+                    "preview": r.raw_content[:300],
+                }
+            )
 
     if not callers:
-        return json.dumps({
-            "symbol": symbol,
-            "callers": [],
-            "message": f"No call sites found for '{symbol}'. It may not be used in the indexed codebase."
-        })
+        return json.dumps(
+            {
+                "symbol": symbol,
+                "callers": [],
+                "message": f"No call sites found for '{symbol}'. It may not be used in the indexed codebase.",
+            }
+        )
 
-    return json.dumps({
-        "symbol": symbol,
-        "depth": depth,
-        "caller_count": len(callers),
-        "callers": callers,
-    }, indent=2)
+    return json.dumps(
+        {
+            "symbol": symbol,
+            "depth": depth,
+            "caller_count": len(callers),
+            "callers": callers,
+        },
+        indent=2,
+    )
 
 
 # ── Tool 4: get_file_context ──────────────────────────────────────────────────
 
+
 @mcp_server.tool()
 async def get_file_context(
     path: Annotated[str, "File path relative to repo root (e.g. 'app/shopify.server.ts')"],
-    repo: Annotated[Optional[str], "Scope to 'owner/name'"] = None,
+    repo: Annotated[str | None, "Scope to 'owner/name'"] = None,
     include_deps: Annotated[bool, "Include files this file imports (default true)"] = True,
 ) -> str:
     """
@@ -308,28 +328,32 @@ async def get_file_context(
                 WHERE raw_content ILIKE :stem
                   AND file_path NOT ILIKE :path_like
                   AND is_deleted = FALSE
-                  {repo_filter.replace('AND ', 'AND ', 1)}
+                  {repo_filter.replace("AND ", "AND ", 1)}
                 LIMIT 20
             """)
             dep_rows = (await session.execute(dep_sql, dep_params)).mappings().all()
-            imported_by = [
-                f"{r['repo_owner']}/{r['repo_name']}:{r['file_path']}" for r in dep_rows
-            ]
+            imported_by = [f"{r['repo_owner']}/{r['repo_name']}:{r['file_path']}" for r in dep_rows]
         else:
             imported_by = []
 
     if not sym_rows and not chunk_row:
-        return json.dumps({
-            "error": f"File '{path}' not found in index.",
-            "hint": "Use search_codebase to find the correct path.",
-        })
+        return json.dumps(
+            {
+                "error": f"File '{path}' not found in index.",
+                "hint": "Use search_codebase to find the correct path.",
+            }
+        )
 
-    resolved_path = sym_rows[0]["file_path"] if sym_rows else (chunk_row["file_path"] if chunk_row else path)
+    resolved_path = (
+        sym_rows[0]["file_path"] if sym_rows else (chunk_row["file_path"] if chunk_row else path)
+    )
 
     result = {
         "file": resolved_path,
         "language": chunk_row["language"] if chunk_row else None,
-        "last_commit": chunk_row["commit_sha"][:7] if chunk_row and chunk_row["commit_sha"] else None,
+        "last_commit": chunk_row["commit_sha"][:7]
+        if chunk_row and chunk_row["commit_sha"]
+        else None,
         "commit_author": chunk_row["commit_author"] if chunk_row else None,
         "chunk_count": 0,  # filled below
         "imports": list(chunk_row["imports"] or []) if chunk_row and chunk_row["imports"] else [],
@@ -361,12 +385,15 @@ async def get_file_context(
 
 # ── Tool 5: get_agent_context ─────────────────────────────────────────────────
 
+
 @mcp_server.tool()
 async def get_agent_context(
     task: Annotated[str, "Natural language description of the task you are about to perform"],
-    focal_files: Annotated[Optional[list[str]], "Files you are actively working on — their chunks get priority"] = None,
+    focal_files: Annotated[
+        list[str] | None, "Files you are actively working on — their chunks get priority"
+    ] = None,
     token_budget: Annotated[int, "Max tokens to return (default 8000)"] = 8000,
-    repo: Annotated[Optional[str], "Scope to 'owner/name' — defaults to all repos"] = None,
+    repo: Annotated[str | None, "Scope to 'owner/name' — defaults to all repos"] = None,
 ) -> str:
     """
     Pre-assembled, token-budget-aware context for a specific coding task.
@@ -374,11 +401,12 @@ async def get_agent_context(
     It combines focal file content + semantic search + import graph to give you
     everything relevant in one shot, deduplicated and ranked.
     """
+    from sqlalchemy import text
+
     from src.retrieval.assembler import assemble
     from src.retrieval.reranker import rerank
     from src.retrieval.searcher import SearchResult, _semantic_search, embed_query
     from src.storage.db import AsyncSessionLocal
-    from sqlalchemy import text
 
     repo_owner = repo_name = None
     if repo and "/" in repo:
@@ -423,25 +451,27 @@ async def get_agent_context(
             for row in rows:
                 if row["id"] not in seen_ids:
                     seen_ids.add(row["id"])
-                    all_results.append(SearchResult(
-                        chunk_id=row["id"],
-                        file_path=row["file_path"],
-                        repo_owner=row["repo_owner"],
-                        repo_name=row["repo_name"],
-                        language=row["language"],
-                        symbol_name=row.get("symbol_name"),
-                        symbol_kind=row.get("symbol_kind"),
-                        scope_chain=row.get("scope_chain"),
-                        start_line=row["start_line"],
-                        end_line=row["end_line"],
-                        raw_content=row["raw_content"],
-                        enriched_content=row.get("enriched_content", ""),
-                        commit_sha=row.get("commit_sha", ""),
-                        commit_author=row.get("commit_author"),
-                        token_count=row.get("token_count", 0),
-                        score=1.0,  # focal files get top score
-                        rerank_score=10.0,
-                    ))
+                    all_results.append(
+                        SearchResult(
+                            chunk_id=row["id"],
+                            file_path=row["file_path"],
+                            repo_owner=row["repo_owner"],
+                            repo_name=row["repo_name"],
+                            language=row["language"],
+                            symbol_name=row.get("symbol_name"),
+                            symbol_kind=row.get("symbol_kind"),
+                            scope_chain=row.get("scope_chain"),
+                            start_line=row["start_line"],
+                            end_line=row["end_line"],
+                            raw_content=row["raw_content"],
+                            enriched_content=row.get("enriched_content", ""),
+                            commit_sha=row.get("commit_sha", ""),
+                            commit_author=row.get("commit_author"),
+                            token_count=row.get("token_count", 0),
+                            score=1.0,  # focal files get top score
+                            rerank_score=10.0,
+                        )
+                    )
 
     # 2. Semantic search for the task description
     query_vector = await embed_query(task)
@@ -458,12 +488,14 @@ async def get_agent_context(
             all_results.append(r)
 
     if not all_results:
-        return json.dumps({
-            "task": task,
-            "context": "",
-            "tokens_used": 0,
-            "message": "No relevant context found. Try a different task description or check that repos are indexed.",
-        })
+        return json.dumps(
+            {
+                "task": task,
+                "context": "",
+                "tokens_used": 0,
+                "message": "No relevant context found. Try a different task description or check that repos are indexed.",
+            }
+        )
 
     # 3. Rerank everything (except focal file chunks, which stay at the top)
     focal_chunks = [r for r in all_results if r.rerank_score == 10.0]
@@ -477,23 +509,31 @@ async def get_agent_context(
     # 4. Assemble within token budget
     ctx = assemble(final_results, token_budget=token_budget, query=task)
 
-    return json.dumps({
-        "task": task,
-        "focal_files": focal_files or [],
-        "context_text": ctx.context_text,
-        "chunks_used": ctx.chunks_used,
-        "tokens_used": ctx.tokens_used,
-        "retrieval_log": ctx.retrieval_log,
-    }, indent=2)
+    return json.dumps(
+        {
+            "task": task,
+            "focal_files": focal_files or [],
+            "context_text": ctx.context_text,
+            "chunks_used": ctx.chunks_used,
+            "tokens_used": ctx.tokens_used,
+            "retrieval_log": ctx.retrieval_log,
+        },
+        indent=2,
+    )
 
 
 # ── Tool 6: plan_implementation ───────────────────────────────────────────────
 
+
 @mcp_server.tool()
 async def plan_implementation(
-    query: Annotated[str, "Bug report, feature request, or refactoring task description (min 10 chars)"],
-    repo: Annotated[Optional[str], "Scope to 'owner/name' — defaults to all repos"] = None,
-    web_research: Annotated[bool, "Search the web for best practices before generating the plan (default true)"] = True,
+    query: Annotated[
+        str, "Bug report, feature request, or refactoring task description (min 10 chars)"
+    ],
+    repo: Annotated[str | None, "Scope to 'owner/name' — defaults to all repos"] = None,
+    web_research: Annotated[
+        bool, "Search the web for best practices before generating the plan (default true)"
+    ] = True,
 ) -> str:
     """
     Generate a complete, grounded implementation plan for a coding task.
@@ -582,12 +622,12 @@ def _format_plan_markdown(plan) -> str:
 
     # ── Implementation plan ───────────────────────────────────────────────────
     lines = [
-        f"# Implementation Plan",
+        "# Implementation Plan",
         f"**Query:** {plan.query}",
-        f"",
-        f"## Summary",
+        "",
+        "## Summary",
         plan.summary,
-        f"",
+        "",
     ]
 
     # Stack fingerprint (collapsed context — shown collapsed before gap analysis)

@@ -11,15 +11,15 @@ POST   /repos/{owner}/{name}/index — trigger a fresh full-index job via RQ
 GET    /config                    — current (masked) env configuration
 POST   /webhook/ping              — send a self-test ping to /webhook
 """
+
 from __future__ import annotations
 
 import hashlib
 import hmac
 import uuid
-from typing import Optional
 
 import httpx
-from fastapi import APIRouter, BackgroundTasks, HTTPException, status
+from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -30,11 +30,12 @@ router = APIRouter(tags=["management"])
 
 # ── Request / response models ─────────────────────────────────────────────────
 
+
 class RegisterRepoRequest(BaseModel):
     owner: str = Field(..., description="GitHub owner (org or user)")
     name: str = Field(..., description="GitHub repository name")
     branch: str = Field("main", description="Branch to track")
-    description: Optional[str] = Field(None, description="Optional description")
+    description: str | None = Field(None, description="Optional description")
 
 
 class IndexJobResponse(BaseModel):
@@ -45,6 +46,7 @@ class IndexJobResponse(BaseModel):
 
 
 # ── Helper: build and enqueue a full-index job ────────────────────────────────
+
 
 async def _enqueue_full_index(owner: str, name: str, branch: str) -> dict:
     """
@@ -73,7 +75,7 @@ async def _enqueue_full_index(owner: str, name: str, branch: str) -> dict:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"No indexable files found in {owner}/{name}@{branch}. "
-                   "Check SUPPORTED_EXTENSIONS in your config.",
+            "Check SUPPORTED_EXTENSIONS in your config.",
         )
 
     # Resolve HEAD commit metadata
@@ -129,6 +131,7 @@ async def _enqueue_full_index(owner: str, name: str, branch: str) -> dict:
 
 # ── GET /repos ────────────────────────────────────────────────────────────────
 
+
 @router.get("/repos", summary="List all registered repositories with stats")
 async def list_repos() -> JSONResponse:
     from src.storage.db import get_repo_stats
@@ -155,6 +158,7 @@ async def list_repos() -> JSONResponse:
 
 # ── POST /repos ───────────────────────────────────────────────────────────────
 
+
 @router.post("/repos", summary="Register a new repository (and optionally trigger indexing)")
 async def register_repo_endpoint(req: RegisterRepoRequest) -> JSONResponse:
     from src.storage.db import register_repo
@@ -172,13 +176,14 @@ async def register_repo_endpoint(req: RegisterRepoRequest) -> JSONResponse:
             "status": repo.status,
             "registered_at": repo.registered_at.isoformat(),
             "message": f"Registered {repo.owner}/{repo.name}. "
-                       f"Call POST /repos/{repo.owner}/{repo.name}/index to start indexing.",
+            f"Call POST /repos/{repo.owner}/{repo.name}/index to start indexing.",
         },
         status_code=status.HTTP_201_CREATED,
     )
 
 
 # ── DELETE /repos/{owner}/{name} ──────────────────────────────────────────────
+
 
 @router.delete(
     "/repos/{owner}/{name}",
@@ -204,6 +209,7 @@ async def delete_repo_endpoint(owner: str, name: str) -> JSONResponse:
 
 # ── POST /repos/{owner}/{name}/index ─────────────────────────────────────────
 
+
 @router.post(
     "/repos/{owner}/{name}/index",
     summary="Trigger a fresh full-index job for an already-registered repository",
@@ -226,6 +232,7 @@ async def trigger_index(owner: str, name: str) -> JSONResponse:
 
 # ── GET /config ───────────────────────────────────────────────────────────────
 
+
 def _mask(value: str | None, show: int = 4) -> str:
     """Show first `show` chars then *** — or 'not set' if empty."""
     if not value:
@@ -238,52 +245,59 @@ def _mask(value: str | None, show: int = 4) -> str:
 @router.get("/config", summary="Show current (masked) server configuration")
 async def get_config() -> JSONResponse:
     s = settings
-    return JSONResponse({
-        "github": {
-            "token": _mask(s.github_token),
-            "app_id": str(s.github_app_id) if s.github_app_id else "not set",
-            "app_private_key_path": s.github_app_private_key_path or "not set",
-            "webhook_secret": _mask(s.github_webhook_secret),
-            "default_branch": s.github_default_branch,
-        },
-        "database": {
-            "url": _mask(s.database_url, show=20),
-            "pool_size": s.db_pool_size,
-            "max_overflow": s.db_max_overflow,
-        },
-        "redis": {
-            "url": s.redis_url,
-        },
-        "embeddings": {
-            "voyage_api_key": _mask(s.voyage_api_key),
-            "model": s.embedding_model,
-            "dimensions": s.embedding_dimensions,
-            "batch_size": s.embedding_batch_size,
-        },
-        "auth": {
-            "jwt_secret": _mask(s.jwt_secret),
-            "jwt_expiry_hours": s.jwt_expiry_hours,
-            "oauth_client_id": _mask(s.github_oauth_client_id) if s.github_oauth_client_id else "not set",
-        },
-        "indexing": {
-            "chunk_target_tokens": s.chunk_target_tokens,
-            "chunk_overlap_tokens": s.chunk_overlap_tokens,
-            "chunk_min_tokens": s.chunk_min_tokens,
-            "context_token_budget": s.context_token_budget,
-            "supported_extensions": s.supported_extensions,
-            "ignore_patterns": s.ignore_patterns,
-        },
-        "reranker": {
-            "model": s.reranker_model,
-            "top_n": s.reranker_top_n,
-        },
-        "optional": {
-            "anthropic_api_key": _mask(s.anthropic_api_key) if s.anthropic_api_key else "not set",
-        },
-    })
+    return JSONResponse(
+        {
+            "github": {
+                "token": _mask(s.github_token),
+                "app_id": str(s.github_app_id) if s.github_app_id else "not set",
+                "app_private_key_path": s.github_app_private_key_path or "not set",
+                "webhook_secret": _mask(s.github_webhook_secret),
+                "default_branch": s.github_default_branch,
+            },
+            "database": {
+                "url": _mask(s.database_url, show=20),
+                "pool_size": s.db_pool_size,
+                "max_overflow": s.db_max_overflow,
+            },
+            "redis": {
+                "url": s.redis_url,
+            },
+            "embeddings": {
+                "voyage_api_key": _mask(s.voyage_api_key),
+                "model": s.embedding_model,
+                "dimensions": s.embedding_dimensions,
+                "batch_size": s.embedding_batch_size,
+            },
+            "auth": {
+                "jwt_secret": _mask(s.jwt_secret),
+                "jwt_expiry_hours": s.jwt_expiry_hours,
+                "oauth_client_id": _mask(s.github_oauth_client_id)
+                if s.github_oauth_client_id
+                else "not set",
+            },
+            "indexing": {
+                "chunk_target_tokens": s.chunk_target_tokens,
+                "chunk_overlap_tokens": s.chunk_overlap_tokens,
+                "chunk_min_tokens": s.chunk_min_tokens,
+                "context_token_budget": s.context_token_budget,
+                "supported_extensions": s.supported_extensions,
+                "ignore_patterns": s.ignore_patterns,
+            },
+            "reranker": {
+                "model": s.reranker_model,
+                "top_n": s.reranker_top_n,
+            },
+            "optional": {
+                "anthropic_api_key": _mask(s.anthropic_api_key)
+                if s.anthropic_api_key
+                else "not set",
+            },
+        }
+    )
 
 
 # ── POST /config/env ──────────────────────────────────────────────────────────
+
 
 class EnvUpdateRequest(BaseModel):
     updates: dict[str, str] = Field(
@@ -300,7 +314,6 @@ async def update_env(req: EnvUpdateRequest) -> JSONResponse:
     and writes it back. Does not restart the server — a restart is needed
     for changes to take effect.
     """
-    import os
     from pathlib import Path
 
     env_path = Path(".env")
@@ -332,15 +345,20 @@ async def update_env(req: EnvUpdateRequest) -> JSONResponse:
 
     env_path.write_text("\n".join(lines) + "\n")
 
-    return JSONResponse({
-        "updated": updated_keys,
-        "message": "Values written to .env. Restart the server for changes to take effect.",
-    })
+    return JSONResponse(
+        {
+            "updated": updated_keys,
+            "message": "Values written to .env. Restart the server for changes to take effect.",
+        }
+    )
 
 
 # ── POST /webhook/ping ────────────────────────────────────────────────────────
 
-@router.post("/webhook/ping", summary="Send a self-test ping to verify the webhook endpoint is live")
+
+@router.post(
+    "/webhook/ping", summary="Send a self-test ping to verify the webhook endpoint is live"
+)
 async def webhook_ping() -> JSONResponse:
     """
     Constructs a valid GitHub-style ping payload, signs it with
@@ -357,11 +375,14 @@ async def webhook_ping() -> JSONResponse:
     body = json.dumps(payload).encode()
 
     # Sign exactly as GitHub does
-    sig = "sha256=" + hmac.new(
-        settings.github_webhook_secret.encode(),
-        body,
-        hashlib.sha256,
-    ).hexdigest()
+    sig = (
+        "sha256="
+        + hmac.new(
+            settings.github_webhook_secret.encode(),
+            body,
+            hashlib.sha256,
+        ).hexdigest()
+    )
 
     delivery_id = f"self-test-{uuid.uuid4().hex[:8]}"
 
@@ -377,20 +398,23 @@ async def webhook_ping() -> JSONResponse:
                     "X-GitHub-Delivery": delivery_id,
                 },
             )
-        return JSONResponse({
-            "ok": resp.status_code == 200,
-            "status_code": resp.status_code,
-            "delivery_id": delivery_id,
-            "response": resp.json(),
-        })
-    except httpx.ConnectError:
+        return JSONResponse(
+            {
+                "ok": resp.status_code == 200,
+                "status_code": resp.status_code,
+                "delivery_id": delivery_id,
+                "response": resp.json(),
+            }
+        )
+    except httpx.ConnectError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Could not connect to /webhook — is the API server running on port 8000?",
-        )
+        ) from exc
 
 
 # ── GET /jobs ─────────────────────────────────────────────────────────────────
+
 
 @router.get("/jobs", summary="List recent RQ indexing jobs and their status")
 async def list_jobs() -> JSONResponse:
@@ -412,15 +436,17 @@ async def list_jobs() -> JSONResponse:
         for jid in job_ids[:20]:
             try:
                 j = Job.fetch(jid, connection=conn)
-                jobs.append({
-                    "id": jid,
-                    "state": state,
-                    "enqueued_at": j.enqueued_at.isoformat() if j.enqueued_at else None,
-                    "started_at": j.started_at.isoformat() if j.started_at else None,
-                    "ended_at": j.ended_at.isoformat() if j.ended_at else None,
-                    "result": j.result if state == "finished" else None,
-                    "exc_info": str(j.exc_info)[:200] if j.exc_info else None,
-                })
+                jobs.append(
+                    {
+                        "id": jid,
+                        "state": state,
+                        "enqueued_at": j.enqueued_at.isoformat() if j.enqueued_at else None,
+                        "started_at": j.started_at.isoformat() if j.started_at else None,
+                        "ended_at": j.ended_at.isoformat() if j.ended_at else None,
+                        "result": j.result if state == "finished" else None,
+                        "exc_info": str(j.exc_info)[:200] if j.exc_info else None,
+                    }
+                )
             except Exception:
                 pass
 

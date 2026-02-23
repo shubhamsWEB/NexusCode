@@ -7,12 +7,13 @@ single, formatted context string ready to inject into an LLM prompt.
 Respects a token budget — stops adding chunks once the budget is full.
 Deduplicates by chunk_id so the same chunk never appears twice.
 """
+
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from src.pipeline.chunker import count_tokens
 
@@ -26,16 +27,16 @@ _PATH_SEGMENTS = 3
 
 @dataclass
 class AssembledContext:
-    context_text: str              # formatted, ready-to-inject string
-    chunks_used: list[dict]        # metadata for each included chunk
+    context_text: str  # formatted, ready-to-inject string
+    chunks_used: list[dict]  # metadata for each included chunk
     tokens_used: int
-    retrieval_log: str             # human-readable summary of what was retrieved
+    retrieval_log: str  # human-readable summary of what was retrieved
 
 
 def assemble(
-    results: list["SearchResult"],
+    results: list[SearchResult],
     token_budget: int = 8000,
-    query: Optional[str] = None,
+    query: str | None = None,
 ) -> AssembledContext:
     """
     Greedily fill the token budget with the highest-ranked chunks.
@@ -68,20 +69,25 @@ def assemble(
         seen_ids.add(result.chunk_id)
         sections.append(section)
         tokens_used += section_tokens
-        chunks_used.append({
-            "file": result.file_path,
-            "lines": f"{result.start_line}-{result.end_line}",
-            "symbol": result.symbol_name,
-            "score": round(result.rerank_score or result.score, 4),
-            "tokens": section_tokens,
-        })
+        chunks_used.append(
+            {
+                "file": result.file_path,
+                "lines": f"{result.start_line}-{result.end_line}",
+                "symbol": result.symbol_name,
+                "score": round(result.rerank_score or result.score, 4),
+                "tokens": section_tokens,
+            }
+        )
 
     context_text = "\n".join(sections)
 
     retrieval_log = _build_log(query, chunks_used, tokens_used, token_budget)
     logger.info(
         "assembler: %d/%d chunks fit in %d/%d token budget",
-        len(chunks_used), len(results), tokens_used, token_budget,
+        len(chunks_used),
+        len(results),
+        tokens_used,
+        token_budget,
     )
 
     return AssembledContext(
@@ -94,11 +100,11 @@ def assemble(
 
 # ── Formatting helpers ────────────────────────────────────────────────────────
 
-def _format_chunk(result: "SearchResult") -> str:
+
+def _format_chunk(result: SearchResult) -> str:
     short_path = _short_path(result.file_path)
     header_parts = [
-        f"File: {short_path}  [lines {result.start_line}-{result.end_line}]"
-        f"  ({result.language})"
+        f"File: {short_path}  [lines {result.start_line}-{result.end_line}]  ({result.language})"
     ]
     if result.scope_chain:
         header_parts.append(f"Scope: {result.scope_chain}")
@@ -106,7 +112,6 @@ def _format_chunk(result: "SearchResult") -> str:
     score = result.rerank_score or result.score
     header_parts.append(f"Score: {score:.4f}")
 
-    repo = f"{result.repo_owner}/{result.repo_name}"
     commit = result.commit_sha[:7] if result.commit_sha else ""
     if result.commit_author or commit:
         parts = []
@@ -128,7 +133,7 @@ def _short_path(file_path: str) -> str:
 
 
 def _build_log(
-    query: Optional[str],
+    query: str | None,
     chunks_used: list[dict],
     tokens_used: int,
     token_budget: int,

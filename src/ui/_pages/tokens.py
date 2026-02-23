@@ -29,7 +29,11 @@ def render():
             help="Leave empty to grant access to all indexed repositories.",
         )
         expiry_hours = st.number_input(
-            "Expiry (hours)", min_value=1, max_value=168, value=8, step=1,
+            "Expiry (hours)",
+            min_value=1,
+            max_value=168,
+            value=8,
+            step=1,
             help="Token will expire after this many hours. Max 7 days (168h).",
         )
         submitted = st.form_submit_button("Issue Token", type="primary")
@@ -80,9 +84,7 @@ def render():
 
     api_url = st.session_state.get("api_url", "http://localhost:8000")
 
-    tab_claude, tab_python, tab_rest = st.tabs(
-        ["Claude Desktop", "Python MCP Client", "REST API"]
-    )
+    tab_claude, tab_python, tab_rest = st.tabs(["Claude Desktop", "Python MCP Client", "REST API"])
 
     with tab_claude:
         st.markdown(
@@ -134,7 +136,7 @@ async with sse_client("{api_url}/mcp/sse") as (read, write):
         st.caption("Install: `pip install mcp`")
 
     with tab_rest:
-        rest_snippet = f'''\
+        rest_snippet = f"""\
 # Search (no auth required on default config)
 curl -s -X POST {api_url}/search \\
   -H "Content-Type: application/json" \\
@@ -147,7 +149,7 @@ curl -s {api_url}/health
 curl -s -X POST {api_url}/auth/token \\
   -H "Content-Type: application/json" \\
   -d \'{{"sub": "my-agent", "repos": []}}\'
-'''
+"""
         st.code(rest_snippet, language="bash")
 
     st.divider()

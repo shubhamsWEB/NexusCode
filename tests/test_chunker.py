@@ -1,12 +1,12 @@
 """
 Unit tests for the chunker — no network, no DB required.
 """
-import pytest
 
 from src.pipeline.chunker import RawChunk, _greedy_merge, chunk_file, count_tokens
-from src.pipeline.parser import ParsedFile, ParsedSymbol
+from src.pipeline.parser import ParsedFile
 
 # ── count_tokens ──────────────────────────────────────────────────────────────
+
 
 def test_count_tokens_basic():
     assert count_tokens("hello world") > 0
@@ -21,8 +21,10 @@ def test_count_tokens_scales_with_length():
 
 # ── Chunk size constraint ─────────────────────────────────────────────────────
 
+
 def _make_parsed(source: str, with_symbols: bool = True) -> ParsedFile:
     from src.pipeline.parser import parse_file
+
     return parse_file("test.py", source)
 
 
@@ -50,10 +52,7 @@ def test_no_chunk_exceeds_target():
 
 def test_tiny_functions_merged():
     """Adjacent tiny functions should be merged into a single chunk."""
-    source = "\n".join(
-        f"def tiny_{i}():\n    return {i}\n"
-        for i in range(20)
-    )
+    source = "\n".join(f"def tiny_{i}():\n    return {i}\n" for i in range(20))
     parsed = _make_parsed(source)
     chunks = chunk_file(parsed)
 
@@ -72,10 +71,7 @@ def test_single_function_single_chunk():
 
 
 def test_chunk_preserves_line_numbers():
-    source = (
-        "def first():\n    pass\n\n"
-        "def second():\n    pass\n"
-    )
+    source = "def first():\n    pass\n\ndef second():\n    pass\n"
     parsed = _make_parsed(source)
     chunks = chunk_file(parsed)
     # After merging, at minimum the lines should be set
@@ -95,11 +91,16 @@ def test_file_with_no_symbols_still_chunked():
 
 # ── Greedy merge ──────────────────────────────────────────────────────────────
 
+
 def _make_chunk(start: int, end: int, content: str, tok: int | None = None) -> RawChunk:
     return RawChunk(
-        file_path="f.py", language="python",
-        symbol_name=None, symbol_kind=None, scope_chain=None,
-        start_line=start, end_line=end,
+        file_path="f.py",
+        language="python",
+        symbol_name=None,
+        symbol_kind=None,
+        scope_chain=None,
+        start_line=start,
+        end_line=end,
         raw_content=content,
         token_count=tok or count_tokens(content),
     )
@@ -113,7 +114,7 @@ def test_greedy_merge_adjacent_small():
 
 def test_greedy_merge_does_not_exceed_target():
     # Each chunk is 300 tokens — should NOT merge (600 > 512)
-    big_text = "x " * 150   # ~300 tokens
+    big_text = "x " * 150  # ~300 tokens
     chunks = [_make_chunk(1, 5, big_text, 300), _make_chunk(6, 10, big_text, 300)]
     merged = _greedy_merge(chunks, target=512)
     assert len(merged) == 2

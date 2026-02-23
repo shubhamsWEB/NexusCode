@@ -5,14 +5,15 @@ All fixtures here are available to every test file without any import.
 External dependencies (DB, Redis, Voyage AI, GitHub) are fully mocked so
 the test suite runs offline with no live services.
 """
+
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-
 # ── Sample data factories ─────────────────────────────────────────────────────
+
 
 @pytest.fixture
 def sample_python_code() -> str:
@@ -46,7 +47,7 @@ def authenticate(token: str) -> bool:
 @pytest.fixture
 def sample_typescript_code() -> str:
     """Minimal TypeScript source for multi-language parser tests."""
-    return '''\
+    return """\
 interface User {
   id: number;
   name: string;
@@ -62,7 +63,7 @@ export async function getUser(id: number): Promise<User | null> {
 export function validateEmail(email: string): boolean {
   return /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email);
 }
-'''
+"""
 
 
 @pytest.fixture
@@ -121,13 +122,12 @@ def sample_repo_payload() -> dict:
 
 # ── Mock services ─────────────────────────────────────────────────────────────
 
+
 @pytest.fixture
 def mock_voyage_client():
     """Mock Voyage AI client that returns deterministic 1536-dim embeddings."""
     client = MagicMock()
-    client.embed.return_value = MagicMock(
-        embeddings=[[0.1] * 1536]
-    )
+    client.embed.return_value = MagicMock(embeddings=[[0.1] * 1536])
     return client
 
 
@@ -147,9 +147,7 @@ def mock_db_session():
 def mock_github_fetcher():
     """Mock GitHub fetcher that returns a small, deterministic file tree."""
     fetcher = AsyncMock()
-    fetcher.get_file_content = AsyncMock(
-        return_value="def hello():\n    return 'world'\n"
-    )
+    fetcher.get_file_content = AsyncMock(return_value="def hello():\n    return 'world'\n")
     fetcher.list_files = AsyncMock(
         return_value=[
             {"path": "src/main.py", "sha": "aabbcc", "type": "blob"},

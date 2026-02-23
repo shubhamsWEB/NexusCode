@@ -3,11 +3,12 @@ GitHub REST API client.
 Fetches raw file content and directory trees at specific commit SHAs.
 No local git clone — everything goes through the API.
 """
+
 from __future__ import annotations
 
 import base64
 import logging
-from typing import AsyncIterator, Optional
+from collections.abc import AsyncIterator
 
 import httpx
 
@@ -44,12 +45,13 @@ def _make_client() -> httpx.AsyncClient:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+
 async def fetch_file(
     owner: str,
     repo: str,
     path: str,
     ref: str,
-) -> Optional[tuple[str, str]]:
+) -> tuple[str, str] | None:
     """
     Fetch a single file's content from GitHub at a specific ref (commit SHA or branch).
 
@@ -118,12 +120,14 @@ async def fetch_full_tree(
     if data.get("truncated"):
         logger.warning(
             "Tree response truncated for %s/%s — repo may be too large for single tree call",
-            owner, repo,
+            owner,
+            repo,
         )
 
     return [
-        item for item in data.get("tree", [])
-        if item.get("type") == "blob"   # skip trees (directories)
+        item
+        for item in data.get("tree", [])
+        if item.get("type") == "blob"  # skip trees (directories)
     ]
 
 
@@ -172,7 +176,11 @@ async def fetch_indexable_files(
 
     logger.info(
         "fetch_indexable_files: %d/%d files to index for %s/%s@%s",
-        len(indexable), len(all_paths), owner, repo, ref,
+        len(indexable),
+        len(all_paths),
+        owner,
+        repo,
+        ref,
     )
 
     for path in indexable:

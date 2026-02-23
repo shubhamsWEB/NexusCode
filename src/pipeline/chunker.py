@@ -7,11 +7,11 @@ Converts a ParsedFile into a list of RawChunks that:
   - Are at least MIN_TOKENS (50) — adjacent small nodes are merged
   - Fall back to sliding window for files with no symbols
 """
+
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Optional
 
 import tiktoken
 
@@ -30,13 +30,14 @@ def count_tokens(text: str) -> int:
 
 # ── Output dataclass ──────────────────────────────────────────────────────────
 
+
 @dataclass
 class RawChunk:
     file_path: str
     language: str
-    symbol_name: Optional[str]       # "UserService.authenticate"
-    symbol_kind: Optional[str]       # "function" | "class" | "method" | None
-    scope_chain: Optional[str]       # "UserService > authenticate"
+    symbol_name: str | None  # "UserService.authenticate"
+    symbol_kind: str | None  # "function" | "class" | "method" | None
+    scope_chain: str | None  # "UserService > authenticate"
     start_line: int
     end_line: int
     raw_content: str
@@ -49,6 +50,7 @@ class RawChunk:
 
 
 # ── Core algorithm ────────────────────────────────────────────────────────────
+
 
 def chunk_file(parsed: ParsedFile) -> list[RawChunk]:
     """
@@ -63,8 +65,12 @@ def chunk_file(parsed: ParsedFile) -> list[RawChunk]:
     else:
         # No symbols found — slide over the raw content
         chunks = _sliding_window(
-            parsed.file_path, parsed.language, parsed.source,
-            parsed.imports, target, overlap,
+            parsed.file_path,
+            parsed.language,
+            parsed.source,
+            parsed.imports,
+            target,
+            overlap,
         )
 
     # Greedy merge pass: combine adjacent tiny chunks
@@ -72,7 +78,8 @@ def chunk_file(parsed: ParsedFile) -> list[RawChunk]:
 
     logger.debug(
         "chunk_file: %s → %d chunks (min=%d max=%d avg=%d tokens)",
-        parsed.file_path, len(merged),
+        parsed.file_path,
+        len(merged),
         min(c.token_count for c in merged) if merged else 0,
         max(c.token_count for c in merged) if merged else 0,
         sum(c.token_count for c in merged) // max(len(merged), 1),
@@ -81,6 +88,7 @@ def chunk_file(parsed: ParsedFile) -> list[RawChunk]:
 
 
 # ── Symbol processing ─────────────────────────────────────────────────────────
+
 
 def _process_symbols(
     parsed: ParsedFile,
@@ -103,18 +111,20 @@ def _process_symbols(
             header = _class_header(sym, parsed.source)
             header_tok = count_tokens(header)
             if header_tok > 0:
-                chunks.append(RawChunk(
-                    file_path=parsed.file_path,
-                    language=parsed.language,
-                    symbol_name=sym.qualified_name,
-                    symbol_kind=sym.kind,
-                    scope_chain=sym.name,
-                    start_line=sym.start_line,
-                    end_line=min(sym.start_line + 10, sym.end_line),
-                    raw_content=header,
-                    imports=parsed.imports,
-                    token_count=header_tok,
-                ))
+                chunks.append(
+                    RawChunk(
+                        file_path=parsed.file_path,
+                        language=parsed.language,
+                        symbol_name=sym.qualified_name,
+                        symbol_kind=sym.kind,
+                        scope_chain=sym.name,
+                        start_line=sym.start_line,
+                        end_line=min(sym.start_line + 10, sym.end_line),
+                        raw_content=header,
+                        imports=parsed.imports,
+                        token_count=header_tok,
+                    )
+                )
 
             for child in sym.children:
                 child_tok = count_tokens(child.source)
@@ -122,25 +132,37 @@ def _process_symbols(
                     chunks.append(_symbol_to_chunk(child, parsed))
                 else:
                     # Method is itself too large — sliding window over it
-                    chunks.extend(_sliding_window(
-                        parsed.file_path, parsed.language, child.source,
-                        parsed.imports, target, overlap,
-                        symbol_name=child.qualified_name,
-                        symbol_kind=child.kind,
-                        scope_chain=_scope_chain(child),
-                        base_line=child.start_line - 1,
-                    ))
+                    chunks.extend(
+                        _sliding_window(
+                            parsed.file_path,
+                            parsed.language,
+                            child.source,
+                            parsed.imports,
+                            target,
+                            overlap,
+                            symbol_name=child.qualified_name,
+                            symbol_kind=child.kind,
+                            scope_chain=_scope_chain(child),
+                            base_line=child.start_line - 1,
+                        )
+                    )
 
         else:
             # Too large, no children — sliding window
-            chunks.extend(_sliding_window(
-                parsed.file_path, parsed.language, sym.source,
-                parsed.imports, target, overlap,
-                symbol_name=sym.qualified_name,
-                symbol_kind=sym.kind,
-                scope_chain=_scope_chain(sym),
-                base_line=sym.start_line - 1,
-            ))
+            chunks.extend(
+                _sliding_window(
+                    parsed.file_path,
+                    parsed.language,
+                    sym.source,
+                    parsed.imports,
+                    target,
+                    overlap,
+                    symbol_name=sym.qualified_name,
+                    symbol_kind=sym.kind,
+                    scope_chain=_scope_chain(sym),
+                    base_line=sym.start_line - 1,
+                )
+            )
 
     return chunks
 
@@ -168,11 +190,12 @@ def _scope_chain(sym: ParsedSymbol) -> str:
 def _class_header(sym: ParsedSymbol, full_source: str) -> str:
     """Extract the class signature + docstring (up to 10 lines)."""
     lines = sym.source.splitlines()
-    header_lines = lines[:min(10, len(lines))]
+    header_lines = lines[: min(10, len(lines))]
     return "\n".join(header_lines)
 
 
 # ── Sliding window fallback ───────────────────────────────────────────────────
+
 
 def _sliding_window(
     file_path: str,
@@ -181,16 +204,15 @@ def _sliding_window(
     imports: list[str],
     target: int,
     overlap: int,
-    symbol_name: Optional[str] = None,
-    symbol_kind: Optional[str] = None,
-    scope_chain: Optional[str] = None,
+    symbol_name: str | None = None,
+    symbol_kind: str | None = None,
+    scope_chain: str | None = None,
     base_line: int = 0,
 ) -> list[RawChunk]:
     """Split source text by token budget with overlap. Used as a last resort."""
     tokens = _ENCODER.encode(source, disallowed_special=())
     stride = target - overlap
     chunks: list[RawChunk] = []
-    lines = source.splitlines()
 
     i = 0
     while i < len(tokens):
@@ -202,24 +224,27 @@ def _sliding_window(
         start_line = base_line + source[:chars_before].count("\n") + 1
         end_line = start_line + window_text.count("\n")
 
-        chunks.append(RawChunk(
-            file_path=file_path,
-            language=language,
-            symbol_name=symbol_name,
-            symbol_kind=symbol_kind,
-            scope_chain=scope_chain,
-            start_line=start_line,
-            end_line=end_line,
-            raw_content=window_text,
-            imports=imports,
-            token_count=len(window_tokens),
-        ))
+        chunks.append(
+            RawChunk(
+                file_path=file_path,
+                language=language,
+                symbol_name=symbol_name,
+                symbol_kind=symbol_kind,
+                scope_chain=scope_chain,
+                start_line=start_line,
+                end_line=end_line,
+                raw_content=window_text,
+                imports=imports,
+                token_count=len(window_tokens),
+            )
+        )
         i += stride
 
     return chunks
 
 
 # ── Greedy merge pass ─────────────────────────────────────────────────────────
+
 
 def _greedy_merge(chunks: list[RawChunk], target: int) -> list[RawChunk]:
     """

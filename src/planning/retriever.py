@@ -12,7 +12,7 @@ Phase 5  — caller context for the top-3 unique symbols
 Phase 6  — collect web research notes (awaits the Phase-0b task)
 
 The assembled context is split across three token-budget slices:
-  65 %  primary chunks  (phases 2–3)
+  65 %  primary chunks  (phases 2-3)
   20 %  caller context  (phase 5)
   15 %  expansion       (second semantic pass)
 
@@ -20,11 +20,11 @@ Phase 0a completes first (fast, ~50 ms) so the web researcher gets the
 actual stack (installed packages, language, framework) before searching.
 Phase 0b then runs in parallel with phases 1-5 — zero extra wall-clock time.
 """
+
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 
 from src.config import settings
 
@@ -33,27 +33,29 @@ logger = logging.getLogger(__name__)
 
 # ── Output dataclass ──────────────────────────────────────────────────────────
 
+
 @dataclass
 class PlanningContext:
-    primary_context: str          # formatted code chunks (phases 2-3)
-    file_maps: str                # structural file summaries (phase 4)
-    caller_contexts: str          # call-site context (phase 5)
-    expansion_context: str        # second-pass symbol context
-    component_context: str        # full component files for improve/analysis queries
-    stack_fingerprint: str        # phase 0a — installed packages, language, framework
-    web_research_notes: str       # phase 0b — gap-focused web research (may be "")
-    is_improvement_query: bool    # True → query is about improving/reviewing something
-    chunks_used: list[dict]       # chunk metadata for telemetry
+    primary_context: str  # formatted code chunks (phases 2-3)
+    file_maps: str  # structural file summaries (phase 4)
+    caller_contexts: str  # call-site context (phase 5)
+    expansion_context: str  # second-pass symbol context
+    component_context: str  # full component files for improve/analysis queries
+    stack_fingerprint: str  # phase 0a — installed packages, language, framework
+    web_research_notes: str  # phase 0b — gap-focused web research (may be "")
+    is_improvement_query: bool  # True → query is about improving/reviewing something
+    chunks_used: list[dict]  # chunk metadata for telemetry
     tokens_used: int
     retrieval_log: str
 
 
 # ── Public entry point ────────────────────────────────────────────────────────
 
+
 async def retrieve_planning_context(
     query: str,
-    repo_owner: Optional[str] = None,
-    repo_name: Optional[str] = None,
+    repo_owner: str | None = None,
+    repo_name: str | None = None,
     web_research: bool = True,
 ) -> PlanningContext:
     """
@@ -71,8 +73,8 @@ async def retrieve_planning_context(
     from src.retrieval.searcher import embed_query, search
 
     total_budget = settings.planning_context_budget
-    primary_budget   = int(total_budget * 0.65)
-    caller_budget    = int(total_budget * 0.20)
+    primary_budget = int(total_budget * 0.65)
+    caller_budget = int(total_budget * 0.20)
     expansion_budget = int(total_budget * 0.15)
 
     # ── Phase 0a: classify query intent + extract stack fingerprint ─────────
@@ -97,6 +99,7 @@ async def retrieve_planning_context(
     effective_web_research = web_research and not is_improvement
     if effective_web_research:
         from src.planning.web_researcher import research_implementation
+
         logger.info("planning retriever: starting stack-aware web research (background)")
         web_research_task = asyncio.create_task(
             research_implementation(query, stack_context=stack_fingerprint)
@@ -134,9 +137,7 @@ async def retrieve_planning_context(
     # ── Phase 5: caller context for top-3 unique symbols ─────────────────────
     top_symbols = [r.symbol_name for r in candidates[:5] if r.symbol_name]
     top_symbols = list(dict.fromkeys(top_symbols))[:3]  # deduplicate, keep order
-    caller_ctx_text = await _get_caller_contexts(
-        top_symbols, caller_budget, repo_owner, repo_name
-    )
+    caller_ctx_text = await _get_caller_contexts(top_symbols, caller_budget, repo_owner, repo_name)
 
     # ── Second semantic pass using discovered symbol names ───────────────────
     expansion_results = []
@@ -191,7 +192,9 @@ async def retrieve_planning_context(
         try:
             web_research_notes = await web_research_task
             if web_research_notes:
-                logger.info("planning retriever: web research complete (%d chars)", len(web_research_notes))
+                logger.info(
+                    "planning retriever: web research complete (%d chars)", len(web_research_notes)
+                )
             else:
                 logger.info("planning retriever: web research returned empty (continuing)")
         except Exception as exc:
@@ -236,18 +239,44 @@ async def retrieve_planning_context(
 
 _IMPROVEMENT_PATTERNS = (
     # "how can I make X better/faster/smarter"
-    "how can i", "how to improve", "how do i improve", "how to make",
-    "make it better", "make the", "make this", "make /",
+    "how can i",
+    "how to improve",
+    "how do i improve",
+    "how to make",
+    "make it better",
+    "make the",
+    "make this",
+    "make /",
     # "improve / enhance / optimize / review / audit"
-    "improve", "enhance", "optimize", "optimise", "review", "audit",
-    "refactor", "redesign", "rethink", "restructure",
+    "improve",
+    "enhance",
+    "optimize",
+    "optimise",
+    "review",
+    "audit",
+    "refactor",
+    "redesign",
+    "rethink",
+    "restructure",
     # "what's wrong with / what are the weaknesses of"
-    "what's wrong", "whats wrong", "what are the issues", "what are the weaknesses",
-    "what are the problems", "what could be better", "what can be improved",
+    "what's wrong",
+    "whats wrong",
+    "what are the issues",
+    "what are the weaknesses",
+    "what are the problems",
+    "what could be better",
+    "what can be improved",
     # explicit quality queries
-    "world class", "production ready", "better response", "better quality",
-    "response quality", "context aware", "smarter", "more accurate",
+    "world class",
+    "production ready",
+    "better response",
+    "better quality",
+    "response quality",
+    "context aware",
+    "smarter",
+    "more accurate",
 )
+
 
 def _is_improvement_query(query: str) -> bool:
     """
@@ -264,11 +293,12 @@ def _is_improvement_query(query: str) -> bool:
 
 # ── Component-aware full retrieval ────────────────────────────────────────────
 
+
 async def _fetch_component_context(
     query: str,
     candidates: list,
-    repo_owner: Optional[str],
-    repo_name: Optional[str],
+    repo_owner: str | None,
+    repo_name: str | None,
     token_budget: int,
 ) -> str:
     """
@@ -283,8 +313,9 @@ async def _fetch_component_context(
         return ""
 
     from sqlalchemy import text
-    from src.storage.db import AsyncSessionLocal
+
     from src.pipeline.chunker import count_tokens
+    from src.storage.db import AsyncSessionLocal
 
     # Use the top unique files from semantic candidates as the component scope
     component_files = _unique_paths(candidates, limit=5)
@@ -375,9 +406,10 @@ async def _fetch_component_context(
 
 # ── Phase 0a helper: stack fingerprint ────────────────────────────────────────
 
+
 async def _extract_stack_fingerprint(
-    repo_owner: Optional[str],
-    repo_name: Optional[str],
+    repo_owner: str | None,
+    repo_name: str | None,
 ) -> str:
     """
     Build a compact picture of what the codebase already has installed and
@@ -393,6 +425,7 @@ async def _extract_stack_fingerprint(
     Returns a compact markdown string or "" if the DB is unreachable.
     """
     from sqlalchemy import text
+
     from src.storage.db import AsyncSessionLocal
 
     params: dict = {}
@@ -455,18 +488,16 @@ async def _extract_stack_fingerprint(
 
     try:
         async with AsyncSessionLocal() as session:
-            dep_rows    = (await session.execute(dep_sql,    params)).mappings().all()
+            dep_rows = (await session.execute(dep_sql, params)).mappings().all()
             import_rows = (await session.execute(import_sql, params)).mappings().all()
-            lang_rows   = (await session.execute(lang_sql,   params)).mappings().all()
+            lang_rows = (await session.execute(lang_sql, params)).mappings().all()
     except Exception as exc:
         logger.warning("stack fingerprint: DB query failed: %s", exc)
         return ""
 
     # ── Build language summary ────────────────────────────────────────────────
     if lang_rows:
-        lang_summary = ", ".join(
-            f"{r['language']} ({r['chunk_count']} chunks)" for r in lang_rows
-        )
+        lang_summary = ", ".join(f"{r['language']} ({r['chunk_count']} chunks)" for r in lang_rows)
         parts.append(f"**Languages detected:** {lang_summary}")
 
     # ── Build dependency file section ─────────────────────────────────────────
@@ -503,17 +534,17 @@ async def _extract_stack_fingerprint(
 
     return (
         "## Codebase Stack Fingerprint\n"
-        "_What is already installed and actively used in this codebase._\n\n"
-        + "\n\n".join(parts)
+        "_What is already installed and actively used in this codebase._\n\n" + "\n\n".join(parts)
     )
 
 
 # ── Phase 4 helper: file structure maps ───────────────────────────────────────
 
+
 async def _get_file_structure_maps(
     file_paths: list[str],
-    repo_owner: Optional[str],
-    repo_name: Optional[str],
+    repo_owner: str | None,
+    repo_name: str | None,
 ) -> str:
     """
     For each file path, fetch all its symbols and produce a compact
@@ -523,6 +554,7 @@ async def _get_file_structure_maps(
         return ""
 
     from sqlalchemy import text
+
     from src.storage.db import AsyncSessionLocal
 
     sections: list[str] = []
@@ -566,11 +598,12 @@ async def _get_file_structure_maps(
 
 # ── Phase 5 helper: caller context ────────────────────────────────────────────
 
+
 async def _get_caller_contexts(
     symbols: list[str],
     token_budget: int,
-    repo_owner: Optional[str],
-    repo_name: Optional[str],
+    repo_owner: str | None,
+    repo_name: str | None,
 ) -> str:
     """
     For each symbol, find up to 3 call-sites using keyword search.
@@ -595,9 +628,11 @@ async def _get_caller_contexts(
             )
             # Filter definition chunks (lines that start with def/class/function)
             callers = [
-                r for r in results
+                r
+                for r in results
                 if any(
-                    sym in line and not line.strip().startswith(
+                    sym in line
+                    and not line.strip().startswith(
                         ("def ", "class ", "function ", "const ", "export ", "async def ")
                     )
                     for line in r.raw_content.split("\n")
@@ -608,10 +643,10 @@ async def _get_caller_contexts(
                 block = f"## Callers of `{sym}`\n"
                 for r in callers:
                     block += (
-                        f"  {r.file_path}  L{r.start_line}-{r.end_line}\n"
-                        f"  {r.raw_content[:300]}\n"
+                        f"  {r.file_path}  L{r.start_line}-{r.end_line}\n  {r.raw_content[:300]}\n"
                     )
                 from src.pipeline.chunker import count_tokens
+
                 block_tokens = count_tokens(block)
                 if tokens_used + block_tokens > token_budget:
                     break
@@ -625,6 +660,7 @@ async def _get_caller_contexts(
 
 
 # ── Utility ───────────────────────────────────────────────────────────────────
+
 
 def _unique_paths(candidates, limit: int) -> list[str]:
     seen: set[str] = set()

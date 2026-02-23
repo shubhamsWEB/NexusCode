@@ -4,6 +4,7 @@ Planning Mode dashboard page.
 Sends a query to POST /plan and renders the ImplementationPlan as a
 structured, colour-coded document — similar to Cursor's planning view.
 """
+
 from __future__ import annotations
 
 import os
@@ -16,15 +17,14 @@ import streamlit as st
 
 from src.ui.helpers import api_get, api_post
 
-
 # ── Severity colours ──────────────────────────────────────────────────────────
 _SEVERITY_COLOR = {"low": "🟡", "medium": "🟠", "high": "🔴"}
 _ACTION_COLOR = {
-    "create":  "🟢",
-    "modify":  "🔵",
-    "delete":  "🔴",
-    "rename":  "🟡",
-    "move":    "🟡",
+    "create": "🟢",
+    "modify": "🔵",
+    "delete": "🔴",
+    "rename": "🟡",
+    "move": "🟡",
 }
 
 
@@ -139,6 +139,7 @@ def render():
 
 # ── Shared metadata bar ────────────────────────────────────────────────────────
 
+
 def _render_metadata_bar(plan: dict, elapsed: float):
     st.success(f"Response generated in **{elapsed:.1f}s**")
     meta = plan.get("metadata") or {}
@@ -154,6 +155,7 @@ def _render_metadata_bar(plan: dict, elapsed: float):
 
 
 # ── Answer renderer (questions / explanations / analysis) ─────────────────────
+
 
 def _render_answer(plan: dict, elapsed: float):
     """Render a conversational answer — rich markdown, no files/steps/risks."""
@@ -185,6 +187,7 @@ def _render_answer(plan: dict, elapsed: float):
 
 # ── Analysis renderer (improvement / review / audit queries) ──────────────────
 
+
 def _render_analysis(plan: dict, elapsed: float):
     """Render a deep technical analysis — world-class architect review with grounded suggestions."""
     _render_metadata_bar(plan, elapsed)
@@ -215,6 +218,7 @@ def _render_analysis(plan: dict, elapsed: float):
 
 # ── Plan renderer (implementation tasks) ──────────────────────────────────────
 
+
 def _render_plan(plan: dict, elapsed: float):
     _render_metadata_bar(plan, elapsed)
 
@@ -235,7 +239,9 @@ def _render_plan(plan: dict, elapsed: float):
     # ── Stack Fingerprint (collapsed by default — it's informational) ─────────
     stack_fp = meta.get("stack_fingerprint", "")
     if stack_fp:
-        with st.expander("📦 Codebase Stack Fingerprint (what's already installed)", expanded=False):
+        with st.expander(
+            "📦 Codebase Stack Fingerprint (what's already installed)", expanded=False
+        ):
             st.markdown(stack_fp)
         st.divider()
 

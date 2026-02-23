@@ -2,11 +2,12 @@
 Main FastAPI application.
 Mounts: webhook receiver, health check, search endpoint, MCP server (Day 6).
 """
+
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -34,6 +35,7 @@ app.mount("/mcp", mcp_server.sse_app())
 
 # ── Health ────────────────────────────────────────────────────────────────────
 
+
 @app.get("/health", tags=["ops"])
 async def health() -> JSONResponse:
     stats = await get_index_stats()
@@ -42,10 +44,11 @@ async def health() -> JSONResponse:
 
 # ── Search ────────────────────────────────────────────────────────────────────
 
+
 class SearchRequest(BaseModel):
     query: str = Field(..., min_length=1, description="Natural language or identifier query")
-    repo: Optional[str] = Field(None, description="Scope to a repo: 'owner/name'")
-    language: Optional[str] = Field(None, description="Filter by language: python, typescript…")
+    repo: str | None = Field(None, description="Scope to a repo: 'owner/name'")
+    language: str | None = Field(None, description="Filter by language: python, typescript…")
     top_k: int = Field(5, ge=1, le=20, description="Number of results to return")
     mode: Literal["semantic", "keyword", "hybrid"] = Field("hybrid")
     rerank: bool = Field(True, description="Apply cross-encoder reranking")
@@ -89,41 +92,45 @@ async def search_endpoint(req: SearchRequest) -> JSONResponse:
     # Assemble context
     ctx = assemble(results, token_budget=req.token_budget, query=req.query)
 
-    return JSONResponse({
-        "query": req.query,
-        "mode": req.mode,
-        "results": [
-            {
-                "file": r.file_path,
-                "repo": f"{r.repo_owner}/{r.repo_name}",
-                "symbol": r.symbol_name,
-                "kind": r.symbol_kind,
-                "scope": r.scope_chain,
-                "lines": f"{r.start_line}-{r.end_line}",
-                "language": r.language,
-                "score": round(r.score, 4),
-                "rerank_score": round(r.rerank_score, 4),
-                "commit": r.commit_sha[:7],
-                "preview": r.raw_content[:300],
-            }
-            for r in results
-        ],
-        "context": ctx.context_text,
-        "tokens_used": ctx.tokens_used,
-        "retrieval_log": ctx.retrieval_log,
-    })
+    return JSONResponse(
+        {
+            "query": req.query,
+            "mode": req.mode,
+            "results": [
+                {
+                    "file": r.file_path,
+                    "repo": f"{r.repo_owner}/{r.repo_name}",
+                    "symbol": r.symbol_name,
+                    "kind": r.symbol_kind,
+                    "scope": r.scope_chain,
+                    "lines": f"{r.start_line}-{r.end_line}",
+                    "language": r.language,
+                    "score": round(r.score, 4),
+                    "rerank_score": round(r.rerank_score, 4),
+                    "commit": r.commit_sha[:7],
+                    "preview": r.raw_content[:300],
+                }
+                for r in results
+            ],
+            "context": ctx.context_text,
+            "tokens_used": ctx.tokens_used,
+            "retrieval_log": ctx.retrieval_log,
+        }
+    )
 
 
 # ── Webhook events feed ───────────────────────────────────────────────────────
 
+
 @app.get("/events", tags=["ops"])
 async def list_events(
     limit: int = 20,
-    repo_owner: Optional[str] = None,
-    repo_name: Optional[str] = None,
+    repo_owner: str | None = None,
+    repo_name: str | None = None,
 ) -> JSONResponse:
     """Return recent webhook events ordered by received_at DESC."""
     from sqlalchemy import text
+
     from src.storage.db import AsyncSessionLocal
 
     where_parts = []
@@ -162,10 +169,12 @@ async def list_events(
 
 # ── Stats endpoints ───────────────────────────────────────────────────────────
 
+
 @app.get("/stats/repos", tags=["ops"])
 async def stats_repos() -> JSONResponse:
     """Per-repository chunk/file breakdown."""
     from sqlalchemy import text
+
     from src.storage.db import AsyncSessionLocal
 
     sql = text("""
@@ -194,6 +203,7 @@ async def stats_repos() -> JSONResponse:
 async def stats_recent_files(limit: int = 20) -> JSONResponse:
     """Recently indexed files ordered by indexed_at DESC."""
     from sqlalchemy import text
+
     from src.storage.db import AsyncSessionLocal
 
     sql = text("""
@@ -220,6 +230,7 @@ async def stats_recent_files(limit: int = 20) -> JSONResponse:
 async def stats_chunk_distribution() -> JSONResponse:
     """Token-count bucket distribution for active chunks."""
     from sqlalchemy import text
+
     from src.storage.db import AsyncSessionLocal
 
     sql = text("""
@@ -243,6 +254,7 @@ async def stats_chunk_distribution() -> JSONResponse:
 
 
 # ── Root ──────────────────────────────────────────────────────────────────────
+
 
 @app.get("/", include_in_schema=False)
 async def root():

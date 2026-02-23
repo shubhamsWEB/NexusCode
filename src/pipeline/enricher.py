@@ -22,15 +22,15 @@ AFTER:
     def validate_token(self, token: str) -> bool:
         ...
 """
+
 from __future__ import annotations
 
 import hashlib
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
-from src.pipeline.chunker import RawChunk, count_tokens
+from src.pipeline.chunker import RawChunk
 
 logger = logging.getLogger(__name__)
 
@@ -46,18 +46,18 @@ class EnrichedChunk:
     # Passthrough from RawChunk
     file_path: str
     language: str
-    symbol_name: Optional[str]
-    symbol_kind: Optional[str]
-    scope_chain: Optional[str]
+    symbol_name: str | None
+    symbol_kind: str | None
+    scope_chain: str | None
     start_line: int
     end_line: int
     raw_content: str
     imports: list[str]
-    token_count: int         # token count of raw_content
+    token_count: int  # token count of raw_content
 
     # Enriched
-    enriched_content: str    # what gets embedded
-    chunk_id: str            # SHA-256(enriched_content) — used as DB primary key
+    enriched_content: str  # what gets embedded
+    chunk_id: str  # SHA-256(enriched_content) — used as DB primary key
 
 
 def enrich_chunk(chunk: RawChunk) -> EnrichedChunk:
@@ -93,6 +93,7 @@ def enrich_chunks(chunks: list[RawChunk]) -> list[EnrichedChunk]:
 
 # ── Header builder ────────────────────────────────────────────────────────────
 
+
 def _build_header(chunk: RawChunk) -> str:
     """
     Construct the metadata header prepended to each chunk.
@@ -123,7 +124,7 @@ def _build_header(chunk: RawChunk) -> str:
         lines.append("Key imports:")
         lines.extend(relevant[:_MAX_IMPORTS])
 
-    lines.append("")   # blank line before "Code:"
+    lines.append("")  # blank line before "Code:"
     return "\n".join(lines)
 
 
@@ -171,7 +172,7 @@ def _import_identifiers(import_line: str) -> list[str]:
                 identifiers.append(name)
     elif line.startswith("import "):
         # import X, import X as Y, import X.Y
-        after_import = line[len("import "):].strip()
+        after_import = line[len("import ") :].strip()
         for part in after_import.split(","):
             part = part.strip()
             if " as " in part:

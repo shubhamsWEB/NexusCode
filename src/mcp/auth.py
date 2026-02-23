@@ -6,15 +6,17 @@ In dev mode: POST /auth/token with {"sub": "dev", "repos": ["owner/name"]}
 
 In production: integrate with GitHub OAuth 2.1 + PKCE (future work).
 """
+
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import BaseModel
 
 from src.config import settings
 
@@ -30,12 +32,13 @@ _TOKEN_TTL_HOURS = 8
 
 # ── Token issuance ────────────────────────────────────────────────────────────
 
+
 def issue_token(sub: str, repos: list[str] | None = None) -> str:
     """Sign and return a JWT for the given subject."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     payload: dict[str, Any] = {
         "sub": sub,
-        "repos": repos or [],          # empty list = access all repos
+        "repos": repos or [],  # empty list = access all repos
         "iat": now,
         "exp": now + timedelta(hours=_TOKEN_TTL_HOURS),
     }
@@ -50,15 +53,20 @@ def verify_token(token: str) -> dict[str, Any]:
     try:
         return jwt.decode(token, settings.jwt_secret, algorithms=[_ALGORITHM])
     except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired"
+        ) from None
     except jwt.InvalidTokenError as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Invalid token: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Invalid token: {exc}"
+        ) from exc
 
 
 # ── FastAPI dependency ────────────────────────────────────────────────────────
 
+
 async def require_auth(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
 ) -> dict[str, Any]:
     """
     FastAPI dependency — validates Bearer JWT and returns the decoded claims.
@@ -75,12 +83,10 @@ async def require_auth(
 
 # ── Dev token endpoint ────────────────────────────────────────────────────────
 
-from pydantic import BaseModel
-
 
 class TokenRequest(BaseModel):
     sub: str = "dev-agent"
-    repos: list[str] = []      # empty = access all repos
+    repos: list[str] = []  # empty = access all repos
 
 
 class TokenResponse(BaseModel):

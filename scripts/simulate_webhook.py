@@ -17,6 +17,7 @@ Environment:
     Reads GITHUB_WEBHOOK_SECRET, DATABASE_URL from .env
     Targets http://localhost:8000/webhook by default (override with --url)
 """
+
 from __future__ import annotations
 
 import argparse
@@ -27,21 +28,21 @@ import json
 import sys
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 
-
 # ── Defaults ──────────────────────────────────────────────────────────────────
 
-_REPO_OWNER   = "shubhamsWEB"
-_REPO_NAME    = "shopify-chatbot"
-_BRANCH       = "main"
-_COMMIT_SHA   = "4e86a85c000000000000000000000000deadbeef"  # fake — overridden below
-_WEBHOOK_URL  = "http://localhost:8000/webhook"
+_REPO_OWNER = "shubhamsWEB"
+_REPO_NAME = "shopify-chatbot"
+_BRANCH = "main"
+_COMMIT_SHA = "4e86a85c000000000000000000000000deadbeef"  # fake — overridden below
+_WEBHOOK_URL = "http://localhost:8000/webhook"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _sign(payload_bytes: bytes, secret: str) -> str:
     digest = hmac.new(secret.encode(), payload_bytes, hashlib.sha256).hexdigest()
@@ -53,15 +54,15 @@ def _build_payload(
     files_to_delete: list[str],
     commit_sha: str,
 ) -> dict:
-    ts = datetime.now(timezone.utc).isoformat()
+    ts = datetime.now(UTC).isoformat()
     commit_entry = {
         "id": commit_sha,
         "message": "[simulate] test commit",
         "timestamp": ts,
         "author": {"name": "Test Bot", "email": "bot@test.local"},
-        "added":    list(files_to_upsert),
+        "added": list(files_to_upsert),
         "modified": [],
-        "removed":  list(files_to_delete),
+        "removed": list(files_to_delete),
     }
 
     return {
@@ -83,6 +84,7 @@ def _build_payload(
 async def _drop_merkle(files: list[str]) -> None:
     """Remove stored merkle hashes for these files so the pipeline re-indexes them."""
     from src.storage.db import delete_merkle_node
+
     print(f"  Dropping merkle hashes for {len(files)} file(s)…")
     for f in files:
         await delete_merkle_node(f, _REPO_OWNER, _REPO_NAME)
@@ -93,11 +95,15 @@ async def _get_current_commit_sha() -> str:
     """Fetch the real HEAD commit SHA from the repo (via /health chunk metadata)."""
     try:
         from sqlalchemy import text
+
         from src.storage.db import AsyncSessionLocal
+
         async with AsyncSessionLocal() as session:
-            row = (await session.execute(
-                text("SELECT commit_sha FROM chunks WHERE is_deleted = FALSE LIMIT 1")
-            )).fetchone()
+            row = (
+                await session.execute(
+                    text("SELECT commit_sha FROM chunks WHERE is_deleted = FALSE LIMIT 1")
+                )
+            ).fetchone()
             if row:
                 return row[0]
     except Exception:
@@ -143,7 +149,7 @@ async def run(
         resp = await client.post(webhook_url, content=payload_bytes, headers=headers)
         elapsed = time.monotonic() - t0
 
-    print(f"\nResponse: HTTP {resp.status_code} ({elapsed*1000:.0f}ms)")
+    print(f"\nResponse: HTTP {resp.status_code} ({elapsed * 1000:.0f}ms)")
     try:
         data = resp.json()
         print(json.dumps(data, indent=2))
@@ -153,42 +159,63 @@ async def run(
     if resp.status_code != 202:
         sys.exit(1)
 
-    print(f"\nJob queued. Watch the worker logs for job progress.")
-    print(f"Poll /health to see last_indexed update:")
-    print(f"  watch -n2 'curl -s http://localhost:8000/health | python3 -m json.tool'")
+    print("\nJob queued. Watch the worker logs for job progress.")
+    print("Poll /health to see last_indexed update:")
+    print("  watch -n2 'curl -s http://localhost:8000/health | python3 -m json.tool'")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Simulate a GitHub push webhook")
-    parser.add_argument("--file", "-f", action="append", default=[],
-                        dest="files", metavar="PATH",
-                        help="File to mark as modified (can repeat). Merkle hash dropped automatically.")
-    parser.add_argument("--delete", "-d", action="append", default=[],
-                        dest="deletes", metavar="PATH",
-                        help="File to mark as deleted (can repeat)")
-    parser.add_argument("--url", default=_WEBHOOK_URL,
-                        help=f"Webhook URL (default: {_WEBHOOK_URL})")
-    parser.add_argument("--no-drop-merkle", action="store_true",
-                        help="Don't drop merkle hashes (file may be skipped as unchanged)")
+    parser.add_argument(
+        "--file",
+        "-f",
+        action="append",
+        default=[],
+        dest="files",
+        metavar="PATH",
+        help="File to mark as modified (can repeat). Merkle hash dropped automatically.",
+    )
+    parser.add_argument(
+        "--delete",
+        "-d",
+        action="append",
+        default=[],
+        dest="deletes",
+        metavar="PATH",
+        help="File to mark as deleted (can repeat)",
+    )
+    parser.add_argument(
+        "--url", default=_WEBHOOK_URL, help=f"Webhook URL (default: {_WEBHOOK_URL})"
+    )
+    parser.add_argument(
+        "--no-drop-merkle",
+        action="store_true",
+        help="Don't drop merkle hashes (file may be skipped as unchanged)",
+    )
     args = parser.parse_args()
 
     if not args.files and not args.deletes:
         parser.error("Specify at least one --file or --delete")
 
     # Load settings
-    import os, sys
+    import os
+    import sys
+
     sys.path.insert(0, ".")
     from dotenv import load_dotenv
+
     load_dotenv()
     secret = os.environ.get("GITHUB_WEBHOOK_SECRET", "dev-webhook-secret")
 
-    asyncio.run(run(
-        files_to_upsert=args.files,
-        files_to_delete=args.deletes,
-        webhook_url=args.url,
-        secret=secret,
-        drop_merkle=not args.no_drop_merkle,
-    ))
+    asyncio.run(
+        run(
+            files_to_upsert=args.files,
+            files_to_delete=args.deletes,
+            webhook_url=args.url,
+            secret=secret,
+            drop_merkle=not args.no_drop_merkle,
+        )
+    )
 
 
 if __name__ == "__main__":

@@ -5,53 +5,54 @@ Returns language-agnostic ParsedFile / ParsedSymbol dataclasses.
 
 Supported languages: Python, TypeScript/TSX, JavaScript, Java, Go, Rust.
 """
+
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 # ── Extension → language name ─────────────────────────────────────────────────
 
 EXTENSION_TO_LANGUAGE: dict[str, str] = {
-    ".py":    "python",
-    ".ts":    "typescript",
-    ".tsx":   "tsx",
-    ".js":    "javascript",
-    ".jsx":   "javascript",
-    ".java":  "java",
-    ".go":    "go",
-    ".rs":    "rust",
-    ".cpp":   "cpp",
-    ".c":     "c",
-    ".cs":    "c_sharp",
-    ".rb":    "ruby",
+    ".py": "python",
+    ".ts": "typescript",
+    ".tsx": "tsx",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".java": "java",
+    ".go": "go",
+    ".rs": "rust",
+    ".cpp": "cpp",
+    ".c": "c",
+    ".cs": "c_sharp",
+    ".rb": "ruby",
     ".swift": "swift",
-    ".kt":    "kotlin",
+    ".kt": "kotlin",
 }
 
 
-def detect_language(file_path: str) -> Optional[str]:
+def detect_language(file_path: str) -> str | None:
     return EXTENSION_TO_LANGUAGE.get(Path(file_path).suffix.lower())
 
 
 # ── Data structures ───────────────────────────────────────────────────────────
 
+
 @dataclass
 class ParsedSymbol:
     name: str
-    qualified_name: str          # "ClassName.method_name" or just "function_name"
-    kind: str                    # "function" | "class" | "method"
-    start_line: int              # 1-indexed
-    end_line: int                # 1-indexed
-    source: str                  # raw source text of this symbol
-    signature: Optional[str] = None
-    docstring: Optional[str] = None
-    parent_name: Optional[str] = None   # set for methods
-    children: list["ParsedSymbol"] = field(default_factory=list)
+    qualified_name: str  # "ClassName.method_name" or just "function_name"
+    kind: str  # "function" | "class" | "method"
+    start_line: int  # 1-indexed
+    end_line: int  # 1-indexed
+    source: str  # raw source text of this symbol
+    signature: str | None = None
+    docstring: str | None = None
+    parent_name: str | None = None  # set for methods
+    children: list[ParsedSymbol] = field(default_factory=list)
     is_exported: bool = False
 
 
@@ -75,34 +76,41 @@ class ParsedFile:
 
 # ── Tree-sitter language loader ───────────────────────────────────────────────
 
+
 def _get_ts_language(language: str):
     """Lazy-load the Tree-sitter Language for a given language name."""
     from tree_sitter import Language
 
     if language == "python":
         import tree_sitter_python as ts_mod
+
         return Language(ts_mod.language())
 
     if language in ("typescript", "tsx"):
         import tree_sitter_typescript as ts_mod
+
         if language == "tsx":
             return Language(ts_mod.language_tsx())
         return Language(ts_mod.language_typescript())
 
     if language == "javascript":
         import tree_sitter_javascript as ts_mod
+
         return Language(ts_mod.language())
 
     if language == "java":
         import tree_sitter_java as ts_mod
+
         return Language(ts_mod.language())
 
     if language == "go":
         import tree_sitter_go as ts_mod
+
         return Language(ts_mod.language())
 
     if language == "rust":
         import tree_sitter_rust as ts_mod
+
         return Language(ts_mod.language())
 
     raise ValueError(f"Unsupported language: {language}")
@@ -110,14 +118,16 @@ def _get_ts_language(language: str):
 
 def _make_parser(language: str):
     from tree_sitter import Parser
+
     ts_lang = _get_ts_language(language)
     return Parser(ts_lang)
 
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
 
+
 def _node_text(node, source_bytes: bytes) -> str:
-    return source_bytes[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+    return source_bytes[node.start_byte : node.end_byte].decode("utf-8", errors="replace")
 
 
 def _node_lines(node) -> tuple[int, int]:
@@ -127,7 +137,8 @@ def _node_lines(node) -> tuple[int, int]:
 
 # ── Python parser ─────────────────────────────────────────────────────────────
 
-def _py_extract_docstring(body_node, source_bytes: bytes) -> Optional[str]:
+
+def _py_extract_docstring(body_node, source_bytes: bytes) -> str | None:
     """First expression_statement > string in a block = docstring."""
     if body_node is None:
         return None
@@ -139,7 +150,7 @@ def _py_extract_docstring(body_node, source_bytes: bytes) -> Optional[str]:
                     # Strip triple or single quotes
                     for q in ('"""', "'''", '"', "'"):
                         if raw.startswith(q) and raw.endswith(q) and len(raw) > 2 * len(q):
-                            return raw[len(q):-len(q)].strip()
+                            return raw[len(q) : -len(q)].strip()
                     return raw
         break  # docstring must be first statement
     return None
@@ -158,7 +169,7 @@ def _py_function_signature(node, source_bytes: bytes) -> str:
     return sig
 
 
-def _py_parse_function(node, source_bytes: bytes, parent_name: Optional[str] = None) -> ParsedSymbol:
+def _py_parse_function(node, source_bytes: bytes, parent_name: str | None = None) -> ParsedSymbol:
     name_node = node.child_by_field_name("name")
     name = _node_text(name_node, source_bytes) if name_node else "<anonymous>"
     qualified = f"{parent_name}.{name}" if parent_name else name
@@ -277,14 +288,17 @@ _TS_METHOD_TYPES = {
 
 def _ts_function_signature(node, source_bytes: bytes) -> str:
     name_node = node.child_by_field_name("name")
-    params_node = node.child_by_field_name("parameters") or node.child_by_field_name("formal_parameters")
+    params_node = node.child_by_field_name("parameters") or node.child_by_field_name(
+        "formal_parameters"
+    )
     name = _node_text(name_node, source_bytes) if name_node else "<anonymous>"
     params = _node_text(params_node, source_bytes) if params_node else "()"
     return f"function {name}{params}"
 
 
-def _ts_parse_function(node, source_bytes: bytes, parent_name: Optional[str] = None,
-                        exported: bool = False) -> ParsedSymbol:
+def _ts_parse_function(
+    node, source_bytes: bytes, parent_name: str | None = None, exported: bool = False
+) -> ParsedSymbol:
     name_node = node.child_by_field_name("name")
     name = _node_text(name_node, source_bytes) if name_node else "<anonymous>"
     qualified = f"{parent_name}.{name}" if parent_name else name
@@ -325,7 +339,9 @@ def _ts_parse_class(node, source_bytes: bytes, exported: bool = False) -> Parsed
         for child in body.named_children:
             if child.type in _TS_METHOD_TYPES:
                 method_name_node = child.child_by_field_name("name")
-                method_name = _node_text(method_name_node, source_bytes) if method_name_node else "<anon>"
+                method_name = (
+                    _node_text(method_name_node, source_bytes) if method_name_node else "<anon>"
+                )
                 qualified = f"{name}.{method_name}"
                 m_start, m_end = _node_lines(child)
                 method = ParsedSymbol(
@@ -381,15 +397,17 @@ def _parse_typescript(source: str, file_path: str, language: str = "typescript")
                         name_node = decl.child_by_field_name("name")
                         name = _node_text(name_node, source_bytes) if name_node else "<anon>"
                         start, end = _node_lines(node)
-                        symbols.append(ParsedSymbol(
-                            name=name,
-                            qualified_name=name,
-                            kind="function",
-                            start_line=start,
-                            end_line=end,
-                            source=_node_text(node, source_bytes),
-                            is_exported=exported,
-                        ))
+                        symbols.append(
+                            ParsedSymbol(
+                                name=name,
+                                qualified_name=name,
+                                kind="function",
+                                start_line=start,
+                                end_line=end,
+                                source=_node_text(node, source_bytes),
+                                is_exported=exported,
+                            )
+                        )
 
     return ParsedFile(
         file_path=file_path,
@@ -401,6 +419,7 @@ def _parse_typescript(source: str, file_path: str, language: str = "typescript")
 
 
 # ── Go parser ─────────────────────────────────────────────────────────────────
+
 
 def _parse_go(source: str, file_path: str) -> ParsedFile:
     parser = _make_parser("go")
@@ -419,11 +438,16 @@ def _parse_go(source: str, file_path: str) -> ParsedFile:
             name_node = child.child_by_field_name("name")
             name = _node_text(name_node, source_bytes) if name_node else "<anon>"
             start, end = _node_lines(child)
-            symbols.append(ParsedSymbol(
-                name=name, qualified_name=name, kind="function",
-                start_line=start, end_line=end,
-                source=_node_text(child, source_bytes),
-            ))
+            symbols.append(
+                ParsedSymbol(
+                    name=name,
+                    qualified_name=name,
+                    kind="function",
+                    start_line=start,
+                    end_line=end,
+                    source=_node_text(child, source_bytes),
+                )
+            )
 
         elif child.type == "method_declaration":
             name_node = child.child_by_field_name("name")
@@ -438,12 +462,17 @@ def _parse_go(source: str, file_path: str) -> ParsedFile:
                         break
             qualified = f"{receiver}.{name}" if receiver else name
             start, end = _node_lines(child)
-            symbols.append(ParsedSymbol(
-                name=name, qualified_name=qualified, kind="method",
-                start_line=start, end_line=end,
-                source=_node_text(child, source_bytes),
-                parent_name=receiver or None,
-            ))
+            symbols.append(
+                ParsedSymbol(
+                    name=name,
+                    qualified_name=qualified,
+                    kind="method",
+                    start_line=start,
+                    end_line=end,
+                    source=_node_text(child, source_bytes),
+                    parent_name=receiver or None,
+                )
+            )
 
         elif child.type == "type_declaration":
             for spec in child.named_children:
@@ -451,17 +480,28 @@ def _parse_go(source: str, file_path: str) -> ParsedFile:
                     name_node = spec.child_by_field_name("name")
                     name = _node_text(name_node, source_bytes) if name_node else "<anon>"
                     start, end = _node_lines(child)
-                    symbols.append(ParsedSymbol(
-                        name=name, qualified_name=name, kind="class",
-                        start_line=start, end_line=end,
-                        source=_node_text(child, source_bytes),
-                    ))
+                    symbols.append(
+                        ParsedSymbol(
+                            name=name,
+                            qualified_name=name,
+                            kind="class",
+                            start_line=start,
+                            end_line=end,
+                            source=_node_text(child, source_bytes),
+                        )
+                    )
 
-    return ParsedFile(file_path=file_path, language="go", source=source,
-                      imports=imports, top_level_symbols=symbols)
+    return ParsedFile(
+        file_path=file_path,
+        language="go",
+        source=source,
+        imports=imports,
+        top_level_symbols=symbols,
+    )
 
 
 # ── Java parser ───────────────────────────────────────────────────────────────
+
 
 def _parse_java(source: str, file_path: str) -> ParsedFile:
     parser = _make_parser("java")
@@ -481,8 +521,11 @@ def _parse_java(source: str, file_path: str) -> ParsedFile:
                 name = _node_text(name_node, source_bytes) if name_node else "<anon>"
                 start, end = _node_lines(child)
                 sym = ParsedSymbol(
-                    name=name, qualified_name=name, kind="class",
-                    start_line=start, end_line=end,
+                    name=name,
+                    qualified_name=name,
+                    kind="class",
+                    start_line=start,
+                    end_line=end,
                     source=_node_text(child, source_bytes),
                 )
                 body = child.child_by_field_name("body")
@@ -490,26 +533,39 @@ def _parse_java(source: str, file_path: str) -> ParsedFile:
                     for member in body.named_children:
                         if member.type in ("method_declaration", "constructor_declaration"):
                             m_name_node = member.child_by_field_name("name")
-                            m_name = _node_text(m_name_node, source_bytes) if m_name_node else "<anon>"
+                            m_name = (
+                                _node_text(m_name_node, source_bytes) if m_name_node else "<anon>"
+                            )
                             m_start, m_end = _node_lines(member)
-                            sym.children.append(ParsedSymbol(
-                                name=m_name, qualified_name=f"{name}.{m_name}",
-                                kind="method", start_line=m_start, end_line=m_end,
-                                source=_node_text(member, source_bytes),
-                                parent_name=name,
-                            ))
+                            sym.children.append(
+                                ParsedSymbol(
+                                    name=m_name,
+                                    qualified_name=f"{name}.{m_name}",
+                                    kind="method",
+                                    start_line=m_start,
+                                    end_line=m_end,
+                                    source=_node_text(member, source_bytes),
+                                    parent_name=name,
+                                )
+                            )
                 symbols.append(sym)
             else:
                 _walk_for_classes(child)
 
     _walk_for_classes(root)
-    return ParsedFile(file_path=file_path, language="java", source=source,
-                      imports=imports, top_level_symbols=symbols)
+    return ParsedFile(
+        file_path=file_path,
+        language="java",
+        source=source,
+        imports=imports,
+        top_level_symbols=symbols,
+    )
 
 
 # ── Public entry point ────────────────────────────────────────────────────────
 
-def parse_file(file_path: str, source: str) -> Optional[ParsedFile]:
+
+def parse_file(file_path: str, source: str) -> ParsedFile | None:
     """
     Parse a source file and return a ParsedFile with all symbols extracted.
     Returns None if the language is unsupported.

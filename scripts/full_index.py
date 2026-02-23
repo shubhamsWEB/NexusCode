@@ -9,6 +9,7 @@ Usage:
 Example:
     python scripts/full_index.py octocat Hello-World --branch main
 """
+
 from __future__ import annotations
 
 import argparse
@@ -50,15 +51,15 @@ async def main(owner: str, repo: str, branch: str) -> None:
         return
 
     # Enqueue one job per file (the pipeline worker handles each file)
-    from rq import Queue
     import redis
+    from rq import Queue
 
     conn = redis.from_url(settings.redis_url)
     queue = Queue("indexing", connection=conn)
 
-    blob_sha_map = {item["path"]: item["sha"] for item in tree}
     # Find the current HEAD commit SHA
-    from src.github.fetcher import _make_client, _GITHUB_API
+    from src.github.fetcher import _GITHUB_API, _make_client
+
     async with _make_client() as client:
         resp = await client.get(
             f"{_GITHUB_API}/repos/{owner}/{repo}/commits/{branch}",

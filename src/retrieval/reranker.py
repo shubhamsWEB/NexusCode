@@ -8,6 +8,7 @@ Takes the top-N candidates from the RRF merge and re-scores each
 This gives a 30-40% precision improvement over pure vector search
 for free — no API calls, no latency dependency on external services.
 """
+
 from __future__ import annotations
 
 import logging
@@ -28,6 +29,7 @@ def _get_model():
     global _model
     if _model is None:
         from sentence_transformers import CrossEncoder
+
         logger.info("Loading cross-encoder model: %s", settings.reranker_model)
         _model = CrossEncoder(settings.reranker_model, max_length=512)
         logger.info("Cross-encoder model loaded")
@@ -36,9 +38,9 @@ def _get_model():
 
 def rerank(
     query: str,
-    results: list["SearchResult"],
+    results: list[SearchResult],
     top_n: int | None = None,
-) -> list["SearchResult"]:
+) -> list[SearchResult]:
     """
     Re-score results using the cross-encoder and return sorted by rerank_score.
 

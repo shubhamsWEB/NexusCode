@@ -5,27 +5,30 @@ The ImplementationPlan is the top-level output of POST /plan.
 It describes every file change, the ordered execution steps,
 risks, and a test plan.
 """
+
 from __future__ import annotations
 
 import uuid
-from typing import Literal, Optional, Union
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
-
 # ── Leaf schemas ──────────────────────────────────────────────────────────────
+
 
 class CodeChange(BaseModel):
     """A single change within a file (add/modify/delete a symbol or block)."""
+
     kind: Literal["add", "modify", "delete", "move"] = "modify"
-    symbol: Optional[str] = Field(None, description="Qualified symbol name (e.g. 'AuthService.login')")
+    symbol: str | None = Field(None, description="Qualified symbol name (e.g. 'AuthService.login')")
     description: str = Field(..., description="What exactly changes and why")
-    pseudocode: Optional[str] = Field(None, description="Pseudo-code sketch for complex logic")
-    line_hint: Optional[str] = Field(None, description="Approximate line range, e.g. '42-55'")
+    pseudocode: str | None = Field(None, description="Pseudo-code sketch for complex logic")
+    line_hint: str | None = Field(None, description="Approximate line range, e.g. '42-55'")
 
 
 class FileChange(BaseModel):
     """All changes required for a single file."""
+
     path: str = Field(..., description="File path relative to repo root")
     action: Literal["create", "modify", "delete", "rename", "move"] = "modify"
     reason: str = Field(..., description="Why this file needs to change")
@@ -34,6 +37,7 @@ class FileChange(BaseModel):
 
 class Step(BaseModel):
     """One ordered implementation step."""
+
     step_number: int
     title: str
     description: str = Field(..., description="What to do in this step")
@@ -45,7 +49,7 @@ class Step(BaseModel):
         default_factory=list,
         description="Step numbers that must complete before this one",
     )
-    verification: Optional[str] = Field(
+    verification: str | None = Field(
         None,
         description="How to confirm this step succeeded (test, manual check, etc.)",
     )
@@ -53,6 +57,7 @@ class Step(BaseModel):
 
 class Risk(BaseModel):
     """A potential risk introduced by this plan."""
+
     severity: Literal["low", "medium", "high"]
     description: str
     affected_symbols: list[str] = Field(default_factory=list)
@@ -61,6 +66,7 @@ class Risk(BaseModel):
 
 class PlanMetadata(BaseModel):
     """Telemetry attached to each plan response."""
+
     model: str
     context_tokens: int
     context_files: int
@@ -73,6 +79,7 @@ class PlanMetadata(BaseModel):
 
 # ── Top-level plan ────────────────────────────────────────────────────────────
 
+
 class ImplementationPlan(BaseModel):
     """
     Unified response from POST /plan.
@@ -80,6 +87,7 @@ class ImplementationPlan(BaseModel):
     response_type="plan"   → implementation task (has files, steps, risks)
     response_type="answer" → question/explanation (has answer + key_files only)
     """
+
     plan_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     query: str
     response_type: Literal["plan", "answer", "analysis"] = Field(
@@ -133,15 +141,16 @@ class ImplementationPlan(BaseModel):
         description="Risks and mitigations",
     )
     test_plan: str = Field("", description="What to test and how after implementation")
-    metadata: Optional[PlanMetadata] = None
+    metadata: PlanMetadata | None = None
 
 
 # ── Request / response wrappers ───────────────────────────────────────────────
 
+
 class PlanRequest(BaseModel):
     query: str = Field(..., min_length=5, description="Bug/feature/refactor description")
-    repo_owner: Optional[str] = Field(None, description="Scope to a specific repo owner")
-    repo_name: Optional[str] = Field(None, description="Scope to a specific repo name")
+    repo_owner: str | None = Field(None, description="Scope to a specific repo owner")
+    repo_name: str | None = Field(None, description="Scope to a specific repo name")
     stream: bool = Field(False, description="If true, return an SSE stream instead of JSON")
     web_research: bool = Field(
         True,
@@ -183,7 +192,10 @@ PLAN_TOOL_SCHEMA: dict = {
                     "type": "object",
                     "required": ["path", "action", "reason"],
                     "properties": {
-                        "path": {"type": "string", "description": "File path relative to repo root"},
+                        "path": {
+                            "type": "string",
+                            "description": "File path relative to repo root",
+                        },
                         "action": {
                             "type": "string",
                             "enum": ["create", "modify", "delete", "rename", "move"],

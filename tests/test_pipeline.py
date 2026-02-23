@@ -4,6 +4,7 @@ Unit tests for the indexing pipeline.
 Mocks all external I/O (GitHub API, Voyage AI, database writes) so tests
 run without any network access or running services.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -13,8 +14,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _make_push_payload(
     *,
@@ -49,12 +50,18 @@ def _make_push_payload(
     }
 
 
-def _sign_payload(payload_bytes: bytes, secret: str = "dev-webhook-secret") -> str:
+def _sign_payload(payload_bytes: bytes, secret: str | None = None) -> str:
+    """Sign payload using the same secret as the running server (from env/settings)."""
+    if secret is None:
+        from src.config import settings
+
+        secret = settings.github_webhook_secret
     digest = hmac.new(secret.encode(), payload_bytes, hashlib.sha256).hexdigest()
     return f"sha256={digest}"
 
 
 # ── PushEvent tests ───────────────────────────────────────────────────────────
+
 
 class TestPushEvent:
     def test_files_to_upsert_deduplication(self):
@@ -66,10 +73,16 @@ class TestPushEvent:
             repo_owner="org",
             repo_name="repo",
             commits=[
-                GitHubCommit(id="c1", message="m1", author_email="a@a.com",
-                             added=["a.py", "b.py"], modified=[]),
-                GitHubCommit(id="c2", message="m2", author_email="a@a.com",
-                             added=["b.py"], modified=["c.py"]),
+                GitHubCommit(
+                    id="c1",
+                    message="m1",
+                    author_email="a@a.com",
+                    added=["a.py", "b.py"],
+                    modified=[],
+                ),
+                GitHubCommit(
+                    id="c2", message="m2", author_email="a@a.com", added=["b.py"], modified=["c.py"]
+                ),
             ],
         )
         # b.py appears in both commits → deduplicated
@@ -84,10 +97,15 @@ class TestPushEvent:
             repo_owner="org",
             repo_name="repo",
             commits=[
-                GitHubCommit(id="c1", message="m", author_email="a@a.com",
-                             removed=["old.py", "also-deleted.py"]),
-                GitHubCommit(id="c2", message="m", author_email="a@a.com",
-                             added=["old.py"]),  # re-added → not deleted
+                GitHubCommit(
+                    id="c1",
+                    message="m",
+                    author_email="a@a.com",
+                    removed=["old.py", "also-deleted.py"],
+                ),
+                GitHubCommit(
+                    id="c2", message="m", author_email="a@a.com", added=["old.py"]
+                ),  # re-added → not deleted
             ],
         )
         assert event.files_to_delete == ["also-deleted.py"]
@@ -95,8 +113,9 @@ class TestPushEvent:
     def test_branch_property(self):
         from src.github.events import PushEvent
 
-        event = PushEvent(ref="refs/heads/feature/x", after="a", repo_owner="o",
-                          repo_name="r", commits=[])
+        event = PushEvent(
+            ref="refs/heads/feature/x", after="a", repo_owner="o", repo_name="r", commits=[]
+        )
         assert event.branch == "feature/x"
 
     def test_from_dict_parses_commits(self):
@@ -116,6 +135,7 @@ class TestPushEvent:
 
 
 # ── Webhook HMAC tests ────────────────────────────────────────────────────────
+
 
 class TestWebhookSignature:
     def test_valid_signature_accepted(self):
@@ -145,6 +165,7 @@ class TestWebhookSignature:
 
 # ── Merkle skip logic tests ───────────────────────────────────────────────────
 
+
 class TestMerkleSkip:
     @pytest.mark.asyncio
     async def test_merkle_hit_skips_file(self):
@@ -152,23 +173,38 @@ class TestMerkleSkip:
         BLOB_SHA = "abcdef1234567890" * 2 + "ab12"
 
         with (
-            patch("src.github.fetcher.fetch_file", new_callable=AsyncMock,
-                  return_value=("content", BLOB_SHA)),
-            patch("src.storage.db.get_merkle_hash", new_callable=AsyncMock,
-                  return_value=BLOB_SHA),  # same → skip
+            patch(
+                "src.github.fetcher.fetch_file",
+                new_callable=AsyncMock,
+                return_value=("content", BLOB_SHA),
+            ),
+            patch(
+                "src.storage.db.get_merkle_hash", new_callable=AsyncMock, return_value=BLOB_SHA
+            ),  # same → skip
             patch("src.pipeline.parser.parse_file") as mock_parse,
         ):
             from src.pipeline.pipeline import _handle_upserts
 
-            stats = {"files_processed": 0, "files_skipped_merkle": 0,
-                     "chunks_upserted": 0, "symbols_upserted": 0,
-                     "embed_cache_hits": 0, "errors": 0}
+            stats = {
+                "files_processed": 0,
+                "files_skipped_merkle": 0,
+                "chunks_upserted": 0,
+                "symbols_upserted": 0,
+                "embed_cache_hits": 0,
+                "errors": 0,
+            }
             log = MagicMock()
             log.bind.return_value = log
 
             await _handle_upserts(
-                "org", "repo", "sha", "author", "msg",
-                ["src/auth.py"], stats, log,
+                "org",
+                "repo",
+                "sha",
+                "author",
+                "msg",
+                ["src/auth.py"],
+                stats,
+                log,
             )
 
         assert stats["files_skipped_merkle"] == 1
@@ -201,17 +237,27 @@ class TestMerkleSkip:
         mock_parsed.all_symbols = []
 
         with (
-            patch("src.github.fetcher.fetch_file", new_callable=AsyncMock,
-                  return_value=(PYTHON_CONTENT, NEW_BLOB)),
-            patch("src.storage.db.get_merkle_hash", new_callable=AsyncMock,
-                  return_value=OLD_BLOB),  # different → re-index
+            patch(
+                "src.github.fetcher.fetch_file",
+                new_callable=AsyncMock,
+                return_value=(PYTHON_CONTENT, NEW_BLOB),
+            ),
+            patch(
+                "src.storage.db.get_merkle_hash", new_callable=AsyncMock, return_value=OLD_BLOB
+            ),  # different → re-index
             patch("src.pipeline.parser.parse_file", return_value=mock_parsed),
             patch("src.pipeline.chunker.chunk_file", return_value=[mock_chunk]),
             patch("src.pipeline.enricher.enrich_chunks", return_value=[mock_enriched]),
-            patch("src.pipeline.embedder.get_existing_chunk_ids",
-                  new_callable=AsyncMock, return_value=set()),
-            patch("src.pipeline.embedder.embed_chunks",
-                  new_callable=AsyncMock, return_value={"cid1": [0.1] * 1536}),
+            patch(
+                "src.pipeline.embedder.get_existing_chunk_ids",
+                new_callable=AsyncMock,
+                return_value=set(),
+            ),
+            patch(
+                "src.pipeline.embedder.embed_chunks",
+                new_callable=AsyncMock,
+                return_value={"cid1": [0.1] * 1536},
+            ),
             patch("src.storage.db.soft_delete_chunks", new_callable=AsyncMock),
             patch("src.storage.db.delete_symbols_for_file", new_callable=AsyncMock),
             patch("src.storage.db.upsert_chunks", new_callable=AsyncMock, return_value=1),
@@ -220,15 +266,26 @@ class TestMerkleSkip:
         ):
             from src.pipeline.pipeline import _handle_upserts
 
-            stats = {"files_processed": 0, "files_skipped_merkle": 0,
-                     "chunks_upserted": 0, "symbols_upserted": 0,
-                     "embed_cache_hits": 0, "errors": 0}
+            stats = {
+                "files_processed": 0,
+                "files_skipped_merkle": 0,
+                "chunks_upserted": 0,
+                "symbols_upserted": 0,
+                "embed_cache_hits": 0,
+                "errors": 0,
+            }
             log = MagicMock()
             log.bind.return_value = log
 
             await _handle_upserts(
-                "org", "repo", "commit_sha", "author", "msg",
-                ["src/hello.py"], stats, log,
+                "org",
+                "repo",
+                "commit_sha",
+                "author",
+                "msg",
+                ["src/hello.py"],
+                stats,
+                log,
             )
 
         assert stats["files_processed"] == 1
@@ -238,17 +295,19 @@ class TestMerkleSkip:
 
 # ── Deletion tests ────────────────────────────────────────────────────────────
 
+
 class TestDeletion:
     @pytest.mark.asyncio
     async def test_deletion_calls_all_cleanup(self):
         """Deleting a file must soft-delete chunks, hard-delete symbols + merkle."""
         with (
-            patch("src.storage.db.soft_delete_chunks",
-                  new_callable=AsyncMock, return_value=2) as mock_soft,
-            patch("src.storage.db.delete_symbols_for_file",
-                  new_callable=AsyncMock, return_value=1) as mock_sym,
-            patch("src.storage.db.delete_merkle_node",
-                  new_callable=AsyncMock) as mock_merkle,
+            patch(
+                "src.storage.db.soft_delete_chunks", new_callable=AsyncMock, return_value=2
+            ) as mock_soft,
+            patch(
+                "src.storage.db.delete_symbols_for_file", new_callable=AsyncMock, return_value=1
+            ) as mock_sym,
+            patch("src.storage.db.delete_merkle_node", new_callable=AsyncMock) as mock_merkle,
         ):
             from src.pipeline.pipeline import _handle_deletions
 
@@ -266,8 +325,11 @@ class TestDeletion:
     @pytest.mark.asyncio
     async def test_deletion_error_increments_errors(self):
         """A failure in deletion must be logged and not crash the pipeline."""
-        with patch("src.storage.db.soft_delete_chunks",
-                   new_callable=AsyncMock, side_effect=RuntimeError("DB down")):
+        with patch(
+            "src.storage.db.soft_delete_chunks",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("DB down"),
+        ):
             from src.pipeline.pipeline import _handle_deletions
 
             stats = {"files_deleted": 0, "errors": 0}
@@ -282,11 +344,13 @@ class TestDeletion:
 
 # ── Webhook endpoint integration tests ───────────────────────────────────────
 
+
 class TestWebhookEndpoint:
     @pytest.mark.asyncio
     async def test_valid_push_enqueues_job(self):
         """A properly signed push webhook must return 202 and enqueue a job."""
         from fastapi.testclient import TestClient
+
         from src.api.app import app
 
         mock_queue = MagicMock()
@@ -328,6 +392,7 @@ class TestWebhookEndpoint:
     async def test_invalid_signature_rejected(self):
         """A webhook with wrong signature must return 401."""
         from fastapi.testclient import TestClient
+
         from src.api.app import app
 
         payload_bytes = json.dumps(_make_push_payload(added=["x.py"])).encode()
@@ -349,6 +414,7 @@ class TestWebhookEndpoint:
     def test_non_main_branch_ignored(self):
         """A push to a non-tracked branch must return 200 with 'not tracked' message."""
         from fastapi.testclient import TestClient
+
         from src.api.app import app
 
         payload = _make_push_payload(added=["x.py"], branch="develop")
@@ -373,6 +439,7 @@ class TestWebhookEndpoint:
     def test_ping_event_returns_pong(self):
         """GitHub ping events must be acknowledged."""
         from fastapi.testclient import TestClient
+
         from src.api.app import app
 
         payload_bytes = b'{"zen": "Speak like a human."}'
