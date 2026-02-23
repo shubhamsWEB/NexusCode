@@ -1,29 +1,33 @@
 ---
 name: plan-implementation
-description: Generate a complete, grounded implementation plan for a bug fix, new feature, or refactoring task. Use this BEFORE writing any code when the task is non-trivial. Searches the web for the best library and approach, then combines that with live codebase context to return exact file paths, symbol names, ordered steps with dependencies, pseudocode for complex logic, risk assessment, and a test plan.
+description: Generate a complete, grounded implementation plan for a bug fix, new feature, or refactoring task. Use this BEFORE writing any code when the task is non-trivial. Extracts the codebase stack (installed packages, language, framework), then searches the web for stack-specific integration gaps, then combines both with live codebase context to return exact file paths, symbol names, ordered steps, pseudocode, risk assessment, and a test plan. The plan explicitly states which packages it reuses vs which are new additions.
 metadata:
   author: nexuscode
-  version: "1.1"
+  version: "1.2"
 compatibility: Requires a running NexusCode API server at http://localhost:8000 with ANTHROPIC_API_KEY and VOYAGE_API_KEY configured.
 ---
 
 # Plan Implementation Skill
 
-## How it works
+## How it works — Three-Tier Architecture
 
-Each planning request runs two things **in parallel**, then combines them:
+Planning runs a **three-tier pipeline** that combines into one coherent, stack-grounded plan:
 
-1. **🌐 Web research** — Claude searches the web for the best library, approach, and 2025
-   best practices for the task. This answers "what should I use?" before the codebase
-   answers "where does it go?"
+**Tier 1 — Codebase Context** (ground truth, always)
+Live retrieval from the indexed repo: real file paths, function names, call-sites, file structure.
+The plan can only reference what actually exists here.
 
-2. **🔍 Codebase retrieval** — 5-phase pipeline: embed query → hybrid search (15 candidates)
-   → cross-encoder rerank (top 10) → file structure maps → caller context.
-   This grounds the plan in the actual files and symbols that exist.
+**Tier 2 — Stack Fingerprint** (what is already installed)
+A fast DB query extracts the exact packages in `requirements.txt`/`package.json` and the most-used imports across all indexed files. Fires first so everything downstream knows what the codebase already has.
 
-Claude then receives both sets of context and generates a structured plan that
-is simultaneously *correct* (uses the right library/pattern) and *precise*
-(references real file paths and symbol names).
+**Tier 3 — Stack-Aware Gap Analysis** (what is missing)
+Web search fires *after* the stack fingerprint, so it knows the real installed packages. Instead of a generic tutorial, it answers:
+- What in the existing stack already handles this task?
+- What packages are genuinely missing and why?
+- What are the version-specific gotchas for this stack + task combo?
+
+The final plan **always states**: `Reuses: [existing packages] | Adds: [new packages or none]`
+This prevents hallucinated dependency suggestions when the stack already covers the need.
 
 ## When to use this skill
 
