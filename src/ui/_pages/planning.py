@@ -105,9 +105,9 @@ def render():
 
         # Call API
         research_label = " + web research" if web_research else ""
-        with st.spinner(f"Retrieving code context{research_label} and generating plan… (20–60s)"):
+        with st.spinner(f"Retrieving code context{research_label} and generating plan… (30–120s)"):
             t0 = time.monotonic()
-            plan_data, err = api_post("/plan", json=payload, timeout=120)
+            plan_data, err = api_post("/plan", json=payload, timeout=180)
             elapsed = time.monotonic() - t0
 
         if err:
@@ -127,16 +127,20 @@ def render():
             st.error("Received an empty response from the server.")
             st.stop()
 
-        # ── Render plan ───────────────────────────────────────────────────────
-        _render_plan(plan_data, elapsed)
+        # ── Route to the right renderer based on response type ────────────────
+        response_type = plan_data.get("response_type", "plan")
+        if response_type == "answer":
+            _render_answer(plan_data, elapsed)
+        elif response_type == "analysis":
+            _render_analysis(plan_data, elapsed)
+        else:
+            _render_plan(plan_data, elapsed)
 
 
-# ── Plan renderer ──────────────────────────────────────────────────────────────
+# ── Shared metadata bar ────────────────────────────────────────────────────────
 
-def _render_plan(plan: dict, elapsed: float):
-    st.success(f"Plan generated in **{elapsed:.1f}s**")
-
-    # Metadata bar
+def _render_metadata_bar(plan: dict, elapsed: float):
+    st.success(f"Response generated in **{elapsed:.1f}s**")
     meta = plan.get("metadata") or {}
     if meta:
         mc1, mc2, mc3, mc4 = st.columns(4)
@@ -145,18 +149,94 @@ def _render_plan(plan: dict, elapsed: float):
         mc3.metric("Model", meta.get("model", "—").split("-")[-1])
         web_used = meta.get("web_research_used", False)
         mc4.metric("Web research", "✅ yes" if web_used else "⬜ no")
-
-    # Plan ID for reference
     if plan.get("plan_id"):
-        st.caption(f"Plan ID: `{plan['plan_id']}`")
+        st.caption(f"ID: `{plan['plan_id']}`")
+
+
+# ── Answer renderer (questions / explanations / analysis) ─────────────────────
+
+def _render_answer(plan: dict, elapsed: float):
+    """Render a conversational answer — rich markdown, no files/steps/risks."""
+    _render_metadata_bar(plan, elapsed)
+
+    meta = plan.get("metadata") or {}
+    stack_fp = meta.get("stack_fingerprint", "")
+    if stack_fp:
+        with st.expander("📦 Codebase Stack Fingerprint", expanded=False):
+            st.markdown(stack_fp)
 
     st.divider()
 
-    # ── Web Research Notes ────────────────────────────────────────────────────
-    web_notes = (meta or {}).get("web_research_notes", "")
+    # Main answer
+    answer = plan.get("answer", "_No answer generated._")
+    st.markdown(answer)
+
+    # Key files for quick navigation
+    key_files = plan.get("key_files") or []
+    if key_files:
+        st.divider()
+        st.caption("📁 Referenced files: " + " · ".join(f"`{f}`" for f in key_files))
+
+    # Retrieval log (debug)
+    if meta.get("retrieval_log"):
+        with st.expander("Retrieval Log (debug)", expanded=False):
+            st.code(meta["retrieval_log"], language="text")
+
+
+# ── Analysis renderer (improvement / review / audit queries) ──────────────────
+
+def _render_analysis(plan: dict, elapsed: float):
+    """Render a deep technical analysis — world-class architect review with grounded suggestions."""
+    _render_metadata_bar(plan, elapsed)
+
+    meta = plan.get("metadata") or {}
+    stack_fp = meta.get("stack_fingerprint", "")
+    if stack_fp:
+        with st.expander("📦 Codebase Stack Fingerprint", expanded=False):
+            st.markdown(stack_fp)
+
+    st.divider()
+
+    # Main analysis (markdown with mandatory sections)
+    analysis = plan.get("analysis", "_No analysis generated._")
+    st.markdown(analysis)
+
+    # Key files for quick navigation
+    key_files = plan.get("key_files") or []
+    if key_files:
+        st.divider()
+        st.caption("📁 Analyzed files: " + " · ".join(f"`{f}`" for f in key_files))
+
+    # Retrieval log (debug)
+    if meta.get("retrieval_log"):
+        with st.expander("Retrieval Log (debug)", expanded=False):
+            st.code(meta["retrieval_log"], language="text")
+
+
+# ── Plan renderer (implementation tasks) ──────────────────────────────────────
+
+def _render_plan(plan: dict, elapsed: float):
+    _render_metadata_bar(plan, elapsed)
+
+    meta = plan.get("metadata") or {}
+
+    st.divider()
+
+    # ── Stack-Aware Gap Analysis ──────────────────────────────────────────────
+    web_notes = meta.get("web_research_notes", "")
     if web_notes:
-        with st.expander("🌐 Web Research Notes (what the internet says)", expanded=True):
+        with st.expander(
+            "🔍 Stack-Aware Gap Analysis (what's missing & how to integrate)",
+            expanded=True,
+        ):
             st.markdown(web_notes)
+        st.divider()
+
+    # ── Stack Fingerprint (collapsed by default — it's informational) ─────────
+    stack_fp = meta.get("stack_fingerprint", "")
+    if stack_fp:
+        with st.expander("📦 Codebase Stack Fingerprint (what's already installed)", expanded=False):
+            st.markdown(stack_fp)
         st.divider()
 
     # ── Summary ───────────────────────────────────────────────────────────────

@@ -549,6 +549,38 @@ async def plan_implementation(
 
 def _format_plan_markdown(plan) -> str:
     """Format an ImplementationPlan as a clean markdown string for MCP consumers."""
+
+    # ── Analysis response type (improvement / review / audit) ────────────────
+    if plan.response_type == "analysis":
+        lines = [f"**Query:** {plan.query}", ""]
+        lines.append(plan.analysis or "_No analysis generated._")
+        if plan.key_files:
+            lines.append("")
+            lines.append("**Analyzed files:** " + " · ".join(f"`{f}`" for f in plan.key_files))
+        if plan.metadata:
+            m = plan.metadata
+            lines.append(
+                f"\n---\n_ID: `{plan.plan_id}` · {m.context_tokens} tokens · "
+                f"{m.context_files} chunks · {m.elapsed_ms:.0f}ms_"
+            )
+        return "\n".join(lines)
+
+    # ── Answer response type ──────────────────────────────────────────────────
+    if plan.response_type == "answer":
+        lines = [f"**Query:** {plan.query}", ""]
+        lines.append(plan.answer or "_No answer generated._")
+        if plan.key_files:
+            lines.append("")
+            lines.append("**Referenced files:** " + " · ".join(f"`{f}`" for f in plan.key_files))
+        if plan.metadata:
+            m = plan.metadata
+            lines.append(
+                f"\n---\n_ID: `{plan.plan_id}` · {m.context_tokens} tokens · "
+                f"{m.context_files} chunks · {m.elapsed_ms:.0f}ms_"
+            )
+        return "\n".join(lines)
+
+    # ── Implementation plan ───────────────────────────────────────────────────
     lines = [
         f"# Implementation Plan",
         f"**Query:** {plan.query}",
@@ -558,8 +590,15 @@ def _format_plan_markdown(plan) -> str:
         f"",
     ]
 
-    # Web research notes (if available) — shown before the plan for context
+    # Stack fingerprint (collapsed context — shown collapsed before gap analysis)
+    if plan.metadata and plan.metadata.stack_fingerprint:
+        lines.append("## Codebase Stack (what is already installed)")
+        lines.append(plan.metadata.stack_fingerprint)
+        lines.append("")
+
+    # Stack-aware gap analysis — what is missing and how to integrate
     if plan.metadata and plan.metadata.web_research_used and plan.metadata.web_research_notes:
+        lines.append("## Stack-Aware Gap Analysis")
         lines.append(plan.metadata.web_research_notes)
         lines.append("")
 

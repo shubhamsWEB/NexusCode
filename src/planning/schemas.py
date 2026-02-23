@@ -8,7 +8,7 @@ risks, and a test plan.
 from __future__ import annotations
 
 import uuid
-from typing import Literal, Optional
+from typing import Literal, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -66,6 +66,7 @@ class PlanMetadata(BaseModel):
     context_files: int
     retrieval_log: str
     elapsed_ms: float
+    stack_fingerprint: str = ""
     web_research_used: bool = False
     web_research_notes: str = ""
 
@@ -73,10 +74,48 @@ class PlanMetadata(BaseModel):
 # ── Top-level plan ────────────────────────────────────────────────────────────
 
 class ImplementationPlan(BaseModel):
-    """Complete implementation plan returned by POST /plan."""
+    """
+    Unified response from POST /plan.
+
+    response_type="plan"   → implementation task (has files, steps, risks)
+    response_type="answer" → question/explanation (has answer + key_files only)
+    """
     plan_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     query: str
-    summary: str = Field(..., description="2-3 sentence high-level summary of the approach")
+    response_type: Literal["plan", "answer", "analysis"] = Field(
+        "plan",
+        description=(
+            "'plan' for implementation tasks (files/steps/risks), "
+            "'answer' for questions/explanations, "
+            "'analysis' for improvement/review/audit queries (deep analysis + grounded suggestions)"
+        ),
+    )
+
+    # ── Answer fields (response_type == "answer") ──────────────────────────────
+    answer: str = Field(
+        "",
+        description="Rich markdown answer when the query is a question or explanation request",
+    )
+    key_files: list[str] = Field(
+        default_factory=list,
+        description="File paths most relevant to the answer (for quick navigation)",
+    )
+
+    # ── Analysis fields (response_type == "analysis") ─────────────────────────
+    analysis: str = Field(
+        "",
+        description=(
+            "Deep markdown analysis for improvement/review queries. "
+            "Covers: current state, specific issues found, grounded improvements, "
+            "and implementation guidance — all referencing real file paths and symbols."
+        ),
+    )
+
+    # ── Plan fields (response_type == "plan") ─────────────────────────────────
+    summary: str = Field(
+        "",
+        description="2-3 sentence high-level summary of the implementation approach",
+    )
     clarifying_assumptions: list[str] = Field(
         default_factory=list,
         description="Assumptions made where the query was ambiguous",
@@ -202,6 +241,92 @@ PLAN_TOOL_SCHEMA: dict = {
             "test_plan": {
                 "type": "string",
                 "description": "What to test and how after implementing the changes",
+            },
+        },
+    },
+}
+
+
+# ── Answer tool — for questions, explanations, analysis ───────────────────────
+
+ANSWER_TOOL_SCHEMA: dict = {
+    "name": "answer_codebase_question",
+    "description": (
+        "Use this when the query is a question, explanation request, or analysis task "
+        "that does NOT require making code changes. Examples: 'what does X do?', "
+        "'how does Y work?', 'why is Z failing?', 'where is the rate limiter?', "
+        "'explain the data flow', 'what patterns does this use?'. "
+        "For tasks that require editing/creating/deleting files, use "
+        "output_implementation_plan instead."
+    ),
+    "input_schema": {
+        "type": "object",
+        "required": ["answer"],
+        "properties": {
+            "answer": {
+                "type": "string",
+                "description": (
+                    "Detailed markdown answer. Use headers (##), code blocks, bullet lists. "
+                    "Reference actual file paths and function names from the codebase context. "
+                    "Be specific and thorough — this is the complete response to the user."
+                ),
+            },
+            "key_files": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "File paths most relevant to this answer (for navigation)",
+            },
+        },
+    },
+}
+
+
+# ── Analysis / improve tool — for "how to improve X", code review, audit ──────
+
+ANALYZE_IMPROVE_TOOL_SCHEMA: dict = {
+    "name": "analyze_and_improve",
+    "description": (
+        "Use this when the query asks how to IMPROVE, ENHANCE, REVIEW, AUDIT, or OPTIMIZE "
+        "something that already exists in the codebase. "
+        "Examples: 'how can I make /plan better?', 'how to improve the retriever?', "
+        "'review the chunker', 'what are the weaknesses of the auth system?', "
+        "'how to make the response quality better?', 'optimize the search pipeline'. "
+        "Respond with a DEEP, GROUNDED analysis — not a generic implementation plan. "
+        "You must analyze the CURRENT implementation first, then give specific improvements "
+        "grounded in real file paths and symbol names."
+    ),
+    "input_schema": {
+        "type": "object",
+        "required": ["analysis"],
+        "properties": {
+            "analysis": {
+                "type": "string",
+                "description": (
+                    "Deep markdown analysis. MUST use these sections in order:\n"
+                    "## Current Implementation\n"
+                    "  — What it does now, how it works, reference actual file:line\n"
+                    "## What Works Well\n"
+                    "  — Specific strengths with evidence from the code\n"
+                    "## Issues & Gaps\n"
+                    "  — Specific weaknesses, anti-patterns, missed opportunities "
+                    "(cite file:line for each)\n"
+                    "## Concrete Improvements\n"
+                    "  — Specific, grounded changes. For each: what to change, "
+                    "which file/function, why it matters\n"
+                    "## Implementation Guidance\n"
+                    "  — If changes are needed: exact files, functions to modify, "
+                    "pseudocode for non-trivial logic"
+                ),
+            },
+            "key_files": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "The primary files relevant to this analysis",
+            },
+            "priority": {
+                "type": "string",
+                "enum": ["quick-wins", "architectural", "both"],
+                "description": "Nature of the improvements: quick wins, architectural changes, or both",
             },
         },
     },

@@ -80,12 +80,21 @@ async def _async_incremental_index(payload: dict[str, Any]) -> dict[str, Any]:
     elapsed = time.monotonic() - start_time
     log.info("pipeline.done", elapsed_s=round(elapsed, 2), **stats)
 
+    # Update repo status → "ready" (or "error" if every file failed)
+    from src.storage.db import update_repo_status
+    repo_final_status = (
+        "error"
+        if stats["errors"] > 0 and stats["files_processed"] == 0 and stats["files_skipped_merkle"] == 0
+        else "ready"
+    )
+    await update_repo_status(owner, repo, repo_final_status)
+
     # Update webhook event status to "done" (or "error" if all files errored)
     if delivery_id and delivery_id != "manual":
         from src.storage.db import update_webhook_status
-        final_status = "error" if stats["errors"] > 0 and stats["files_processed"] == 0 else "done"
+        webhook_final = "error" if stats["errors"] > 0 and stats["files_processed"] == 0 else "done"
         err_msg = f"{stats['errors']} error(s)" if stats["errors"] else None
-        await update_webhook_status(delivery_id, final_status, error=err_msg)
+        await update_webhook_status(delivery_id, webhook_final, error=err_msg)
 
     return stats
 

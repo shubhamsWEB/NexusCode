@@ -1,4 +1,3 @@
-import asyncio
 import os
 import sys
 
@@ -10,25 +9,17 @@ import streamlit as st
 from src.ui.helpers import api_get, api_post, time_ago
 
 
-async def _fetch_events(owner, name):
-    from src.storage.db import AsyncSessionLocal
-    from sqlalchemy import text
-
-    async with AsyncSessionLocal() as s:
-        where = "WHERE repo_owner = :o AND repo_name = :n" if (owner and name) else ""
-        rows = (
-            await s.execute(
-                text(
-                    f"""
-            SELECT event_type, status, files_changed, received_at, processed_at, error_message
-            FROM webhook_events {where}
-            ORDER BY received_at DESC LIMIT 5
-        """
-                ),
-                {"o": owner, "n": name} if (owner and name) else {},
-            )
-        ).mappings().all()
-        return [dict(r) for r in rows]
+def _fetch_events(owner, name):
+    """Fetch recent webhook events via the API (avoids asyncio.run / asyncpg conflicts)."""
+    path = "/events?limit=5"
+    if owner:
+        path += f"&repo_owner={owner}"
+    if name:
+        path += f"&repo_name={name}"
+    data, err = api_get(path, timeout=10)
+    if err or not data:
+        return []
+    return data
 
 
 def render():
@@ -188,11 +179,7 @@ Leave `GITHUB_TOKEN` unset (or remove it) so the server prefers App authenticati
         "processing": "🔵",
     }
 
-    try:
-        events = asyncio.run(_fetch_events(filter_owner, filter_name))
-    except Exception as exc:
-        events = []
-        st.warning(f"Could not load webhook events from database: {exc}")
+    events = _fetch_events(filter_owner, filter_name)
 
     if not events:
         repo_label = selected_label if selected_label != "All repos" else "this repo"

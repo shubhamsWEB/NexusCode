@@ -65,14 +65,18 @@ def render():
                                 data, err = api_post(
                                     f"/repos/{owner}/{name}/index",
                                     json={},
-                                    timeout=15,
+                                    timeout=30,
                                 )
                             if err:
                                 st.error(f"Re-index failed: {err}")
                             else:
-                                job_id = (data or {}).get("id", "")
+                                job_id = (data or {}).get("job_id", "")
                                 short_id = job_id[:8] if job_id else "unknown"
-                                st.success(f"Re-index job queued (ID: {short_id})")
+                                files_found = (data or {}).get("files_found", 0)
+                                st.success(
+                                    f"Re-index job queued — **{files_found} files** "
+                                    f"(Job ID: `{short_id}`)"
+                                )
 
                     with btn_remove:
                         if not st.session_state.get(confirm_key, False):
@@ -154,14 +158,25 @@ def render():
                         idx_data, idx_err = api_post(
                             f"/repos/{owner_clean}/{name_clean}/index",
                             json={},
-                            timeout=15,
+                            timeout=30,
                         )
                     if idx_err:
                         st.error(f"Indexing could not be started: {idx_err}")
                     else:
-                        job_id = (idx_data or {}).get("id", "")
+                        job_id = (idx_data or {}).get("job_id", "")
                         short_id = job_id[:8] if job_id else "unknown"
-                        st.success(f"Indexing job queued (ID: {short_id})")
+                        files_found = (idx_data or {}).get("files_found", 0)
+                        st.success(
+                            f"✅ Indexing job queued — **{files_found} files** to index "
+                            f"(Job ID: `{short_id}`)"
+                        )
+                        st.info(
+                            "⚙️ **The RQ worker must be running to process this job.** "
+                            "If chunks stay at 0, start it with:\n\n"
+                            "```\nPYTHONPATH=. OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES "
+                            "rq worker indexing --url redis://localhost:6379\n```",
+                            icon="ℹ️",
+                        )
 
                 st.rerun()
 
@@ -181,7 +196,31 @@ def render():
         queued_count = (jobs_data or {}).get("queued_count", 0)
 
         if queued_count > 0:
-            st.info(f"{queued_count} job(s) currently in queue")
+            # Check if any queued job has been waiting > 30s without being picked up
+            from datetime import datetime, timezone
+            stale = False
+            for job in jobs_list:
+                if job.get("state") == "queued" and job.get("enqueued_at") and not job.get("started_at"):
+                    try:
+                        enqueued = datetime.fromisoformat(
+                            job["enqueued_at"].replace("Z", "+00:00")
+                        )
+                        age_s = (datetime.now(timezone.utc) - enqueued).total_seconds()
+                        if age_s > 30:
+                            stale = True
+                            break
+                    except Exception:
+                        pass
+
+            if stale:
+                st.warning(
+                    f"⚠️ **{queued_count} job(s) queued but the RQ worker is not running.** "
+                    "Start it to begin indexing:\n\n"
+                    "```\nPYTHONPATH=. OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES "
+                    "rq worker indexing --url redis://localhost:6379\n```"
+                )
+            else:
+                st.info(f"{queued_count} job(s) currently in queue")
 
         if not jobs_list:
             st.info("No indexing jobs found.")

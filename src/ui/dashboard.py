@@ -144,17 +144,8 @@ def _render_get_started():
     # Webhook: at least one webhook_event exists
     webhook_ok = False
     if api_ok:
-        try:
-            import asyncio
-            from sqlalchemy import text
-            from src.storage.db import AsyncSessionLocal
-            async def _has_events():
-                async with AsyncSessionLocal() as s:
-                    n = (await s.execute(text("SELECT COUNT(*) FROM webhook_events"))).scalar()
-                    return n > 0
-            webhook_ok = asyncio.run(_has_events())
-        except Exception:
-            pass
+        events_data, _ = _api("/events?limit=1", timeout=5)
+        webhook_ok = bool(events_data)
 
     token_ok = bool(st.session_state.get("last_token"))
 
@@ -233,94 +224,40 @@ def _render_health():
     st.divider()
 
     st.subheader("Per-Repository Breakdown")
-    try:
-        import asyncio
+    rows, err = _api("/stats/repos", timeout=10)
+    if err:
+        st.warning(f"Could not load per-repo stats: {err}")
+    elif rows:
         import pandas as pd
-        from sqlalchemy import text
-        from src.storage.db import AsyncSessionLocal
-
-        async def _repo_stats():
-            async with AsyncSessionLocal() as session:
-                rows = (await session.execute(text("""
-                    SELECT repo_owner, repo_name,
-                           COUNT(*) FILTER (WHERE is_deleted = FALSE) AS active_chunks,
-                           COUNT(*) FILTER (WHERE is_deleted = TRUE)  AS deleted_chunks,
-                           COUNT(DISTINCT file_path)
-                               FILTER (WHERE is_deleted = FALSE)      AS files,
-                           MAX(indexed_at)                            AS last_indexed
-                    FROM chunks
-                    GROUP BY repo_owner, repo_name
-                    ORDER BY active_chunks DESC
-                """))).mappings().all()
-                return [dict(r) for r in rows]
-
-        rows = asyncio.run(_repo_stats())
-        if rows:
-            df = pd.DataFrame(rows)
-            df["repo"] = df["repo_owner"] + "/" + df["repo_name"]
-            df["last_indexed"] = df["last_indexed"].apply(
-                lambda x: x.isoformat() if x else None
-            )
-            df = df[["repo", "active_chunks", "deleted_chunks", "files", "last_indexed"]]
-            df.columns = ["Repository", "Active Chunks", "Soft-Deleted", "Files", "Last Indexed"]
-            st.dataframe(df, use_container_width=True, hide_index=True)
-        else:
-            st.info("No repositories indexed yet.")
-    except Exception as e:
-        st.warning(f"Could not load per-repo stats: {e}")
+        df = pd.DataFrame(rows)
+        df["repo"] = df["repo_owner"] + "/" + df["repo_name"]
+        df = df[["repo", "active_chunks", "deleted_chunks", "files", "last_indexed"]]
+        df.columns = ["Repository", "Active Chunks", "Soft-Deleted", "Files", "Last Indexed"]
+        st.dataframe(df, use_container_width=True, hide_index=True)
+    else:
+        st.info("No repositories indexed yet.")
 
     st.divider()
     st.subheader("Recently Indexed Files")
-    try:
-        async def _recent_files():
-            async with AsyncSessionLocal() as session:
-                rows = (await session.execute(text("""
-                    SELECT file_path, repo_owner, repo_name,
-                           language, token_count, commit_sha, indexed_at
-                    FROM chunks
-                    WHERE is_deleted = FALSE
-                    ORDER BY indexed_at DESC
-                    LIMIT 20
-                """))).mappings().all()
-                return [dict(r) for r in rows]
-
-        files = asyncio.run(_recent_files())
-        if files:
-            df = pd.DataFrame(files)
-            df["repo"]   = df["repo_owner"] + "/" + df["repo_name"]
-            df["commit"] = df["commit_sha"].apply(lambda x: x[:7] if x else "")
-            df["ago"]    = df["indexed_at"].apply(
-                lambda x: _time_ago(x.isoformat() if x else None)
-            )
-            df = df[["file_path", "repo", "language", "token_count", "commit", "ago"]]
-            df.columns = ["File", "Repo", "Lang", "Tokens", "Commit", "Indexed"]
-            st.dataframe(df, use_container_width=True, hide_index=True)
-    except Exception as e:
-        st.warning(f"Could not load recent files: {e}")
+    files, err = _api("/stats/recent-files?limit=20", timeout=10)
+    if err:
+        st.warning(f"Could not load recent files: {err}")
+    elif files:
+        import pandas as pd
+        df = pd.DataFrame(files)
+        df["repo"]   = df["repo_owner"] + "/" + df["repo_name"]
+        df["commit"] = df["commit_sha"].apply(lambda x: x[:7] if x else "")
+        df["ago"]    = df["indexed_at"].apply(_time_ago)
+        df = df[["file_path", "repo", "language", "token_count", "commit", "ago"]]
+        df.columns = ["File", "Repo", "Lang", "Tokens", "Commit", "Indexed"]
+        st.dataframe(df, use_container_width=True, hide_index=True)
 
     st.divider()
     st.subheader("Chunk Size Distribution")
-    try:
-        async def _chunk_dist():
-            async with AsyncSessionLocal() as session:
-                rows = (await session.execute(text("""
-                    SELECT CASE
-                               WHEN token_count < 100 THEN '<100'
-                               WHEN token_count < 200 THEN '100-199'
-                               WHEN token_count < 300 THEN '200-299'
-                               WHEN token_count < 400 THEN '300-399'
-                               WHEN token_count < 512 THEN '400-511'
-                               ELSE '512+'
-                           END AS bucket,
-                           COUNT(*) AS count
-                    FROM chunks
-                    WHERE is_deleted = FALSE AND token_count IS NOT NULL
-                    GROUP BY bucket ORDER BY bucket
-                """))).mappings().all()
-                return [dict(r) for r in rows]
-
-        buckets = asyncio.run(_chunk_dist())
-        if buckets:
+    buckets, err = _api("/stats/chunk-distribution", timeout=10)
+    if buckets:
+        try:
+            import pandas as pd
             import plotly.express as px
             df = pd.DataFrame(buckets)
             fig = px.bar(df, x="bucket", y="count", title="Token Count per Chunk",
@@ -328,8 +265,8 @@ def _render_health():
                          labels={"bucket": "Token Range", "count": "Chunk Count"})
             fig.update_layout(showlegend=False, height=300)
             st.plotly_chart(fig, use_container_width=True)
-    except Exception as e:
-        st.caption(f"Chart unavailable: {e}")
+        except Exception as e:
+            st.caption(f"Chart unavailable: {e}")
 
     if auto_refresh:
         time.sleep(10)
@@ -446,57 +383,43 @@ def _render_activity_feed():
         if st.button("Refresh", use_container_width=True):
             st.rerun()
 
-    try:
-        import asyncio
-        from sqlalchemy import text
-        from src.storage.db import AsyncSessionLocal
+    events, err = _api("/events?limit=20", timeout=10)
 
-        async def _events():
-            async with AsyncSessionLocal() as session:
-                rows = (await session.execute(text("""
-                    SELECT delivery_id, event_type,
-                           repo_owner, repo_name, commit_sha,
-                           files_changed, status, error_message,
-                           received_at, processed_at
-                    FROM webhook_events
-                    ORDER BY received_at DESC
-                    LIMIT 20
-                """))).mappings().all()
-                return [dict(r) for r in rows]
+    if err:
+        st.error(f"Could not load events: {err}")
+    elif not events:
+        st.info("No webhook events received yet.")
+    else:
+        _STATUS_ICON = {
+            "queued": "🟡", "processing": "🔵",
+            "done":   "✅", "error":      "❌", "skipped": "⬜",
+        }
+        for ev in events:
+            icon   = _STATUS_ICON.get(ev["status"], "❓")
+            repo   = f"{ev['repo_owner']}/{ev['repo_name']}" if ev["repo_owner"] else "—"
+            commit = ev["commit_sha"][:7] if ev["commit_sha"] else "—"
+            received = _time_ago(ev.get("received_at"))
 
-        events = asyncio.run(_events())
-
-        if not events:
-            st.info("No webhook events received yet.")
-        else:
-            _STATUS_ICON = {
-                "queued": "🟡", "processing": "🔵",
-                "done":   "✅", "error":      "❌", "skipped": "⬜",
-            }
-            for ev in events:
-                icon   = _STATUS_ICON.get(ev["status"], "❓")
-                repo   = f"{ev['repo_owner']}/{ev['repo_name']}" if ev["repo_owner"] else "—"
-                commit = ev["commit_sha"][:7] if ev["commit_sha"] else "—"
-                received = _time_ago(ev["received_at"].isoformat() if ev["received_at"] else None)
-
-                with st.container(border=True):
-                    c1, c2, c3, c4, c5 = st.columns([1, 3, 2, 2, 2])
-                    c1.markdown(f"## {icon}")
-                    c2.markdown(f"**{repo}**  \n`{commit}` — {ev['event_type']}")
-                    c3.metric("Files changed", ev["files_changed"])
-                    c4.markdown(f"**Status:** `{ev['status']}`  \n{received}")
-                    if ev["processed_at"] and ev["received_at"]:
-                        dur = (ev["processed_at"] - ev["received_at"]).total_seconds()
+            with st.container(border=True):
+                c1, c2, c3, c4, c5 = st.columns([1, 3, 2, 2, 2])
+                c1.markdown(f"## {icon}")
+                c2.markdown(f"**{repo}**  \n`{commit}` — {ev['event_type']}")
+                c3.metric("Files changed", ev["files_changed"])
+                c4.markdown(f"**Status:** `{ev['status']}`  \n{received}")
+                if ev.get("processed_at") and ev.get("received_at"):
+                    from datetime import datetime, timezone
+                    try:
+                        t1 = datetime.fromisoformat(ev["received_at"])
+                        t2 = datetime.fromisoformat(ev["processed_at"])
+                        dur = (t2 - t1).total_seconds()
                         c5.metric("Duration", f"{dur:.1f}s")
-                    else:
+                    except Exception:
                         c5.caption("—")
-                    if ev["error_message"]:
-                        st.error(f"Error: {ev['error_message']}")
-                    st.caption(f"Delivery ID: `{ev['delivery_id'] or '—'}`")
-
-    except Exception as e:
-        st.error(f"Could not load events: {e}")
-        st.exception(e)
+                else:
+                    c5.caption("—")
+                if ev.get("error_message"):
+                    st.error(f"Error: {ev['error_message']}")
+                st.caption(f"Delivery ID: `{ev.get('delivery_id') or '—'}`")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
