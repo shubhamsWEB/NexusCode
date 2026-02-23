@@ -31,7 +31,7 @@ voyageai==0.3.0
 sentence-transformers         # cross-encoder reranker (version pinned by torch)
 
 # Token counting
-tiktoken==0.7.0
+tiktoken==0.12.0
 
 # Config & validation
 pydantic==2.12.5
