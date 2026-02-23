@@ -118,10 +118,13 @@ async def fetch_full_tree(
     data = resp.json()
 
     if data.get("truncated"):
+        # Sanitise user-supplied values before logging to prevent log injection.
+        safe_owner = owner.replace("\n", "").replace("\r", "")
+        safe_repo = repo.replace("\n", "").replace("\r", "")
         logger.warning(
             "Tree response truncated for %s/%s — repo may be too large for single tree call",
-            owner,
-            repo,
+            safe_owner,
+            safe_repo,
         )
 
     return [
