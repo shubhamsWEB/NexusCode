@@ -1,5 +1,10 @@
 # 🧠 Codebase Intelligence — MCP Knowledge Server
 
+[![CI](https://github.com/shubhamsWEB/nexusCode_server/actions/workflows/ci.yml/badge.svg)](https://github.com/shubhamsWEB/nexusCode_server/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
+[![Code style: ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+
 A centralized, always-fresh knowledge service that indexes your GitHub repositories and exposes the entire codebase to any AI agent via Anthropic's **Model Context Protocol (MCP)**.
 
 > Push a commit → GitHub fires a webhook → files re-indexed in <5 seconds → every AI agent you have sees the change instantly.
@@ -324,3 +329,29 @@ nexusCode_server/
 ├── Procfile
 └── requirements.txt
 ```
+
+---
+
+## Contributing
+
+Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, coding standards, and the PR process.
+
+```bash
+# Quick start for contributors
+git clone https://github.com/shubhamsWEB/nexusCode_server.git
+cd nexusCode_server
+make install-dev   # venv + deps + pre-commit hooks
+cp .env.example .env  # fill in your keys
+make docker-infra  # start postgres + redis
+make db-init       # initialise schema
+make dev           # start API server with hot-reload
+make test          # run test suite
+```
+
+**Good first issues** are labelled [`good first issue`](https://github.com/shubhamsWEB/nexusCode_server/issues?q=label%3A%22good+first+issue%22) in the issue tracker.
+
+---
+
+## License
+
+[MIT](LICENSE) © 2026 Shubham Agrawal

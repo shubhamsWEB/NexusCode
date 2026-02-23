@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question / Discussion
+    url: https://github.com/shubhamsWEB/nexusCode_server/discussions
+    about: Ask questions and discuss ideas in GitHub Discussions
+  - name: Security Vulnerability
+    url: https://github.com/shubhamsWEB/nexusCode_server/security/advisories/new
+    about: Report a security vulnerability privately

@@ -1,0 +1,14 @@
+# CODEOWNERS — these users are requested as reviewers on PRs
+# that touch the listed paths.
+
+# Global fallback
+* @shubhamsWEB
+
+# Core pipeline — require extra review
+src/pipeline/      @shubhamsWEB
+src/retrieval/     @shubhamsWEB
+src/storage/       @shubhamsWEB
+
+# Security-sensitive areas
+src/mcp/auth.py    @shubhamsWEB
+src/github/webhook.py @shubhamsWEB
