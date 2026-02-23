@@ -20,7 +20,7 @@ httpx-sse==0.4.0            # MCP SSE transport
 # AST parsing
 tree-sitter==0.23.1
 tree-sitter-python==0.25.0
-tree-sitter-javascript==0.23.0
+tree-sitter-javascript==0.25.0
 tree-sitter-typescript==0.23.0
 tree-sitter-java==0.23.2
 tree-sitter-go==0.23.1
