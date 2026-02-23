@@ -34,7 +34,7 @@ sentence-transformers         # cross-encoder reranker (version pinned by torch)
 tiktoken==0.7.0
 
 # Config & validation
-pydantic==2.9.2
+pydantic==2.12.5
 pydantic-settings==2.5.2
 python-dotenv==1.0.1
 
