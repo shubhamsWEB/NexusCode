@@ -7,12 +7,12 @@ FastAPI webhook receiver for GitHub push events.
 - Enqueues indexing job to Redis
 - Must return HTTP 200/202 within 10 seconds (GitHub requirement)
 """
+
 from __future__ import annotations
 
 import hashlib
 import hmac
 import logging
-from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Request, status
@@ -44,6 +44,7 @@ def get_queue() -> Queue:
 
 # ── HMAC verification ─────────────────────────────────────────────────────────
 
+
 def _verify_signature(body: bytes, signature_header: str) -> bool:
     """
     Constant-time comparison of GitHub's HMAC-SHA256 signature.
@@ -51,15 +52,19 @@ def _verify_signature(body: bytes, signature_header: str) -> bool:
     """
     if not signature_header or not signature_header.startswith("sha256="):
         return False
-    expected = "sha256=" + hmac.new(
-        settings.github_webhook_secret.encode(),
-        body,
-        hashlib.sha256,
-    ).hexdigest()
+    expected = (
+        "sha256="
+        + hmac.new(
+            settings.github_webhook_secret.encode(),
+            body,
+            hashlib.sha256,
+        ).hexdigest()
+    )
     return hmac.compare_digest(expected, signature_header)
 
 
 # ── Webhook endpoint ──────────────────────────────────────────────────────────
+
 
 @router.post("/webhook", status_code=status.HTTP_202_ACCEPTED)
 async def github_webhook(
@@ -97,7 +102,8 @@ async def github_webhook(
     if event.branch != settings.github_default_branch:
         logger.debug(
             "Ignoring push to branch '%s' (tracking '%s')",
-            event.branch, settings.github_default_branch,
+            event.branch,
+            settings.github_default_branch,
         )
         return JSONResponse({"message": f"branch '{event.branch}' not tracked"})
 
@@ -109,8 +115,11 @@ async def github_webhook(
     logger.info(
         "Push event %s: %s/%s@%s — upsert=%d delete=%d",
         x_github_delivery,
-        event.repo_owner, event.repo_name, event.after[:7],
-        len(files_to_upsert), len(files_to_delete),
+        event.repo_owner,
+        event.repo_name,
+        event.after[:7],
+        len(files_to_upsert),
+        len(files_to_delete),
     )
 
     # 6. Log to DB (fire-and-forget, don't block response)

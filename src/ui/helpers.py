@@ -2,10 +2,10 @@
 Shared utilities for all dashboard pages.
 Import API_URL from st.session_state in each page (set by the sidebar in dashboard.py).
 """
+
 from __future__ import annotations
 
-import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 import streamlit as st
@@ -60,7 +60,7 @@ def time_ago(ts_str: str | None) -> str:
         return "never"
     try:
         ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-        delta = datetime.now(timezone.utc) - ts
+        delta = datetime.now(UTC) - ts
         s = int(delta.total_seconds())
         if s < 60:
             return f"{s}s ago"
@@ -76,14 +76,14 @@ def time_ago(ts_str: str | None) -> str:
 def status_badge(status: str) -> str:
     """Return a coloured emoji badge for a repo/job status string."""
     return {
-        "pending":    "⬜ pending",
-        "indexing":   "🔵 indexing",
-        "ready":      "✅ ready",
-        "error":      "❌ error",
-        "queued":     "🟡 queued",
-        "started":    "🔵 started",
-        "finished":   "✅ finished",
-        "failed":     "❌ failed",
-        "done":       "✅ done",
-        "skipped":    "⬜ skipped",
+        "pending": "⬜ pending",
+        "indexing": "🔵 indexing",
+        "ready": "✅ ready",
+        "error": "❌ error",
+        "queued": "🟡 queued",
+        "started": "🔵 started",
+        "finished": "✅ finished",
+        "failed": "❌ failed",
+        "done": "✅ done",
+        "skipped": "⬜ skipped",
     }.get(status, f"❓ {status}")

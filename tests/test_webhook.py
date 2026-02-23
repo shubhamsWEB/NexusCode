@@ -2,20 +2,18 @@
 Unit tests for webhook HMAC verification and push payload parsing.
 No network calls, no DB, no Redis required.
 """
+
 import hashlib
 import hmac
-import json
 
-import pytest
-from fastapi.testclient import TestClient
-
-from src.github.events import GitHubCommit, PushEvent
+from src.github.events import PushEvent
 from src.github.webhook import _verify_signature
 
 SECRET = "test-secret"
 
 
 # ── Signature verification ────────────────────────────────────────────────────
+
 
 def _sign(body: bytes, secret: str = SECRET) -> str:
     digest = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
@@ -24,7 +22,9 @@ def _sign(body: bytes, secret: str = SECRET) -> str:
 
 def test_valid_signature():
     from unittest.mock import patch
+
     from src.github import webhook as wh
+
     body = b'{"foo": "bar"}'
     with patch.object(wh.settings, "github_webhook_secret", SECRET):
         assert _verify_signature(body, _sign(body)) is True
@@ -36,13 +36,13 @@ def test_invalid_signature():
 
 
 def test_missing_prefix():
-    body = b'hello'
+    body = b"hello"
     digest = hmac.new(SECRET.encode(), body, hashlib.sha256).hexdigest()
     assert _verify_signature(body, digest) is False  # missing "sha256=" prefix
 
 
 def test_wrong_secret():
-    body = b'hello'
+    body = b"hello"
     sig = _sign(body, secret="wrong-secret")
     assert _verify_signature(body, sig) is False
 

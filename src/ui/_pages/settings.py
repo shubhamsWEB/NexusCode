@@ -1,4 +1,5 @@
 import streamlit as st
+
 from src.ui.helpers import api_get, api_post
 
 
@@ -70,6 +71,7 @@ def render():
     if config_err:
         st.error(f"Could not load configuration: {config_err}")
     elif config_data:
+
         def show_section(title, section_key, fields):
             section = config_data.get(section_key, {})
             with st.expander(title, expanded=False):
@@ -98,7 +100,12 @@ def render():
         show_section(
             "Indexing",
             "indexing",
-            ["chunk_target_tokens", "chunk_overlap_tokens", "supported_extensions", "ignore_patterns"],
+            [
+                "chunk_target_tokens",
+                "chunk_overlap_tokens",
+                "supported_extensions",
+                "ignore_patterns",
+            ],
         )
 
         show_section(
@@ -125,7 +132,9 @@ def render():
         github_token = st.text_input("GITHUB_TOKEN", type="password", placeholder="ghp_...")
         st.caption("Leave blank to keep current value.")
 
-        github_webhook_secret = st.text_input("GITHUB_WEBHOOK_SECRET", type="password", placeholder="your-webhook-secret")
+        github_webhook_secret = st.text_input(
+            "GITHUB_WEBHOOK_SECRET", type="password", placeholder="your-webhook-secret"
+        )
         st.caption("Leave blank to keep current value.")
 
         github_default_branch = st.text_input("GITHUB_DEFAULT_BRANCH", value="", placeholder="main")
@@ -135,7 +144,9 @@ def render():
         st.caption("Leave blank to keep current value.")
 
         st.markdown("**Optional**")
-        anthropic_api_key = st.text_input("ANTHROPIC_API_KEY", type="password", placeholder="sk-ant-...")
+        anthropic_api_key = st.text_input(
+            "ANTHROPIC_API_KEY", type="password", placeholder="sk-ant-..."
+        )
         st.caption("Leave blank to keep current value.")
 
         st.markdown("**Auth**")
@@ -199,7 +210,7 @@ def render():
         if not updates:
             st.info("No changes to save.")
         else:
-            result, err = api_post("/config/env", json={"updates": updates}, timeout=10)
+            _, err = api_post("/config/env", json={"updates": updates}, timeout=10)
             if err:
                 st.error(f"Failed to save configuration: {err}")
             else:

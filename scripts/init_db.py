@@ -3,6 +3,7 @@
 Run once to create all tables and extensions.
 Usage: python scripts/init_db.py
 """
+
 import asyncio
 import sys
 from pathlib import Path
@@ -36,10 +37,7 @@ async def main() -> None:
     verify_engine = create_async_engine(settings.database_url)
     async with verify_engine.connect() as conn:
         result = await conn.execute(
-            text(
-                "SELECT tablename FROM pg_tables "
-                "WHERE schemaname = 'public' ORDER BY tablename;"
-            )
+            text("SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename;")
         )
         tables = [row[0] for row in result]
         print(f"\n✓ Tables found: {tables}")

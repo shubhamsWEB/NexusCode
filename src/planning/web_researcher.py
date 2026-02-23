@@ -17,10 +17,10 @@ Flow:
 
 Falls back gracefully to "" on any failure so planning always continues.
 """
+
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from src.config import settings
 
@@ -113,6 +113,7 @@ async def research_implementation(query: str, stack_context: str = "") -> str:
         )
 
     import asyncio
+
     loop = asyncio.get_event_loop()
 
     def _call():
@@ -143,9 +144,7 @@ async def research_implementation(query: str, stack_context: str = "") -> str:
         return notes
     except Exception as exc:
         # Graceful degradation — web search is enrichment, not required
-        logger.warning(
-            "web_researcher: search failed (planning continues without it): %s", exc
-        )
+        logger.warning("web_researcher: search failed (planning continues without it): %s", exc)
         return ""
 
 

@@ -9,11 +9,12 @@ Intent-aware response: Claude picks one of two tools depending on query type.
 This mirrors how Claude Code itself behaves: questions get conversational
 markdown answers; implementation tasks get structured plans with files/steps/risks.
 """
+
 from __future__ import annotations
 
 import logging
 import time
-from typing import AsyncIterator, Optional
+from collections.abc import AsyncIterator
 
 from src.config import settings
 from src.planning.retriever import PlanningContext
@@ -86,11 +87,12 @@ RULES FOR ALL TOOLS:
 
 # ── Prompt builder ─────────────────────────────────────────────────────────────
 
+
 def _build_user_message(
     query: str,
     ctx: PlanningContext,
-    repo_owner: Optional[str],
-    repo_name: Optional[str],
+    repo_owner: str | None,
+    repo_name: str | None,
 ) -> str:
     repo_scope = f"{repo_owner}/{repo_name}" if (repo_owner and repo_name) else "all indexed repos"
     parts: list[str] = [
@@ -156,6 +158,7 @@ def _build_user_message(
 
 # ── Response handler ───────────────────────────────────────────────────────────
 
+
 def _build_metadata(
     ctx: PlanningContext,
     elapsed_ms: float,
@@ -172,7 +175,9 @@ def _build_metadata(
     )
 
 
-def _parse_response(message, query: str, ctx: PlanningContext, elapsed_ms: float) -> ImplementationPlan:
+def _parse_response(
+    message, query: str, ctx: PlanningContext, elapsed_ms: float
+) -> ImplementationPlan:
     """
     Parse a Claude response that may have called either tool.
     Returns an ImplementationPlan with response_type set appropriately.
@@ -184,9 +189,7 @@ def _parse_response(message, query: str, ctx: PlanningContext, elapsed_ms: float
 
     if tool_block is None:
         # Claude responded in text (shouldn't happen but handle gracefully)
-        text = " ".join(
-            b.text for b in message.content if hasattr(b, "text") and b.text
-        ).strip()
+        text = " ".join(b.text for b in message.content if hasattr(b, "text") and b.text).strip()
         plan = ImplementationPlan(
             query=query,
             response_type="answer",
@@ -227,11 +230,12 @@ def _parse_response(message, query: str, ctx: PlanningContext, elapsed_ms: float
 
 # ── Sync generator ─────────────────────────────────────────────────────────────
 
+
 async def generate_plan(
     query: str,
     ctx: PlanningContext,
-    repo_owner: Optional[str] = None,
-    repo_name: Optional[str] = None,
+    repo_owner: str | None = None,
+    repo_name: str | None = None,
 ) -> ImplementationPlan:
     """
     Call Claude with two tools and auto tool-choice.
@@ -254,6 +258,7 @@ async def generate_plan(
     t0 = time.monotonic()
 
     import asyncio
+
     loop = asyncio.get_event_loop()
 
     def _call():
@@ -269,9 +274,7 @@ async def generate_plan(
     message = await loop.run_in_executor(None, _call)
     elapsed_ms = (time.monotonic() - t0) * 1000
 
-    tool_used = next(
-        (b.name for b in message.content if b.type == "tool_use"), "none"
-    )
+    tool_used = next((b.name for b in message.content if b.type == "tool_use"), "none")
     logger.info(
         "planning: Claude responded in %.0fms, stop_reason=%s, tool=%s",
         elapsed_ms,
@@ -284,11 +287,12 @@ async def generate_plan(
 
 # ── Streaming generator ────────────────────────────────────────────────────────
 
+
 async def stream_plan(
     query: str,
     ctx: PlanningContext,
-    repo_owner: Optional[str] = None,
-    repo_name: Optional[str] = None,
+    repo_owner: str | None = None,
+    repo_name: str | None = None,
 ) -> AsyncIterator[str]:
     """Stream raw text chunks from Claude."""
     try:

@@ -12,12 +12,13 @@ Pages:
   📡 Activity Feed  — webhook events with status + timing
   🧩 Planning Mode  — generate implementation plans for bugs/features
 """
+
 from __future__ import annotations
 
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import streamlit as st
 
@@ -66,18 +67,19 @@ st.sidebar.caption(f"MCP: `{st.session_state['api_url']}/mcp`")
 # Mini status bar in sidebar
 try:
     import httpx as _httpx
+
     _h = _httpx.get(f"{st.session_state['api_url']}/health", timeout=2).json()
-    st.sidebar.caption(
-        f"**{_h.get('repos',0)} repo(s)** · **{_h.get('chunks',0):,} chunks**"
-    )
+    st.sidebar.caption(f"**{_h.get('repos', 0)} repo(s)** · **{_h.get('chunks', 0):,} chunks**")
 except Exception:
     st.sidebar.caption("API offline")
 
 
 # ── Shared helpers (used by the legacy Health / Query Tester / Activity pages) ─
 
+
 def _api(path: str, method: str = "GET", json=None, timeout: int = 30):
     import httpx
+
     url = f"{st.session_state['api_url']}{path}"
     try:
         if method == "GET":
@@ -99,7 +101,7 @@ def _time_ago(ts_str: str | None) -> str:
         return "never"
     try:
         ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-        delta = datetime.now(timezone.utc) - ts
+        delta = datetime.now(UTC) - ts
         s = int(delta.total_seconds())
         if s < 60:
             return f"{s}s ago"
@@ -116,6 +118,7 @@ def _time_ago(ts_str: str | None) -> str:
 # PAGE: Get Started
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 def _render_get_started():
     st.title("🚀 Get Started")
     st.markdown(
@@ -123,12 +126,10 @@ def _render_get_started():
         "Each step links to the relevant page."
     )
 
-    api_url = st.session_state["api_url"]
-
     # Collect state for each step
-    config_data, config_err = _api("/config")
+    config_data, _ = _api("/config")
     repos_data, _ = _api("/repos")
-    health_data, health_err = _api("/health")
+    health_data, _ = _api("/health")
 
     def _check(condition: bool) -> str:
         return "✅" if condition else "⬜"
@@ -150,11 +151,19 @@ def _render_get_started():
     token_ok = bool(st.session_state.get("last_token"))
 
     steps = [
-        (_check(api_ok),   "API server is running",          "Go to **⚙️ Settings** to verify service health"),
-        (_check(keys_ok),  "API keys configured",            "Go to **⚙️ Settings** → Edit Configuration"),
-        (_check(repos_ok), "At least one repo registered",   "Go to **📦 Repositories** → Add Repository"),
-        (_check(webhook_ok), "Webhook received at least one event", "Go to **🔗 Webhook Setup** for instructions"),
-        (_check(token_ok), "MCP token issued",               "Go to **🔑 MCP Tokens** → Issue New Token"),
+        (_check(api_ok), "API server is running", "Go to **⚙️ Settings** to verify service health"),
+        (_check(keys_ok), "API keys configured", "Go to **⚙️ Settings** → Edit Configuration"),
+        (
+            _check(repos_ok),
+            "At least one repo registered",
+            "Go to **📦 Repositories** → Add Repository",
+        ),
+        (
+            _check(webhook_ok),
+            "Webhook received at least one event",
+            "Go to **🔗 Webhook Setup** for instructions",
+        ),
+        (_check(token_ok), "MCP token issued", "Go to **🔑 MCP Tokens** → Issue New Token"),
     ]
 
     all_done = all(s[0] == "✅" for s in steps)
@@ -196,10 +205,11 @@ def _render_get_started():
 # PAGE: Health  (original, preserved)
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 def _render_health():
     st.title("🏠 Index Health")
 
-    col_r1, col_r2 = st.columns([3, 1])
+    _, col_r2 = st.columns([3, 1])
     with col_r2:
         auto_refresh = st.toggle("Auto-refresh (10s)", value=False)
 
@@ -211,15 +221,15 @@ def _render_health():
 
     st.subheader("Index Summary")
     k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("Chunks",       f"{health.get('chunks', 0):,}")
-    k2.metric("Symbols",      f"{health.get('symbols', 0):,}")
-    k3.metric("Files",        f"{health.get('files', 0):,}")
-    k4.metric("Repos",        f"{health.get('repos', 0):,}")
+    k1.metric("Chunks", f"{health.get('chunks', 0):,}")
+    k2.metric("Symbols", f"{health.get('symbols', 0):,}")
+    k3.metric("Files", f"{health.get('files', 0):,}")
+    k4.metric("Repos", f"{health.get('repos', 0):,}")
     k5.metric("Last indexed", _time_ago(health.get("last_indexed")))
 
     st.caption(
-        f"Status: **{health.get('status','?').upper()}**  |  "
-        f"Last indexed: `{health.get('last_indexed','N/A')}`"
+        f"Status: **{health.get('status', '?').upper()}**  |  "
+        f"Last indexed: `{health.get('last_indexed', 'N/A')}`"
     )
     st.divider()
 
@@ -229,6 +239,7 @@ def _render_health():
         st.warning(f"Could not load per-repo stats: {err}")
     elif rows:
         import pandas as pd
+
         df = pd.DataFrame(rows)
         df["repo"] = df["repo_owner"] + "/" + df["repo_name"]
         df = df[["repo", "active_chunks", "deleted_chunks", "files", "last_indexed"]]
@@ -244,10 +255,11 @@ def _render_health():
         st.warning(f"Could not load recent files: {err}")
     elif files:
         import pandas as pd
+
         df = pd.DataFrame(files)
-        df["repo"]   = df["repo_owner"] + "/" + df["repo_name"]
+        df["repo"] = df["repo_owner"] + "/" + df["repo_name"]
         df["commit"] = df["commit_sha"].apply(lambda x: x[:7] if x else "")
-        df["ago"]    = df["indexed_at"].apply(_time_ago)
+        df["ago"] = df["indexed_at"].apply(_time_ago)
         df = df[["file_path", "repo", "language", "token_count", "commit", "ago"]]
         df.columns = ["File", "Repo", "Lang", "Tokens", "Commit", "Indexed"]
         st.dataframe(df, use_container_width=True, hide_index=True)
@@ -259,10 +271,16 @@ def _render_health():
         try:
             import pandas as pd
             import plotly.express as px
+
             df = pd.DataFrame(buckets)
-            fig = px.bar(df, x="bucket", y="count", title="Token Count per Chunk",
-                         color_discrete_sequence=["#4f8ff7"],
-                         labels={"bucket": "Token Range", "count": "Chunk Count"})
+            fig = px.bar(
+                df,
+                x="bucket",
+                y="count",
+                title="Token Count per Chunk",
+                color_discrete_sequence=["#4f8ff7"],
+                labels={"bucket": "Token Range", "count": "Chunk Count"},
+            )
             fig.update_layout(showlegend=False, height=300)
             st.plotly_chart(fig, use_container_width=True)
         except Exception as e:
@@ -276,6 +294,7 @@ def _render_health():
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE: Query Tester  (original, preserved)
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 def _render_query_tester():
     st.title("🔍 Query Tester")
@@ -304,16 +323,19 @@ def _render_query_tester():
             placeholder="e.g. 'what handles authentication?' or 'PaymentService.charge'",
         )
         c1, c2, c3, c4 = st.columns(4)
-        mode        = c1.selectbox("Mode", ["hybrid", "semantic", "keyword"], index=0)
-        top_k       = c2.number_input("Top K", min_value=1, max_value=20, value=5)
-        rerank      = c3.checkbox("Rerank", value=True)
+        mode = c1.selectbox("Mode", ["hybrid", "semantic", "keyword"], index=0)
+        top_k = c2.number_input("Top K", min_value=1, max_value=20, value=5)
+        rerank = c3.checkbox("Rerank", value=True)
         repo_filter = c4.text_input("Repo filter", placeholder="owner/name")
-        submitted   = st.form_submit_button("Search", use_container_width=True)
+        submitted = st.form_submit_button("Search", use_container_width=True)
 
     if submitted and query.strip():
         payload = {
-            "query": query, "mode": mode, "top_k": int(top_k),
-            "rerank": rerank, "token_budget": 8000,
+            "query": query,
+            "mode": mode,
+            "top_k": int(top_k),
+            "rerank": rerank,
+            "token_budget": 8000,
         }
         if repo_filter.strip():
             payload["repo"] = repo_filter.strip()
@@ -335,32 +357,35 @@ def _render_query_tester():
             )
 
             import pandas as pd
+
             st.subheader("Results")
             rows = []
             for r in results:
-                rows.append({
-                    "Score":    f"{r.get('score', 0):.4f}",
-                    "File":     r.get("file", ""),
-                    "Lines":    r.get("lines", ""),
-                    "Symbol":   r.get("symbol") or "—",
-                    "Kind":     r.get("kind") or "—",
-                    "Language": r.get("language", ""),
-                    "Commit":   r.get("commit", ""),
-                })
+                rows.append(
+                    {
+                        "Score": f"{r.get('score', 0):.4f}",
+                        "File": r.get("file", ""),
+                        "Lines": r.get("lines", ""),
+                        "Symbol": r.get("symbol") or "—",
+                        "Kind": r.get("kind") or "—",
+                        "Language": r.get("language", ""),
+                        "Commit": r.get("commit", ""),
+                    }
+                )
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
             st.subheader("Source Previews")
             for i, r in enumerate(results):
-                lang  = r.get("language", "text")
+                lang = r.get("language", "text")
                 label = (
-                    f"[{r.get('score',0):.4f}] {r.get('file','')}  "
-                    f"L{r.get('lines','')}  —  {r.get('symbol') or '<module>'}"
+                    f"[{r.get('score', 0):.4f}] {r.get('file', '')}  "
+                    f"L{r.get('lines', '')}  —  {r.get('symbol') or '<module>'}"
                 )
                 with st.expander(label, expanded=(i == 0)):
                     st.code(r.get("preview", ""), language=lang)
 
             st.subheader("Assembled Context")
-            st.caption(f"Retrieval log:\n```\n{data.get('retrieval_log','')}\n```")
+            st.caption(f"Retrieval log:\n```\n{data.get('retrieval_log', '')}\n```")
             if data.get("context"):
                 st.text_area(
                     "Ready-to-inject context string",
@@ -374,11 +399,12 @@ def _render_query_tester():
 # PAGE: Activity Feed  (original, preserved)
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 def _render_activity_feed():
     st.title("📡 Webhook Activity Feed")
     st.caption("Last 20 GitHub push events received and their indexing status.")
 
-    col_left, col_right = st.columns([3, 1])
+    _, col_right = st.columns([3, 1])
     with col_right:
         if st.button("Refresh", use_container_width=True):
             st.rerun()
@@ -391,12 +417,15 @@ def _render_activity_feed():
         st.info("No webhook events received yet.")
     else:
         _STATUS_ICON = {
-            "queued": "🟡", "processing": "🔵",
-            "done":   "✅", "error":      "❌", "skipped": "⬜",
+            "queued": "🟡",
+            "processing": "🔵",
+            "done": "✅",
+            "error": "❌",
+            "skipped": "⬜",
         }
         for ev in events:
-            icon   = _STATUS_ICON.get(ev["status"], "❓")
-            repo   = f"{ev['repo_owner']}/{ev['repo_name']}" if ev["repo_owner"] else "—"
+            icon = _STATUS_ICON.get(ev["status"], "❓")
+            repo = f"{ev['repo_owner']}/{ev['repo_name']}" if ev["repo_owner"] else "—"
             commit = ev["commit_sha"][:7] if ev["commit_sha"] else "—"
             received = _time_ago(ev.get("received_at"))
 
@@ -407,7 +436,8 @@ def _render_activity_feed():
                 c3.metric("Files changed", ev["files_changed"])
                 c4.markdown(f"**Status:** `{ev['status']}`  \n{received}")
                 if ev.get("processed_at") and ev.get("received_at"):
-                    from datetime import datetime, timezone
+                    from datetime import datetime
+
                     try:
                         t1 = datetime.fromisoformat(ev["received_at"])
                         t2 = datetime.fromisoformat(ev["processed_at"])
@@ -431,18 +461,22 @@ if page == "🚀 Get Started":
 
 elif page == "⚙️  Settings":
     from src.ui._pages.settings import render
+
     render()
 
 elif page == "📦 Repositories":
     from src.ui._pages.repos import render
+
     render()
 
 elif page == "🔗 Webhook Setup":
     from src.ui._pages.webhook import render
+
     render()
 
 elif page == "🔑 MCP Tokens":
     from src.ui._pages.tokens import render
+
     render()
 
 elif page == "🏠 Health":
@@ -456,4 +490,5 @@ elif page == "📡 Activity Feed":
 
 elif page == "🧩 Planning Mode":
     from src.ui._pages.planning import render
+
     render()

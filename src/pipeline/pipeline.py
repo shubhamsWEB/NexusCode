@@ -16,21 +16,20 @@ Job payload schema:
     "delivery_id":    str,          # for logging / audit
 }
 """
+
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 from typing import Any
 
 import structlog
 
-from src.config import settings
-
 logger = structlog.get_logger(__name__)
 
 
 # ── RQ entry point (synchronous wrapper) ─────────────────────────────────────
+
 
 def run_incremental_index(job_payload: dict[str, Any]) -> dict[str, Any]:
     """
@@ -42,15 +41,16 @@ def run_incremental_index(job_payload: dict[str, Any]) -> dict[str, Any]:
 
 # ── Async pipeline ────────────────────────────────────────────────────────────
 
+
 async def _async_incremental_index(payload: dict[str, Any]) -> dict[str, Any]:
-    owner        = payload["repo_owner"]
-    repo         = payload["repo_name"]
-    commit_sha   = payload["commit_sha"]
-    commit_author  = payload.get("commit_author", "")
+    owner = payload["repo_owner"]
+    repo = payload["repo_name"]
+    commit_sha = payload["commit_sha"]
+    commit_author = payload.get("commit_author", "")
     commit_message = payload.get("commit_message", "")
     files_to_upsert = payload.get("files_to_upsert", [])
     files_to_delete = payload.get("files_to_delete", [])
-    delivery_id  = payload.get("delivery_id", "manual")
+    delivery_id = payload.get("delivery_id", "manual")
 
     log = logger.bind(repo=f"{owner}/{repo}", commit=commit_sha[:7], delivery=delivery_id)
     log.info("pipeline.start", upsert=len(files_to_upsert), delete=len(files_to_delete))
@@ -73,8 +73,14 @@ async def _async_incremental_index(payload: dict[str, Any]) -> dict[str, Any]:
     # ── Step 2: Upsert files ──────────────────────────────────────────────────
     if files_to_upsert:
         await _handle_upserts(
-            owner, repo, commit_sha, commit_author, commit_message,
-            files_to_upsert, stats, log,
+            owner,
+            repo,
+            commit_sha,
+            commit_author,
+            commit_message,
+            files_to_upsert,
+            stats,
+            log,
         )
 
     elapsed = time.monotonic() - start_time
@@ -82,9 +88,12 @@ async def _async_incremental_index(payload: dict[str, Any]) -> dict[str, Any]:
 
     # Update repo status → "ready" (or "error" if every file failed)
     from src.storage.db import update_repo_status
+
     repo_final_status = (
         "error"
-        if stats["errors"] > 0 and stats["files_processed"] == 0 and stats["files_skipped_merkle"] == 0
+        if stats["errors"] > 0
+        and stats["files_processed"] == 0
+        and stats["files_skipped_merkle"] == 0
         else "ready"
     )
     await update_repo_status(owner, repo, repo_final_status)
@@ -92,6 +101,7 @@ async def _async_incremental_index(payload: dict[str, Any]) -> dict[str, Any]:
     # Update webhook event status to "done" (or "error" if all files errored)
     if delivery_id and delivery_id != "manual":
         from src.storage.db import update_webhook_status
+
         webhook_final = "error" if stats["errors"] > 0 and stats["files_processed"] == 0 else "done"
         err_msg = f"{stats['errors']} error(s)" if stats["errors"] else None
         await update_webhook_status(delivery_id, webhook_final, error=err_msg)
@@ -100,6 +110,7 @@ async def _async_incremental_index(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 # ── Deletion handler ──────────────────────────────────────────────────────────
+
 
 async def _handle_deletions(
     owner: str,
@@ -128,6 +139,7 @@ async def _handle_deletions(
 
 # ── Upsert handler ────────────────────────────────────────────────────────────
 
+
 async def _handle_upserts(
     owner: str,
     repo: str,
@@ -144,16 +156,16 @@ async def _handle_upserts(
     from src.pipeline.enricher import enrich_chunks
     from src.pipeline.parser import parse_file
     from src.storage.db import (
+        delete_symbols_for_file,
         get_merkle_hash,
         soft_delete_chunks,
-        delete_symbols_for_file,
         upsert_chunks,
         upsert_merkle_node,
         upsert_symbols,
     )
 
-    all_enriched = []      # accumulate across files before batch-embedding
-    file_meta = []         # parallel list: (path, blob_sha, symbols, enriched_slice_range)
+    all_enriched = []  # accumulate across files before batch-embedding
+    file_meta = []  # parallel list: (path, blob_sha, symbols, enriched_slice_range)
 
     # ── Fetch + parse + chunk + enrich ───────────────────────────────────────
     for path in paths:
@@ -184,14 +196,15 @@ async def _handle_upserts(
             if not enriched:
                 continue
 
-            start_idx = len(all_enriched)
             all_enriched.extend(enriched)
-            file_meta.append({
-                "path": path,
-                "blob_sha": blob_sha,
-                "symbols": parsed.all_symbols,
-                "enriched": enriched,
-            })
+            file_meta.append(
+                {
+                    "path": path,
+                    "blob_sha": blob_sha,
+                    "symbols": parsed.all_symbols,
+                    "enriched": enriched,
+                }
+            )
             stats["files_processed"] += 1
 
         except Exception as exc:
@@ -232,49 +245,53 @@ async def _handle_upserts(
                 if vector is None and ec.chunk_id not in existing_ids:
                     # Embedding failed for this chunk — skip it
                     continue
-                chunk_rows.append({
-                    "id": ec.chunk_id,
-                    "file_path": path,
-                    "repo_owner": owner,
-                    "repo_name": repo,
-                    "commit_sha": commit_sha,
-                    "commit_author": commit_author,
-                    "commit_message": commit_message,
-                    "language": ec.language,
-                    "symbol_name": ec.symbol_name,
-                    "symbol_kind": ec.symbol_kind,
-                    "scope_chain": ec.scope_chain,
-                    "start_line": ec.start_line,
-                    "end_line": ec.end_line,
-                    "raw_content": ec.raw_content,
-                    "enriched_content": ec.enriched_content,
-                    "imports": ec.imports,
-                    "token_count": ec.token_count,
-                    "embedding": vector,
-                    "is_deleted": False,
-                })
+                chunk_rows.append(
+                    {
+                        "id": ec.chunk_id,
+                        "file_path": path,
+                        "repo_owner": owner,
+                        "repo_name": repo,
+                        "commit_sha": commit_sha,
+                        "commit_author": commit_author,
+                        "commit_message": commit_message,
+                        "language": ec.language,
+                        "symbol_name": ec.symbol_name,
+                        "symbol_kind": ec.symbol_kind,
+                        "scope_chain": ec.scope_chain,
+                        "start_line": ec.start_line,
+                        "end_line": ec.end_line,
+                        "raw_content": ec.raw_content,
+                        "enriched_content": ec.enriched_content,
+                        "imports": ec.imports,
+                        "token_count": ec.token_count,
+                        "embedding": vector,
+                        "is_deleted": False,
+                    }
+                )
 
             if chunk_rows:
-                inserted = await upsert_chunks(chunk_rows)
+                await upsert_chunks(chunk_rows)
                 stats["chunks_upserted"] += len(chunk_rows)
 
             # Build symbol rows
             symbol_rows = []
             for sym in symbols_for_file:
-                symbol_rows.append({
-                    "id": f"{path}:{sym.qualified_name}",
-                    "name": sym.name,
-                    "qualified_name": sym.qualified_name,
-                    "kind": sym.kind,
-                    "file_path": path,
-                    "repo_owner": owner,
-                    "repo_name": repo,
-                    "start_line": sym.start_line,
-                    "end_line": sym.end_line,
-                    "signature": sym.signature,
-                    "docstring": sym.docstring,
-                    "is_exported": sym.is_exported,
-                })
+                symbol_rows.append(
+                    {
+                        "id": f"{path}:{sym.qualified_name}",
+                        "name": sym.name,
+                        "qualified_name": sym.qualified_name,
+                        "kind": sym.kind,
+                        "file_path": path,
+                        "repo_owner": owner,
+                        "repo_name": repo,
+                        "start_line": sym.start_line,
+                        "end_line": sym.end_line,
+                        "signature": sym.signature,
+                        "docstring": sym.docstring,
+                        "is_exported": sym.is_exported,
+                    }
+                )
 
             if symbol_rows:
                 await upsert_symbols(symbol_rows)

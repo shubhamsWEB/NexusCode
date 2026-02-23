@@ -2,12 +2,12 @@
 Async SQLAlchemy engine + all database query methods.
 All public methods use async/await and are safe to call concurrently.
 """
+
 from __future__ import annotations
 
-import hashlib
 import logging
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import delete, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -37,6 +37,7 @@ async def get_session() -> AsyncSession:
 
 
 # ── Chunk operations ─────────────────────────────────────────────────────────
+
 
 async def upsert_chunks(chunks: list[dict[str, Any]]) -> int:
     """
@@ -90,8 +91,7 @@ async def get_chunk_count(repo_owner: str, repo_name: str) -> int:
     """Active (non-deleted) chunk count for a repo."""
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            select(Chunk)
-            .where(
+            select(Chunk).where(
                 Chunk.repo_owner == repo_owner,
                 Chunk.repo_name == repo_name,
                 Chunk.is_deleted.is_(False),
@@ -101,6 +101,7 @@ async def get_chunk_count(repo_owner: str, repo_name: str) -> int:
 
 
 # ── Symbol operations ────────────────────────────────────────────────────────
+
 
 async def upsert_symbols(symbols: list[dict[str, Any]]) -> int:
     """
@@ -140,7 +141,8 @@ async def delete_symbols_for_file(file_path: str, repo_owner: str, repo_name: st
 
 # ── Merkle node operations ───────────────────────────────────────────────────
 
-async def get_merkle_hash(file_path: str, repo_owner: str, repo_name: str) -> Optional[str]:
+
+async def get_merkle_hash(file_path: str, repo_owner: str, repo_name: str) -> str | None:
     """Return the stored GitHub blob SHA for this file, or None if not indexed yet."""
     async with AsyncSessionLocal() as session:
         result = await session.execute(
@@ -154,7 +156,9 @@ async def get_merkle_hash(file_path: str, repo_owner: str, repo_name: str) -> Op
         return row
 
 
-async def upsert_merkle_node(file_path: str, repo_owner: str, repo_name: str, blob_sha: str) -> None:
+async def upsert_merkle_node(
+    file_path: str, repo_owner: str, repo_name: str, blob_sha: str
+) -> None:
     """Store or update the blob SHA for a file."""
     async with AsyncSessionLocal() as session:
         stmt = pg_insert(MerkleNode).values(
@@ -162,7 +166,7 @@ async def upsert_merkle_node(file_path: str, repo_owner: str, repo_name: str, bl
             repo_owner=repo_owner,
             repo_name=repo_name,
             blob_sha=blob_sha,
-            last_indexed=datetime.now(timezone.utc),
+            last_indexed=datetime.now(UTC),
         )
         stmt = stmt.on_conflict_do_update(
             index_elements=["file_path", "repo_owner", "repo_name"],
@@ -185,6 +189,7 @@ async def delete_merkle_node(file_path: str, repo_owner: str, repo_name: str) ->
 
 
 # ── Repo operations ──────────────────────────────────────────────────────────
+
 
 async def register_repo(owner: str, name: str, branch: str = "main", description: str = "") -> Repo:
     """Register a new repository (idempotent)."""
@@ -217,7 +222,7 @@ async def update_repo_status(owner: str, name: str, status: str) -> None:
         await session.execute(
             update(Repo)
             .where(Repo.owner == owner, Repo.name == name)
-            .values(status=status, last_indexed=datetime.now(timezone.utc))
+            .values(status=status, last_indexed=datetime.now(UTC))
         )
         await session.commit()
 
@@ -230,9 +235,7 @@ async def delete_repo(owner: str, name: str) -> bool:
     """
     async with AsyncSessionLocal() as session:
         # Verify repo exists first
-        result = await session.execute(
-            select(Repo).where(Repo.owner == owner, Repo.name == name)
-        )
+        result = await session.execute(select(Repo).where(Repo.owner == owner, Repo.name == name))
         if result.scalar_one_or_none() is None:
             return False
 
@@ -244,13 +247,9 @@ async def delete_repo(owner: str, name: str) -> bool:
             delete(Symbol).where(Symbol.repo_owner == owner, Symbol.repo_name == name)
         )
         await session.execute(
-            delete(MerkleNode).where(
-                MerkleNode.repo_owner == owner, MerkleNode.repo_name == name
-            )
+            delete(MerkleNode).where(MerkleNode.repo_owner == owner, MerkleNode.repo_name == name)
         )
-        await session.execute(
-            delete(Repo).where(Repo.owner == owner, Repo.name == name)
-        )
+        await session.execute(delete(Repo).where(Repo.owner == owner, Repo.name == name))
         await session.commit()
         return True
 
@@ -258,7 +257,10 @@ async def delete_repo(owner: str, name: str) -> bool:
 async def get_repo_stats() -> list[dict[str, Any]]:
     """Per-repo breakdown: chunk counts, file counts, last indexed."""
     async with AsyncSessionLocal() as session:
-        rows = (await session.execute(text("""
+        rows = (
+            (
+                await session.execute(
+                    text("""
             SELECT
                 r.owner,
                 r.name,
@@ -287,18 +289,24 @@ async def get_repo_stats() -> list[dict[str, Any]]:
                 GROUP BY repo_owner, repo_name
             ) s ON s.repo_owner = r.owner AND s.repo_name = r.name
             ORDER BY r.registered_at DESC
-        """))).mappings().all()
+        """)
+                )
+            )
+            .mappings()
+            .all()
+        )
         return [dict(row) for row in rows]
 
 
 # ── Webhook event log ────────────────────────────────────────────────────────
 
+
 async def log_webhook_event(
     delivery_id: str,
     event_type: str,
-    repo_owner: Optional[str] = None,
-    repo_name: Optional[str] = None,
-    commit_sha: Optional[str] = None,
+    repo_owner: str | None = None,
+    repo_name: str | None = None,
+    commit_sha: str | None = None,
     files_changed: int = 0,
 ) -> None:
     async with AsyncSessionLocal() as session:
@@ -316,7 +324,7 @@ async def log_webhook_event(
         await session.commit()
 
 
-async def update_webhook_status(delivery_id: str, status: str, error: Optional[str] = None) -> None:
+async def update_webhook_status(delivery_id: str, status: str, error: str | None = None) -> None:
     async with AsyncSessionLocal() as session:
         await session.execute(
             update(WebhookEvent)
@@ -324,7 +332,7 @@ async def update_webhook_status(delivery_id: str, status: str, error: Optional[s
             .values(
                 status=status,
                 error_message=error,
-                processed_at=datetime.now(timezone.utc),
+                processed_at=datetime.now(UTC),
             )
         )
         await session.commit()
@@ -332,23 +340,18 @@ async def update_webhook_status(delivery_id: str, status: str, error: Optional[s
 
 # ── Health / stats ───────────────────────────────────────────────────────────
 
+
 async def get_index_stats() -> dict[str, Any]:
     """Return a summary of the index for the health endpoint and dashboard."""
     async with AsyncSessionLocal() as session:
         chunk_count = (
-            await session.execute(
-                text("SELECT COUNT(*) FROM chunks WHERE is_deleted = FALSE")
-            )
+            await session.execute(text("SELECT COUNT(*) FROM chunks WHERE is_deleted = FALSE"))
         ).scalar()
         symbol_count = (await session.execute(text("SELECT COUNT(*) FROM symbols"))).scalar()
-        file_count = (
-            await session.execute(text("SELECT COUNT(*) FROM merkle_nodes"))
-        ).scalar()
+        file_count = (await session.execute(text("SELECT COUNT(*) FROM merkle_nodes"))).scalar()
         repo_count = (await session.execute(text("SELECT COUNT(*) FROM repos"))).scalar()
         last_indexed = (
-            await session.execute(
-                text("SELECT MAX(last_indexed) FROM merkle_nodes")
-            )
+            await session.execute(text("SELECT MAX(last_indexed) FROM merkle_nodes"))
         ).scalar()
 
         return {

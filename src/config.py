@@ -2,6 +2,7 @@
 Single source of truth for all configuration.
 All values are read from environment variables (or .env file).
 """
+
 from __future__ import annotations
 
 from pydantic import Field, field_validator
@@ -25,9 +26,7 @@ class Settings(BaseSettings):
     github_default_branch: str = Field("main", description="Branch to track")
 
     # ── Database ─────────────────────────────────────────────────────────────
-    database_url: str = Field(
-        "postgresql+asyncpg://codebase:secret@localhost:5432/codebase_intel"
-    )
+    database_url: str = Field("postgresql+asyncpg://codebase:secret@localhost:5432/codebase_intel")
     db_pool_size: int = Field(10)
     db_max_overflow: int = Field(20)
 
@@ -44,7 +43,9 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = Field(None)
     anthropic_model: str = Field("claude-sonnet-4-6", description="Claude model for planning")
     planning_context_budget: int = Field(10000, description="Token budget for planning context")
-    planning_max_output_tokens: int = Field(8000, description="Max output tokens for plan generation")
+    planning_max_output_tokens: int = Field(
+        8000, description="Max output tokens for plan generation"
+    )
 
     # ── MCP Auth ─────────────────────────────────────────────────────────────
     jwt_secret: str = Field(..., description="Secret for signing internal JWTs")
@@ -58,12 +59,8 @@ class Settings(BaseSettings):
     chunk_min_tokens: int = Field(50)
     context_token_budget: int = Field(8000)
 
-    supported_extensions: str = Field(
-        ".py,.ts,.tsx,.js,.java,.go,.rs,.cpp,.c,.cs,.rb,.swift,.kt"
-    )
-    ignore_patterns: str = Field(
-        "node_modules,.git,__pycache__,.venv,dist,build,.next,*.min.js"
-    )
+    supported_extensions: str = Field(".py,.ts,.tsx,.js,.java,.go,.rs,.cpp,.c,.cs,.rb,.swift,.kt")
+    ignore_patterns: str = Field("node_modules,.git,__pycache__,.venv,dist,build,.next,*.min.js")
 
     # ── Reranker ─────────────────────────────────────────────────────────────
     reranker_model: str = Field("cross-encoder/ms-marco-MiniLM-L-6-v2")

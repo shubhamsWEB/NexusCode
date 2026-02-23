@@ -15,6 +15,7 @@ SSE event types:
   {"type": "plan_complete",      "plan": {...}}
   {"type": "error",              "message": "..."}
 """
+
 from __future__ import annotations
 
 import json
@@ -23,7 +24,7 @@ import logging
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from src.planning.schemas import ImplementationPlan, PlanRequest
+from src.planning.schemas import PlanRequest
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ router = APIRouter(prefix="/plan", tags=["planning"])
 
 
 # ── Sync endpoint ─────────────────────────────────────────────────────────────
+
 
 @router.post("", response_model=None)
 async def create_plan(req: PlanRequest):
@@ -82,6 +84,7 @@ async def _sync_plan(req: PlanRequest) -> JSONResponse:
 
 # ── SSE streaming endpoint ────────────────────────────────────────────────────
 
+
 def _sse_response(req: PlanRequest) -> StreamingResponse:
     return StreamingResponse(
         _sse_generator(req),
@@ -115,13 +118,15 @@ async def _sse_generator(req: PlanRequest):
             repo_name=req.repo_name,
             web_research=req.web_research,
         )
-        yield _event({
-            "type": "retrieval_complete",
-            "log": ctx.retrieval_log,
-            "chunks": len(ctx.chunks_used),
-            "tokens": ctx.tokens_used,
-            "web_research_used": bool(ctx.web_research_notes),
-        })
+        yield _event(
+            {
+                "type": "retrieval_complete",
+                "log": ctx.retrieval_log,
+                "chunks": len(ctx.chunks_used),
+                "tokens": ctx.tokens_used,
+                "web_research_used": bool(ctx.web_research_notes),
+            }
+        )
     except Exception as exc:
         logger.exception("planning retriever failed (SSE)")
         yield _event({"type": "error", "message": f"Retrieval failed: {exc}"})

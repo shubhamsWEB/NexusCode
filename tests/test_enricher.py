@@ -1,7 +1,6 @@
 """
 Unit tests for the chunk enricher.
 """
-import pytest
 
 from src.pipeline.chunker import RawChunk
 from src.pipeline.enricher import (
@@ -13,26 +12,27 @@ from src.pipeline.enricher import (
 
 
 def _make_chunk(**kwargs) -> RawChunk:
-    defaults = dict(
-        file_path="src/auth/service.py",
-        language="python",
-        symbol_name="AuthService.validate_token",
-        symbol_kind="method",
-        scope_chain="AuthService > validate_token",
-        start_line=42,
-        end_line=55,
-        raw_content=(
+    defaults = {
+        "file_path": "src/auth/service.py",
+        "language": "python",
+        "symbol_name": "AuthService.validate_token",
+        "symbol_kind": "method",
+        "scope_chain": "AuthService > validate_token",
+        "start_line": 42,
+        "end_line": 55,
+        "raw_content": (
             "def validate_token(self, token: str) -> bool:\n"
             "    payload = jwt.decode(token, self.secret)\n"
             "    return payload.get('valid', False)\n"
         ),
-        imports=["import jwt", "from .models import User", "import os"],
-    )
+        "imports": ["import jwt", "from .models import User", "import os"],
+    }
     defaults.update(kwargs)
     return RawChunk(**defaults)
 
 
 # ── enrich_chunk ──────────────────────────────────────────────────────────────
+
 
 def test_enriched_contains_file_path():
     ec = enrich_chunk(_make_chunk())
@@ -82,6 +82,7 @@ def test_chunk_id_is_64_char_hex():
 
 # ── _short_path ───────────────────────────────────────────────────────────────
 
+
 def test_short_path_long():
     assert _short_path("a/b/c/d/service.py") == "c/d/service.py"
 
@@ -92,6 +93,7 @@ def test_short_path_short():
 
 
 # ── _import_identifiers ───────────────────────────────────────────────────────
+
 
 def test_import_identifiers_simple():
     assert "jwt" in _import_identifiers("import jwt")
@@ -113,6 +115,7 @@ def test_import_identifiers_from_alias():
 
 
 # ── _filter_relevant_imports ──────────────────────────────────────────────────
+
 
 def test_filter_keeps_used_imports():
     imports = ["import jwt", "import os", "from .db import Session"]

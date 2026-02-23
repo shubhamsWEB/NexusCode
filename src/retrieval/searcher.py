@@ -6,11 +6,12 @@ Three modes:
   "keyword"   — tsvector full-text + pg_trgm symbol name match only
   "hybrid"    — both lists merged via RRF, then cross-encoder reranked
 """
+
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 from sqlalchemy import text
 
@@ -32,30 +33,31 @@ class SearchResult:
     repo_owner: str
     repo_name: str
     language: str
-    symbol_name: Optional[str]
-    symbol_kind: Optional[str]
-    scope_chain: Optional[str]
+    symbol_name: str | None
+    symbol_kind: str | None
+    scope_chain: str | None
     start_line: int
     end_line: int
     raw_content: str
     enriched_content: str
     commit_sha: str
-    commit_author: Optional[str]
+    commit_author: str | None
     token_count: int
-    score: float              # final score (cosine, BM25, or RRF)
+    score: float  # final score (cosine, BM25, or RRF)
     rerank_score: float = 0.0  # set by reranker
 
 
 # ── Public entry point ────────────────────────────────────────────────────────
+
 
 async def search(
     query: str,
     query_vector: list[float],
     top_k: int = 5,
     mode: str = "hybrid",
-    repo_owner: Optional[str] = None,
-    repo_name: Optional[str] = None,
-    language: Optional[str] = None,
+    repo_owner: str | None = None,
+    repo_name: str | None = None,
+    language: str | None = None,
 ) -> list[SearchResult]:
     """
     Run a search and return top_k results.
@@ -73,20 +75,21 @@ async def search(
 
     else:  # hybrid
         semantic = await _semantic_search(query_vector, candidates, repo_owner, repo_name, language)
-        keyword  = await _keyword_search(query, candidates, repo_owner, repo_name, language)
-        results  = _reciprocal_rank_fusion(semantic, keyword)
+        keyword = await _keyword_search(query, candidates, repo_owner, repo_name, language)
+        results = _reciprocal_rank_fusion(semantic, keyword)
 
     return results[:top_k]
 
 
 # ── Semantic search ───────────────────────────────────────────────────────────
 
+
 async def _semantic_search(
     vector: list[float],
     limit: int,
-    repo_owner: Optional[str],
-    repo_name: Optional[str],
-    language: Optional[str],
+    repo_owner: str | None,
+    repo_name: str | None,
+    language: str | None,
 ) -> list[SearchResult]:
     vec_str = "[" + ",".join(f"{v:.8f}" for v in vector) + "]"
     where, params = _build_where(repo_owner, repo_name, language)
@@ -111,12 +114,13 @@ async def _semantic_search(
 
 # ── Keyword search ────────────────────────────────────────────────────────────
 
+
 async def _keyword_search(
     query: str,
     limit: int,
-    repo_owner: Optional[str],
-    repo_name: Optional[str],
-    language: Optional[str],
+    repo_owner: str | None,
+    repo_name: str | None,
+    language: str | None,
 ) -> list[SearchResult]:
     where, params = _build_where(repo_owner, repo_name, language)
     params.update({"query": query, "limit": limit})
@@ -147,6 +151,7 @@ async def _keyword_search(
 
 
 # ── RRF merge ────────────────────────────────────────────────────────────────
+
 
 def _reciprocal_rank_fusion(
     semantic: list[SearchResult],
@@ -183,10 +188,11 @@ def _reciprocal_rank_fusion(
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
 
+
 def _build_where(
-    repo_owner: Optional[str],
-    repo_name: Optional[str],
-    language: Optional[str],
+    repo_owner: str | None,
+    repo_name: str | None,
+    language: str | None,
 ) -> tuple[str, dict]:
     clauses = ["is_deleted = FALSE"]
     params: dict[str, Any] = {}
@@ -210,34 +216,39 @@ async def _execute_search(sql, params: dict) -> list[SearchResult]:
 
     results = []
     for row in rows:
-        results.append(SearchResult(
-            chunk_id=row["id"],
-            file_path=row["file_path"],
-            repo_owner=row["repo_owner"],
-            repo_name=row["repo_name"],
-            language=row["language"],
-            symbol_name=row.get("symbol_name"),
-            symbol_kind=row.get("symbol_kind"),
-            scope_chain=row.get("scope_chain"),
-            start_line=row["start_line"],
-            end_line=row["end_line"],
-            raw_content=row["raw_content"],
-            enriched_content=row.get("enriched_content", ""),
-            commit_sha=row.get("commit_sha", ""),
-            commit_author=row.get("commit_author"),
-            token_count=row.get("token_count", 0),
-            score=float(row.get("score") or 0),
-        ))
+        results.append(
+            SearchResult(
+                chunk_id=row["id"],
+                file_path=row["file_path"],
+                repo_owner=row["repo_owner"],
+                repo_name=row["repo_name"],
+                language=row["language"],
+                symbol_name=row.get("symbol_name"),
+                symbol_kind=row.get("symbol_kind"),
+                scope_chain=row.get("scope_chain"),
+                start_line=row["start_line"],
+                end_line=row["end_line"],
+                raw_content=row["raw_content"],
+                enriched_content=row.get("enriched_content", ""),
+                commit_sha=row.get("commit_sha", ""),
+                commit_author=row.get("commit_author"),
+                token_count=row.get("token_count", 0),
+                score=float(row.get("score") or 0),
+            )
+        )
     return results
 
 
 # ── Embed query (convenience wrapper) ────────────────────────────────────────
 
+
 async def embed_query(query: str) -> list[float]:
     """Embed a search query using voyage-code-2 with input_type='query'."""
     import asyncio
-    from src.config import settings
+
     import voyageai
+
+    from src.config import settings
 
     client = voyageai.Client(api_key=settings.voyage_api_key)
     loop = asyncio.get_event_loop()

@@ -1,5 +1,8 @@
+from datetime import UTC
+
 import streamlit as st
-from src.ui.helpers import api_get, api_post, api_delete, time_ago, status_badge
+
+from src.ui.helpers import api_delete, api_get, api_post, status_badge, time_ago
 
 
 def render():
@@ -44,8 +47,7 @@ def render():
                 with left_col:
                     st.markdown(f"**{repo_slug}**")
                     st.markdown(
-                        f"Branch: `{branch}` &nbsp;|&nbsp; "
-                        f"Status: {status_badge(status)}",
+                        f"Branch: `{branch}` &nbsp;|&nbsp; Status: {status_badge(status)}",
                         unsafe_allow_html=True,
                     )
                     st.markdown(
@@ -123,9 +125,7 @@ def render():
         name_input = st.text_input("Repository Name", placeholder="my-repo")
         branch_input = st.text_input("Branch", value="main")
         description_input = st.text_input("Description (optional)", placeholder="")
-        start_indexing = st.checkbox(
-            "Start indexing immediately after registration", value=True
-        )
+        start_indexing = st.checkbox("Start indexing immediately after registration", value=True)
         submitted = st.form_submit_button("➕ Register Repository")
 
     if submitted:
@@ -146,7 +146,7 @@ def render():
             }
 
             with st.spinner(f"Registering {owner_clean}/{name_clean}…"):
-                reg_data, reg_err = api_post("/repos", json=payload, timeout=15)
+                _, reg_err = api_post("/repos", json=payload, timeout=15)
 
             if reg_err:
                 st.error(f"Registration failed: {reg_err}")
@@ -197,15 +197,18 @@ def render():
 
         if queued_count > 0:
             # Check if any queued job has been waiting > 30s without being picked up
-            from datetime import datetime, timezone
+            from datetime import datetime
+
             stale = False
             for job in jobs_list:
-                if job.get("state") == "queued" and job.get("enqueued_at") and not job.get("started_at"):
+                if (
+                    job.get("state") == "queued"
+                    and job.get("enqueued_at")
+                    and not job.get("started_at")
+                ):
                     try:
-                        enqueued = datetime.fromisoformat(
-                            job["enqueued_at"].replace("Z", "+00:00")
-                        )
-                        age_s = (datetime.now(timezone.utc) - enqueued).total_seconds()
+                        enqueued = datetime.fromisoformat(job["enqueued_at"].replace("Z", "+00:00"))
+                        age_s = (datetime.now(UTC) - enqueued).total_seconds()
                         if age_s > 30:
                             stale = True
                             break
@@ -242,15 +245,13 @@ def render():
                 duration_str = "—"
                 if started_raw and ended_raw:
                     try:
-                        from datetime import datetime, timezone
+                        from datetime import datetime
 
                         def _parse(ts):
                             ts = ts.rstrip("Z")
                             if "+" in ts:
                                 ts = ts.split("+")[0]
-                            return datetime.fromisoformat(ts).replace(
-                                tzinfo=timezone.utc
-                            )
+                            return datetime.fromisoformat(ts).replace(tzinfo=UTC)
 
                         delta = _parse(ended_raw) - _parse(started_raw)
                         duration_str = f"{delta.total_seconds():.1f}s"

@@ -44,9 +44,7 @@ def render():
     st.markdown("**Your webhook endpoint:**")
     st.code(webhook_url, language="text")
 
-    st.caption(
-        "For local development, expose port 8000 with: `ngrok http 8000`"
-    )
+    st.caption("For local development, expose port 8000 with: `ngrok http 8000`")
 
     st.divider()
 
@@ -93,9 +91,7 @@ def render():
 """
     )
 
-    st.info(
-        "GitHub will immediately send a ping event. Use Step 4 to verify it was received."
-    )
+    st.info("GitHub will immediately send a ping event. Use Step 4 to verify it was received.")
 
     with st.expander("GitHub App alternative (higher rate limits)"):
         st.markdown(
