@@ -82,12 +82,13 @@ def assemble(
     context_text = "\n".join(sections)
 
     retrieval_log = _build_log(query, chunks_used, tokens_used, token_budget)
+    # Avoid logging user-supplied token_budget directly (log injection risk).
+    # Full budget details are captured in retrieval_log.
     logger.info(
-        "assembler: %d/%d chunks fit in %d/%d token budget",
+        "assembler: %d/%d chunks included, %d tokens used",
         len(chunks_used),
         len(results),
         tokens_used,
-        token_budget,
     )
 
     return AssembledContext(
