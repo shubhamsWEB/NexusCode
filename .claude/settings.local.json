@@ -58,7 +58,20 @@
       "Bash(nc:*)",
       "Bash(find:*)",
       "Bash(wc:*)",
-      "Bash(git:*)"
+      "Bash(git:*)",
+      "Bash(PYTHONPATH=. .venv/bin/pytest:*)",
+      "Bash(PYTHONPATH=. .venv/bin/python:*)",
+      "Bash(gh repo:*)",
+      "Bash(echo gh not found:*)",
+      "Bash(gh auth:*)",
+      "Bash(grep Found\\\\|error:*)",
+      "Bash(pip install:*)",
+      "Bash(.venv/bin/ruff check:*)",
+      "Bash(.venv/bin/ruff format:*)",
+      "Bash(PYTHONPATH=. GITHUB_WEBHOOK_SECRET=ci-test-secret VOYAGE_API_KEY=ci-test-key JWT_SECRET=ci-test-jwt-secret .venv/bin/pytest:*)",
+      "Bash(gh pr:*)",
+      "Bash(source .env:*)",
+      "Bash(grep:*)"
     ]
   }
 }
