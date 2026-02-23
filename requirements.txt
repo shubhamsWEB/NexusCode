@@ -3,7 +3,7 @@ fastapi==0.115.0
 uvicorn[standard]==0.30.6
 
 # Database
-asyncpg==0.29.0
+asyncpg==0.31.0
 sqlalchemy[asyncio]==2.0.35
 greenlet==3.1.1             # required by SQLAlchemy async on Python 3.13
 psycopg2-binary==2.9.9
