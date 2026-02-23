@@ -36,7 +36,7 @@ tiktoken==0.7.0
 # Config & validation
 pydantic==2.12.5
 pydantic-settings==2.5.2
-python-dotenv==1.0.1
+python-dotenv==1.2.1
 
 # MCP
 mcp[cli]>=1.26.0
