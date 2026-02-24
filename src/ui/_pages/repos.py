@@ -39,6 +39,8 @@ def render():
             last_indexed_raw = repo.get("last_indexed")
             last_indexed_str = time_ago(last_indexed_raw) if last_indexed_raw else "Never"
 
+            webhook_hook_id = repo.get("webhook_hook_id")
+            webhook_registered = repo.get("webhook_registered", False)
             confirm_key = f"confirm_delete_{owner}_{name}"
 
             with st.container(border=True):
@@ -56,10 +58,20 @@ def render():
                         f"Symbols: **{symbols}**",
                         unsafe_allow_html=True,
                     )
+                    if webhook_registered:
+                        st.markdown(
+                            f"Webhook: <span style='color:green'>registered (hook #{webhook_hook_id})</span>",
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        st.markdown(
+                            "Webhook: <span style='color:orange'>not registered</span>",
+                            unsafe_allow_html=True,
+                        )
                     st.caption(f"Last indexed: {last_indexed_str}")
 
                 with right_col:
-                    btn_reindex, btn_remove = st.columns(2)
+                    btn_reindex, btn_webhook, btn_remove = st.columns(3)
 
                     with btn_reindex:
                         if st.button("🔄 Re-index", key=f"reindex_{owner}_{name}"):
@@ -79,6 +91,38 @@ def render():
                                     f"Re-index job queued — **{files_found} files** "
                                     f"(Job ID: `{short_id}`)"
                                 )
+
+                    with btn_webhook:
+                        if not webhook_registered:
+                            if st.button("🔗 Setup Webhook", key=f"webhook_{owner}_{name}"):
+                                with st.spinner("Registering webhook…"):
+                                    data, err = api_post(
+                                        f"/repos/{owner}/{name}/webhook",
+                                        json={},
+                                        timeout=15,
+                                    )
+                                if err:
+                                    st.error(f"Webhook setup failed: {err}")
+                                elif data and data.get("success"):
+                                    st.success(data.get("message", "Webhook registered!"))
+                                    st.rerun()
+                                else:
+                                    st.warning(data.get("message", "Could not register webhook."))
+                                    instructions = (data or {}).get("manual_instructions")
+                                    if instructions:
+                                        st.info(instructions)
+                        else:
+                            if st.button("🔗 Remove Webhook", key=f"rm_webhook_{owner}_{name}"):
+                                with st.spinner("Removing webhook…"):
+                                    data, err = api_delete(
+                                        f"/repos/{owner}/{name}/webhook",
+                                        timeout=15,
+                                    )
+                                if err:
+                                    st.error(f"Remove failed: {err}")
+                                else:
+                                    st.success((data or {}).get("message", "Webhook removed."))
+                                    st.rerun()
 
                     with btn_remove:
                         if not st.session_state.get(confirm_key, False):
@@ -146,12 +190,24 @@ def render():
             }
 
             with st.spinner(f"Registering {owner_clean}/{name_clean}…"):
-                _, reg_err = api_post("/repos", json=payload, timeout=15)
+                reg_data, reg_err = api_post("/repos", json=payload, timeout=15)
 
             if reg_err:
                 st.error(f"Registration failed: {reg_err}")
             else:
                 st.success(f"Repository {owner_clean}/{name_clean} registered successfully.")
+
+                # Show webhook auto-registration result
+                webhook_info = (reg_data or {}).get("webhook", {})
+                if webhook_info.get("success"):
+                    st.success(f"🔗 {webhook_info.get('message', 'Webhook registered!')}")
+                elif webhook_info:
+                    st.warning(
+                        f"🔗 Webhook: {webhook_info.get('message', 'Could not auto-register.')}"
+                    )
+                    instructions = webhook_info.get("manual_instructions")
+                    if instructions:
+                        st.info(instructions)
 
                 if start_indexing:
                     with st.spinner("Triggering initial index job…"):

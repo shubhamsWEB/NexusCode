@@ -31,12 +31,21 @@ def render():
     # ── Step 1 — Your Webhook URL ────────────────────────────────────────────
     st.subheader("Step 1 — Your Webhook URL")
 
-    api_url = st.session_state.get("api_url", "http://localhost:8000")
+    # Default to PUBLIC_BASE_URL from config if available
+    config_data_url, _ = api_get("/config", timeout=10)
+    default_base = "http://localhost:8000"
+    if config_data_url:
+        configured_url = config_data_url.get("webhook", {}).get("public_base_url", "not set")
+        if configured_url and configured_url != "not set":
+            default_base = configured_url
+
+    api_url = st.session_state.get("api_url", default_base)
 
     custom_base = st.text_input(
         "Public base URL (override for ngrok / Railway / etc.)",
         value=api_url,
-        help="Change this if your server is exposed via a tunnel or cloud deployment.",
+        help="Change this if your server is exposed via a tunnel or cloud deployment. "
+        "Set PUBLIC_BASE_URL in .env to make this the default.",
     )
 
     webhook_url = custom_base.rstrip("/") + "/webhook"
@@ -91,7 +100,50 @@ def render():
 """
     )
 
-    st.info("GitHub will immediately send a ping event. Use Step 4 to verify it was received.")
+    st.info("GitHub will immediately send a ping event. Use Step 5 to verify it was received.")
+
+    # ── One-click Register ────────────────────────────────────────────────────
+    st.subheader("Or: One-Click Register")
+    st.markdown(
+        "If `PUBLIC_BASE_URL` is set and your GitHub token has `admin:repo_hook` scope, "
+        "you can auto-register the webhook directly from here."
+    )
+
+    repos_for_wh, repos_wh_err = api_get("/repos", timeout=10)
+    if repos_wh_err:
+        st.warning(f"Could not load repos: {repos_wh_err}")
+    elif repos_for_wh:
+        for repo in repos_for_wh:
+            r_owner = repo.get("owner", "")
+            r_name = repo.get("name", "")
+            r_registered = repo.get("webhook_registered", False)
+            col_label, col_btn = st.columns([3, 1])
+            with col_label:
+                wh_status = "✅ registered" if r_registered else "⚠️ not registered"
+                st.markdown(f"**{r_owner}/{r_name}** — Webhook: {wh_status}")
+            with col_btn:
+                if not r_registered:
+                    if st.button("Register", key=f"wh_auto_{r_owner}_{r_name}"):
+                        with st.spinner("Registering webhook…"):
+                            wh_data, wh_err = api_post(
+                                f"/repos/{r_owner}/{r_name}/webhook",
+                                json={},
+                                timeout=15,
+                            )
+                        if wh_err:
+                            st.error(f"Failed: {wh_err}")
+                        elif wh_data and wh_data.get("success"):
+                            st.success(wh_data.get("message", "Done!"))
+                            st.rerun()
+                        else:
+                            st.warning((wh_data or {}).get("message", "Failed"))
+                            instr = (wh_data or {}).get("manual_instructions")
+                            if instr:
+                                st.info(instr)
+                else:
+                    st.caption(f"Hook #{repo.get('webhook_hook_id')}")
+    else:
+        st.info("No repos registered. Add one in the Repository Manager first.")
 
     with st.expander("GitHub App alternative (higher rate limits)"):
         st.markdown(
