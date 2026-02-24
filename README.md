@@ -126,9 +126,11 @@ This lets NexusCode read file contents from your GitHub repositories.
 2. Click **"Generate new token" → "Generate new token (classic)"**
 3. Give it a name like `nexuscode-local`
 4. Set expiration to **90 days** (or "No expiration" for local dev)
-5. Under **Scopes**, tick **`repo`** (the top-level checkbox — this includes read access)
+5. Under **Scopes**, tick **`repo`** (read access) and **`admin:repo_hook`** (for automatic webhook registration)
 6. Scroll down and click **"Generate token"**
 7. **Copy the token now** — it starts with `ghp_`. You won't see it again.
+
+> **Fine-grained tokens:** If using a fine-grained personal access token instead, grant **Contents: Read** and **Webhooks: Read & Write** repository permissions.
 
 ---
 
@@ -224,6 +226,12 @@ ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 # The JWT secret you made up (from step 2.4)
 JWT_SECRET=my-super-secret-jwt-key-change-this-in-production-123
+
+# ── Webhook Auto-Registration (optional) ─────────────────────────────────────
+# Set this to your public server URL so NexusCode can auto-register GitHub webhooks.
+# For local dev with ngrok: PUBLIC_BASE_URL=https://your-subdomain.ngrok-free.dev
+# For Railway/production: PUBLIC_BASE_URL=https://your-app.railway.app
+PUBLIC_BASE_URL=
 
 # ── Optional (leave blank if you don't have them) ──────────────────────────────
 GITHUB_OAUTH_CLIENT_ID=
@@ -590,7 +598,7 @@ If you're already comfortable with Python and Docker:
 ```bash
 git clone https://github.com/shubhamsWEB/nexusCode_server.git
 cd nexusCode_server
-cp .env.example .env       # fill in GITHUB_TOKEN, VOYAGE_API_KEY, ANTHROPIC_API_KEY, JWT_SECRET
+cp .env.example .env       # fill in GITHUB_TOKEN, VOYAGE_API_KEY, ANTHROPIC_API_KEY, JWT_SECRET, PUBLIC_BASE_URL
 
 docker compose up postgres redis -d
 
@@ -688,12 +696,13 @@ Try these in the Query Tester dashboard or via `/search`:
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `GITHUB_TOKEN` | ✓ | PAT with `repo:read` (or use GitHub App) |
+| `GITHUB_TOKEN` | ✓ | PAT with `repo` + `admin:repo_hook` scopes (or use GitHub App) |
 | `GITHUB_WEBHOOK_SECRET` | ✓ | HMAC secret — must match GitHub webhook config |
 | `DATABASE_URL` | ✓ | `postgresql+asyncpg://user:pass@host:5432/db` |
 | `REDIS_URL` | ✓ | `redis://host:6379` |
 | `VOYAGE_API_KEY` | ✓ | Voyage AI key for `voyage-code-2` embeddings |
 | `JWT_SECRET` | ✓ | Random secret for MCP auth tokens (32+ chars) |
+| `PUBLIC_BASE_URL` | — | Public URL of the server for auto webhook registration (e.g. `https://xxx.ngrok-free.dev`) |
 | `EMBEDDING_DIMENSIONS` | — | Default `1536` (voyage-code-2) |
 | `GITHUB_APP_ID` | — | GitHub App ID (alternative to PAT) |
 | `GITHUB_APP_PRIVATE_KEY_PATH` | — | Path to App `.pem` file |
@@ -748,27 +757,56 @@ docker compose logs -f app
 ## Adding a New Repository
 
 ```bash
-# 1. Register the repo
+# 1. Register the repo (webhook is auto-registered if PUBLIC_BASE_URL is set)
 curl -X POST http://localhost:8000/repos \
   -H "Content-Type: application/json" \
   -d '{"owner": "myorg", "name": "backend-api", "branch": "main"}'
 
 # 2. Initial full index
 REPO_OWNER=myorg REPO_NAME=backend-api python scripts/full_index.py
-
-# 3. Set up GitHub webhook
-#    URL: https://your-deployment.railway.app/webhook
-#    Content-Type: application/json
-#    Secret: your GITHUB_WEBHOOK_SECRET
-#    Events: Just the push event
 ```
+
+### GitHub Webhook Setup
+
+NexusCode auto-registers a GitHub webhook when you add a repo — no manual GitHub configuration needed.
+
+**Requirements for auto-registration:**
+1. Set `PUBLIC_BASE_URL` in `.env` to your server's public address (e.g. ngrok URL, Railway URL)
+2. Your `GITHUB_TOKEN` needs the `admin:repo_hook` scope (classic) or **Webhooks: Read & Write** (fine-grained)
+
+**What happens on `POST /repos`:**
+- NexusCode registers the repo, then calls the GitHub API to create a webhook
+- On success: the webhook is active and push events flow automatically
+- On failure (localhost URL, missing permissions, etc.): the response includes step-by-step manual setup instructions
+
+**Managing webhooks per-repo:**
+```bash
+# Register webhook (if not done during repo registration)
+curl -X POST http://localhost:8000/repos/myorg/backend-api/webhook
+
+# Check webhook status
+curl http://localhost:8000/repos/myorg/backend-api/webhook
+
+# Remove webhook
+curl -X DELETE http://localhost:8000/repos/myorg/backend-api/webhook
+```
+
+The admin dashboard also provides one-click webhook management buttons per repo.
+
+**Manual setup (fallback):**
+
+If auto-registration fails, go to your GitHub repo → **Settings** → **Webhooks** → **Add webhook**:
+- **Payload URL:** `https://your-server.com/webhook`
+- **Content type:** `application/json`
+- **Secret:** your `GITHUB_WEBHOOK_SECRET` value
+- **Events:** Just the push event
 
 ---
 
 ## Running Tests
 
 ```bash
-# All tests (53 total, no network/DB required)
+# All tests (64 total, no network/DB required)
 pytest tests/ -v
 
 # Specific test modules
@@ -800,7 +838,7 @@ nexusCode_server/
 │   ├── api/app.py             # FastAPI: webhook, search, health, MCP mount
 │   ├── github/
 │   │   ├── webhook.py         # HMAC-verified webhook receiver
-│   │   ├── fetcher.py         # GitHub REST API client
+│   │   ├── fetcher.py         # GitHub REST API client + webhook management
 │   │   └── events.py          # PushEvent dataclasses
 │   ├── pipeline/
 │   │   ├── parser.py          # Tree-sitter AST (7 languages)
@@ -818,14 +856,16 @@ nexusCode_server/
 │   ├── storage/
 │   │   ├── db.py              # Async SQLAlchemy queries
 │   │   ├── models.py          # ORM: Chunk, Symbol, MerkleNode, Repo
-│   │   └── migrations/001_init.sql
+│   │   └── migrations/
+│   │       ├── 001_init.sql
+│   │       └── 002_webhook_hook_id.sql
 │   └── ui/dashboard.py        # Streamlit admin dashboard
 ├── scripts/
 │   ├── full_index.py          # Initial full repo index
 │   ├── simulate_webhook.py    # Local end-to-end testing
 │   ├── deploy_check.py        # Pre-deploy env verification
 │   └── test_query.py          # CLI search tool
-├── tests/                     # 53 unit tests
+├── tests/                     # 64 unit tests
 ├── docker-compose.yml
 ├── Dockerfile
 ├── railway.toml

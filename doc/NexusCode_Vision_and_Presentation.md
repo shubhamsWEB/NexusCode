@@ -87,6 +87,28 @@ When a developer pushes code to GitHub, NexusCode automatically:
 
 **From push to queryable: under 4 seconds.**
 
+### Automatic Webhook Registration
+
+When you register a new repository through the API or dashboard, NexusCode **automatically creates the GitHub webhook** for you — no manual GitHub settings configuration needed.
+
+```
+Register repo via API/Dashboard
+        │
+        ▼
+NexusCode calls GitHub API
+(POST /repos/{owner}/{repo}/hooks)
+        │
+        ├─ Success → Webhook active, push events flow automatically
+        │
+        └─ Failed (no permissions / localhost) → Clear manual setup
+           instructions displayed with pre-filled values
+```
+
+- Set `PUBLIC_BASE_URL` in `.env` to your server's public address (ngrok, Railway, etc.)
+- Token needs `admin:repo_hook` scope (classic PAT) or **Webhooks: Read & Write** (fine-grained token)
+- If auto-registration fails, the API and dashboard show step-by-step manual setup instructions
+- Webhooks can also be managed per-repo via the dashboard: register, check status, or remove
+
 ---
 
 ## The Technology Stack (For Technical Audience)
@@ -419,7 +441,8 @@ This is a working proof of concept with all core infrastructure in place:
 | MCP protocol (standard AI tool interface) | ✅ Production ready |
 | Admin dashboard | ✅ Production ready |
 | Docker / Railway deployment | ✅ Production ready |
-| 53 automated tests (all passing) | ✅ Production ready |
+| 64 automated tests (all passing) | ✅ Production ready |
+| Auto webhook registration on repo add | ✅ Production ready |
 | **JIRA integration** | 🔲 Next to build (blueprint ready) |
 
 ---
