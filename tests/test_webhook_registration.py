@@ -15,7 +15,9 @@ from src.github.fetcher import WebhookCreationError, create_webhook
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 
-def _mock_response(status_code: int, json_data: dict | list | None = None, text: str = "") -> httpx.Response:
+def _mock_response(
+    status_code: int, json_data: dict | list | None = None, text: str = ""
+) -> httpx.Response:
     """Build a fake httpx.Response."""
     resp = MagicMock(spec=httpx.Response)
     resp.status_code = status_code
@@ -50,9 +52,12 @@ async def test_create_webhook_already_exists():
     mock_post_resp = _mock_response(422, text="Hook already exists on this repository")
 
     # _find_existing_webhook should find the existing hook
-    mock_list_resp = _mock_response(200, [
-        {"id": 99, "config": {"url": "https://example.com/webhook"}},
-    ])
+    mock_list_resp = _mock_response(
+        200,
+        [
+            {"id": 99, "config": {"url": "https://example.com/webhook"}},
+        ],
+    )
 
     with patch("src.github.fetcher._make_client") as mock_client:
         ctx = AsyncMock()

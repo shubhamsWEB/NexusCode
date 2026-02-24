@@ -202,7 +202,9 @@ def render():
                 if webhook_info.get("success"):
                     st.success(f"🔗 {webhook_info.get('message', 'Webhook registered!')}")
                 elif webhook_info:
-                    st.warning(f"🔗 Webhook: {webhook_info.get('message', 'Could not auto-register.')}")
+                    st.warning(
+                        f"🔗 Webhook: {webhook_info.get('message', 'Could not auto-register.')}"
+                    )
                     instructions = webhook_info.get("manual_instructions")
                     if instructions:
                         st.info(instructions)

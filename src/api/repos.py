@@ -572,7 +572,9 @@ async def register_webhook(owner: str, name: str) -> JSONResponse:
         )
 
     result = await _try_auto_register_webhook(owner, name)
-    status_code = status.HTTP_201_CREATED if result["success"] else status.HTTP_422_UNPROCESSABLE_ENTITY
+    status_code = (
+        status.HTTP_201_CREATED if result["success"] else status.HTTP_422_UNPROCESSABLE_ENTITY
+    )
     return JSONResponse(result, status_code=status_code)
 
 
@@ -602,12 +604,14 @@ async def remove_webhook(owner: str, name: str) -> JSONResponse:
     deleted = await delete_webhook(owner, name, repo.webhook_hook_id)
     await update_repo_webhook(owner, name, None)
 
-    return JSONResponse({
-        "success": True,
-        "deleted_from_github": deleted,
-        "message": f"Webhook #{repo.webhook_hook_id} removed."
-        + ("" if deleted else " (Note: webhook was already gone from GitHub)"),
-    })
+    return JSONResponse(
+        {
+            "success": True,
+            "deleted_from_github": deleted,
+            "message": f"Webhook #{repo.webhook_hook_id} removed."
+            + ("" if deleted else " (Note: webhook was already gone from GitHub)"),
+        }
+    )
 
 
 @router.get(
@@ -628,12 +632,14 @@ async def check_webhook(owner: str, name: str) -> JSONResponse:
         )
 
     if not repo.webhook_hook_id:
-        return JSONResponse({
-            "registered": False,
-            "hook_id": None,
-            "message": "No webhook registered for this repo.",
-            "manual_instructions": _manual_webhook_instructions(owner, name),
-        })
+        return JSONResponse(
+            {
+                "registered": False,
+                "hook_id": None,
+                "message": "No webhook registered for this repo.",
+                "manual_instructions": _manual_webhook_instructions(owner, name),
+            }
+        )
 
     hook_status = await get_webhook_status(owner, name, repo.webhook_hook_id)
     if hook_status is None:
@@ -641,15 +647,19 @@ async def check_webhook(owner: str, name: str) -> JSONResponse:
         from src.storage.db import update_repo_webhook
 
         await update_repo_webhook(owner, name, None)
-        return JSONResponse({
-            "registered": False,
-            "hook_id": repo.webhook_hook_id,
-            "message": f"Webhook #{repo.webhook_hook_id} no longer exists on GitHub. DB record cleared.",
-            "manual_instructions": _manual_webhook_instructions(owner, name),
-        })
+        return JSONResponse(
+            {
+                "registered": False,
+                "hook_id": repo.webhook_hook_id,
+                "message": f"Webhook #{repo.webhook_hook_id} no longer exists on GitHub. DB record cleared.",
+                "manual_instructions": _manual_webhook_instructions(owner, name),
+            }
+        )
 
-    return JSONResponse({
-        "registered": True,
-        "hook_id": repo.webhook_hook_id,
-        "github_status": hook_status,
-    })
+    return JSONResponse(
+        {
+            "registered": True,
+            "hook_id": repo.webhook_hook_id,
+            "github_status": hook_status,
+        }
+    )

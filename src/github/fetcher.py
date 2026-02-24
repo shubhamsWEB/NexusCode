@@ -242,9 +242,7 @@ async def create_webhook(
         # Likely "Hook already exists" — try to find and return existing
         existing = await _find_existing_webhook(owner, repo, webhook_url)
         if existing:
-            logger.info(
-                "Webhook already exists: hook_id=%s for %s/%s", existing, owner, repo
-            )
+            logger.info("Webhook already exists: hook_id=%s for %s/%s", existing, owner, repo)
             return existing
         raise WebhookCreationError(
             f"GitHub returned 422 for {owner}/{repo} but could not find existing webhook. "
@@ -288,7 +286,11 @@ async def delete_webhook(owner: str, repo: str, hook_id: int) -> bool:
 
     logger.error(
         "Failed to delete webhook hook_id=%s for %s/%s: %s %s",
-        hook_id, owner, repo, resp.status_code, resp.text[:200],
+        hook_id,
+        owner,
+        repo,
+        resp.status_code,
+        resp.text[:200],
     )
     return False
 
@@ -315,7 +317,10 @@ async def get_webhook_status(owner: str, repo: str, hook_id: int) -> dict | None
 
     logger.warning(
         "Unexpected response checking webhook hook_id=%s for %s/%s: %s",
-        hook_id, owner, repo, resp.status_code,
+        hook_id,
+        owner,
+        repo,
+        resp.status_code,
     )
     return None
 

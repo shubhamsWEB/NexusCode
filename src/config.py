@@ -48,7 +48,9 @@ class Settings(BaseSettings):
     )
 
     # ── Webhook Auto-Registration ─────────────────────────────────────────────
-    public_base_url: str | None = Field(None, description="Public URL of this server for GitHub webhooks")
+    public_base_url: str | None = Field(
+        None, description="Public URL of this server for GitHub webhooks"
+    )
 
     @property
     def webhook_url(self) -> str | None:
