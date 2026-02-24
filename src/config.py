@@ -47,6 +47,15 @@ class Settings(BaseSettings):
         8000, description="Max output tokens for plan generation"
     )
 
+    # ── Webhook Auto-Registration ─────────────────────────────────────────────
+    public_base_url: str | None = Field(None, description="Public URL of this server for GitHub webhooks")
+
+    @property
+    def webhook_url(self) -> str | None:
+        if not self.public_base_url:
+            return None
+        return self.public_base_url.rstrip("/") + "/webhook"
+
     # ── MCP Auth ─────────────────────────────────────────────────────────────
     jwt_secret: str = Field(..., description="Secret for signing internal JWTs")
     jwt_expiry_hours: int = Field(8)

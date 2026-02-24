@@ -73,7 +73,10 @@
       "Bash(source .env:*)",
       "Bash(grep:*)",
       "Bash(PYTHONPATH=. .venv/bin/ruff check:*)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Bash(psql:*)",
+      "Bash(echo Port 8000 cleared:*)",
+      "Bash(PYTHONPATH=. OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES .venv/bin/uvicorn src.api.app:app:*)"
     ]
   }
 }

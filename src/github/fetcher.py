@@ -192,3 +192,145 @@ async def fetch_indexable_files(
             continue
         content, blob_sha = result
         yield path, content, blob_sha_map.get(path, blob_sha)
+
+
+# ── Webhook Management ────────────────────────────────────────────────────────
+
+
+class WebhookCreationError(Exception):
+    """Raised when a GitHub webhook cannot be created."""
+
+    def __init__(self, message: str, *, manual_instructions: bool = False):
+        super().__init__(message)
+        self.manual_instructions = manual_instructions
+
+
+async def create_webhook(
+    owner: str,
+    repo: str,
+    webhook_url: str,
+    webhook_secret: str,
+) -> int:
+    """
+    Create a GitHub webhook for push events on the given repo.
+    Returns the hook ID on success.
+    Raises WebhookCreationError on failure.
+    """
+    url = f"{_GITHUB_API}/repos/{owner}/{repo}/hooks"
+    payload = {
+        "name": "web",
+        "active": True,
+        "events": ["push"],
+        "config": {
+            "url": webhook_url,
+            "content_type": "json",
+            "secret": webhook_secret,
+            "insecure_ssl": "0",
+        },
+    }
+
+    async with _make_client() as client:
+        resp = await client.post(url, json=payload)
+
+    if resp.status_code == 201:
+        data = resp.json()
+        hook_id = data.get("id")
+        logger.info("Webhook created: hook_id=%s for %s/%s", hook_id, owner, repo)
+        return hook_id
+
+    if resp.status_code == 422:
+        # Likely "Hook already exists" — try to find and return existing
+        existing = await _find_existing_webhook(owner, repo, webhook_url)
+        if existing:
+            logger.info(
+                "Webhook already exists: hook_id=%s for %s/%s", existing, owner, repo
+            )
+            return existing
+        raise WebhookCreationError(
+            f"GitHub returned 422 for {owner}/{repo} but could not find existing webhook. "
+            f"Response: {resp.text[:200]}",
+            manual_instructions=True,
+        )
+
+    if resp.status_code == 403:
+        raise WebhookCreationError(
+            f"Permission denied creating webhook for {owner}/{repo}. "
+            "Your GitHub token needs 'admin:repo_hook' scope (or the GitHub App needs Webhooks write permission).",
+            manual_instructions=True,
+        )
+
+    if resp.status_code == 404:
+        raise WebhookCreationError(
+            f"Repository {owner}/{repo} not found on GitHub. "
+            "Check the owner/name and that your token has access.",
+            manual_instructions=True,
+        )
+
+    raise WebhookCreationError(
+        f"Unexpected GitHub API response ({resp.status_code}) creating webhook for {owner}/{repo}: "
+        f"{resp.text[:200]}",
+        manual_instructions=True,
+    )
+
+
+async def delete_webhook(owner: str, repo: str, hook_id: int) -> bool:
+    """Delete a GitHub webhook. Returns True if deleted, False if not found."""
+    url = f"{_GITHUB_API}/repos/{owner}/{repo}/hooks/{hook_id}"
+    async with _make_client() as client:
+        resp = await client.delete(url)
+
+    if resp.status_code == 204:
+        logger.info("Webhook deleted: hook_id=%s for %s/%s", hook_id, owner, repo)
+        return True
+    if resp.status_code == 404:
+        logger.warning("Webhook not found: hook_id=%s for %s/%s", hook_id, owner, repo)
+        return False
+
+    logger.error(
+        "Failed to delete webhook hook_id=%s for %s/%s: %s %s",
+        hook_id, owner, repo, resp.status_code, resp.text[:200],
+    )
+    return False
+
+
+async def get_webhook_status(owner: str, repo: str, hook_id: int) -> dict | None:
+    """Get the status of a GitHub webhook. Returns hook data dict or None if not found."""
+    url = f"{_GITHUB_API}/repos/{owner}/{repo}/hooks/{hook_id}"
+    async with _make_client() as client:
+        resp = await client.get(url)
+
+    if resp.status_code == 200:
+        data = resp.json()
+        return {
+            "id": data.get("id"),
+            "active": data.get("active"),
+            "events": data.get("events", []),
+            "url": data.get("config", {}).get("url"),
+            "created_at": data.get("created_at"),
+            "updated_at": data.get("updated_at"),
+            "last_response": data.get("last_response"),
+        }
+    if resp.status_code == 404:
+        return None
+
+    logger.warning(
+        "Unexpected response checking webhook hook_id=%s for %s/%s: %s",
+        hook_id, owner, repo, resp.status_code,
+    )
+    return None
+
+
+async def _find_existing_webhook(owner: str, repo: str, webhook_url: str) -> int | None:
+    """Search existing webhooks for one matching our URL. Returns hook_id or None."""
+    url = f"{_GITHUB_API}/repos/{owner}/{repo}/hooks"
+    async with _make_client() as client:
+        resp = await client.get(url)
+
+    if resp.status_code != 200:
+        return None
+
+    for hook in resp.json():
+        config_url = hook.get("config", {}).get("url", "")
+        if config_url == webhook_url:
+            return hook.get("id")
+    return None

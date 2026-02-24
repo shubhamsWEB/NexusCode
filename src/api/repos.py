@@ -27,6 +27,8 @@ from src.config import settings
 
 router = APIRouter(tags=["management"])
 
+logger = __import__("logging").getLogger(__name__)
+
 
 # ── Request / response models ─────────────────────────────────────────────────
 
@@ -129,6 +131,72 @@ async def _enqueue_full_index(owner: str, name: str, branch: str) -> dict:
     }
 
 
+# ── Webhook auto-registration helpers ─────────────────────────────────────────
+
+
+def _manual_webhook_instructions(owner: str, name: str) -> str:
+    """Return step-by-step manual webhook setup instructions."""
+    wh_url = settings.webhook_url or "<YOUR_SERVER_URL>/webhook"
+    return (
+        f"To manually configure a webhook for {owner}/{name}:\n"
+        f"1. Go to https://github.com/{owner}/{name}/settings/hooks/new\n"
+        f"2. Set Payload URL to: {wh_url}\n"
+        f"3. Set Content type to: application/json\n"
+        f"4. Set Secret to your GITHUB_WEBHOOK_SECRET value\n"
+        f"5. Select 'Just the push event'\n"
+        f"6. Ensure 'Active' is checked\n"
+        f"7. Click 'Add webhook'"
+    )
+
+
+async def _try_auto_register_webhook(owner: str, name: str) -> dict:
+    """
+    Attempt to auto-register a GitHub webhook for the repo.
+    Returns a dict with success, hook_id, message, and optional manual_instructions.
+    Never raises — always returns a result dict.
+    """
+    from src.github.fetcher import WebhookCreationError, create_webhook
+    from src.storage.db import update_repo_webhook
+
+    if not settings.webhook_url:
+        return {
+            "success": False,
+            "hook_id": None,
+            "message": "PUBLIC_BASE_URL not configured — cannot auto-register webhook.",
+            "manual_instructions": _manual_webhook_instructions(owner, name),
+        }
+
+    try:
+        hook_id = await create_webhook(
+            owner, name, settings.webhook_url, settings.github_webhook_secret
+        )
+        await update_repo_webhook(owner, name, hook_id)
+        return {
+            "success": True,
+            "hook_id": hook_id,
+            "message": f"Webhook registered successfully (hook #{hook_id}).",
+            "manual_instructions": None,
+        }
+    except WebhookCreationError as exc:
+        logger.warning("Auto-register webhook failed for %s/%s: %s", owner, name, exc)
+        return {
+            "success": False,
+            "hook_id": None,
+            "message": str(exc),
+            "manual_instructions": _manual_webhook_instructions(owner, name)
+            if exc.manual_instructions
+            else None,
+        }
+    except Exception as exc:
+        logger.exception("Unexpected error auto-registering webhook for %s/%s", owner, name)
+        return {
+            "success": False,
+            "hook_id": None,
+            "message": f"Unexpected error: {exc}",
+            "manual_instructions": _manual_webhook_instructions(owner, name),
+        }
+
+
 # ── GET /repos ────────────────────────────────────────────────────────────────
 
 
@@ -139,6 +207,7 @@ async def list_repos() -> JSONResponse:
     rows = await get_repo_stats()
 
     def _fmt(row: dict) -> dict:
+        hook_id = row.get("webhook_hook_id")
         return {
             "owner": row["owner"],
             "name": row["name"],
@@ -149,6 +218,8 @@ async def list_repos() -> JSONResponse:
             "deleted_chunks": row["deleted_chunks"] or 0,
             "files": row["files"] or 0,
             "symbols": row["symbols"] or 0,
+            "webhook_hook_id": hook_id,
+            "webhook_registered": hook_id is not None,
             "registered_at": row["registered_at"].isoformat() if row["registered_at"] else None,
             "last_indexed": row["last_indexed"].isoformat() if row["last_indexed"] else None,
         }
@@ -169,12 +240,17 @@ async def register_repo_endpoint(req: RegisterRepoRequest) -> JSONResponse:
         branch=req.branch,
         description=req.description or "",
     )
+
+    # Auto-register webhook (best-effort)
+    webhook_result = await _try_auto_register_webhook(repo.owner, repo.name)
+
     return JSONResponse(
         {
             "repo": f"{repo.owner}/{repo.name}",
             "branch": repo.branch,
             "status": repo.status,
             "registered_at": repo.registered_at.isoformat(),
+            "webhook": webhook_result,
             "message": f"Registered {repo.owner}/{repo.name}. "
             f"Call POST /repos/{repo.owner}/{repo.name}/index to start indexing.",
         },
@@ -190,7 +266,18 @@ async def register_repo_endpoint(req: RegisterRepoRequest) -> JSONResponse:
     summary="Unregister a repo and permanently delete all its indexed data",
 )
 async def delete_repo_endpoint(owner: str, name: str) -> JSONResponse:
-    from src.storage.db import delete_repo
+    from src.storage.db import delete_repo, get_repos
+
+    # Best-effort: clean up GitHub webhook before deleting
+    try:
+        repos = await get_repos()
+        repo = next((r for r in repos if r.owner == owner and r.name == name), None)
+        if repo and repo.webhook_hook_id:
+            from src.github.fetcher import delete_webhook
+
+            await delete_webhook(owner, name, repo.webhook_hook_id)
+    except Exception:
+        logger.warning("Failed to clean up webhook for %s/%s during delete", owner, name)
 
     deleted = await delete_repo(owner, name)
     if not deleted:
@@ -286,6 +373,10 @@ async def get_config() -> JSONResponse:
             "reranker": {
                 "model": s.reranker_model,
                 "top_n": s.reranker_top_n,
+            },
+            "webhook": {
+                "public_base_url": s.public_base_url or "not set",
+                "webhook_url": s.webhook_url or "not set",
             },
             "optional": {
                 "anthropic_api_key": _mask(s.anthropic_api_key)
@@ -459,3 +550,106 @@ async def list_jobs() -> JSONResponse:
     jobs.sort(key=lambda j: j.get("enqueued_at") or "", reverse=True)
 
     return JSONResponse({"jobs": jobs[:20], "queued_count": queue.count})
+
+
+# ── Webhook CRUD endpoints ───────────────────────────────────────────────────
+
+
+@router.post(
+    "/repos/{owner}/{name}/webhook",
+    summary="Register a GitHub webhook for a repository",
+)
+async def register_webhook(owner: str, name: str) -> JSONResponse:
+    """One-click webhook registration for a repo."""
+    from src.storage.db import get_repos
+
+    repos = await get_repos()
+    repo = next((r for r in repos if r.owner == owner and r.name == name), None)
+    if repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Repository {owner}/{name} is not registered.",
+        )
+
+    result = await _try_auto_register_webhook(owner, name)
+    status_code = status.HTTP_201_CREATED if result["success"] else status.HTTP_422_UNPROCESSABLE_ENTITY
+    return JSONResponse(result, status_code=status_code)
+
+
+@router.delete(
+    "/repos/{owner}/{name}/webhook",
+    summary="Remove the GitHub webhook for a repository",
+)
+async def remove_webhook(owner: str, name: str) -> JSONResponse:
+    """Delete the webhook from GitHub and clear the hook ID in the DB."""
+    from src.github.fetcher import delete_webhook
+    from src.storage.db import get_repos, update_repo_webhook
+
+    repos = await get_repos()
+    repo = next((r for r in repos if r.owner == owner and r.name == name), None)
+    if repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Repository {owner}/{name} is not registered.",
+        )
+
+    if not repo.webhook_hook_id:
+        return JSONResponse(
+            {"success": False, "message": "No webhook registered for this repo."},
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+
+    deleted = await delete_webhook(owner, name, repo.webhook_hook_id)
+    await update_repo_webhook(owner, name, None)
+
+    return JSONResponse({
+        "success": True,
+        "deleted_from_github": deleted,
+        "message": f"Webhook #{repo.webhook_hook_id} removed."
+        + ("" if deleted else " (Note: webhook was already gone from GitHub)"),
+    })
+
+
+@router.get(
+    "/repos/{owner}/{name}/webhook",
+    summary="Check webhook status from GitHub API",
+)
+async def check_webhook(owner: str, name: str) -> JSONResponse:
+    """Query GitHub for the current status of the registered webhook."""
+    from src.github.fetcher import get_webhook_status
+    from src.storage.db import get_repos
+
+    repos = await get_repos()
+    repo = next((r for r in repos if r.owner == owner and r.name == name), None)
+    if repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Repository {owner}/{name} is not registered.",
+        )
+
+    if not repo.webhook_hook_id:
+        return JSONResponse({
+            "registered": False,
+            "hook_id": None,
+            "message": "No webhook registered for this repo.",
+            "manual_instructions": _manual_webhook_instructions(owner, name),
+        })
+
+    hook_status = await get_webhook_status(owner, name, repo.webhook_hook_id)
+    if hook_status is None:
+        # Hook was registered but no longer exists on GitHub
+        from src.storage.db import update_repo_webhook
+
+        await update_repo_webhook(owner, name, None)
+        return JSONResponse({
+            "registered": False,
+            "hook_id": repo.webhook_hook_id,
+            "message": f"Webhook #{repo.webhook_hook_id} no longer exists on GitHub. DB record cleared.",
+            "manual_instructions": _manual_webhook_instructions(owner, name),
+        })
+
+    return JSONResponse({
+        "registered": True,
+        "hook_id": repo.webhook_hook_id,
+        "github_status": hook_status,
+    })

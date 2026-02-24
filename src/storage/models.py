@@ -105,6 +105,7 @@ class Repo(Base):
     )
     last_indexed: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(Text, default="pending")
+    webhook_hook_id: Mapped[int | None] = mapped_column(Integer, default=None)
 
 
 class WebhookEvent(Base):

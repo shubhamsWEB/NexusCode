@@ -227,6 +227,17 @@ async def update_repo_status(owner: str, name: str, status: str) -> None:
         await session.commit()
 
 
+async def update_repo_webhook(owner: str, name: str, hook_id: int | None) -> None:
+    """Store or clear the GitHub webhook hook ID for a repo."""
+    async with AsyncSessionLocal() as session:
+        await session.execute(
+            update(Repo)
+            .where(Repo.owner == owner, Repo.name == name)
+            .values(webhook_hook_id=hook_id)
+        )
+        await session.commit()
+
+
 async def delete_repo(owner: str, name: str) -> bool:
     """
     Permanently remove a repository and all its indexed data.
@@ -268,6 +279,7 @@ async def get_repo_stats() -> list[dict[str, Any]]:
                 r.status,
                 r.registered_at,
                 r.last_indexed,
+                r.webhook_hook_id,
                 COALESCE(c.active_chunks,  0) AS active_chunks,
                 COALESCE(c.deleted_chunks, 0) AS deleted_chunks,
                 COALESCE(c.files,          0) AS files,
