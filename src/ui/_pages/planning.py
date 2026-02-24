@@ -7,15 +7,17 @@ structured, colour-coded document — similar to Cursor's planning view.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")))
 
+import httpx
 import streamlit as st
 
-from src.ui.helpers import api_get, api_post
+from src.ui.helpers import api_get
 
 # ── Severity colours ──────────────────────────────────────────────────────────
 _SEVERITY_COLOR = {"low": "🟡", "medium": "🟠", "high": "🔴"}
@@ -68,7 +70,7 @@ def render():
             height=130,
         )
 
-        col1, col2, col3 = st.columns([2, 1, 1])
+        col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
         with col1:
             repo_label = st.selectbox("Scope to repository (optional)", options=repo_options)
         with col2:
@@ -81,6 +83,12 @@ def render():
                 ),
             )
         with col3:
+            stream_enabled = st.checkbox(
+                "⚡ Stream",
+                value=False,
+                help="Stream tokens in real-time (experimental). Off = wait for full response.",
+            )
+        with col4:
             st.markdown("&nbsp;", unsafe_allow_html=True)
             submitted = st.form_submit_button(
                 "Generate Plan", type="primary", use_container_width=True
@@ -95,33 +103,23 @@ def render():
             st.warning("Task description is too short — be more specific.")
             st.stop()
 
-        # Build request payload
-        payload: dict = {"query": query.strip(), "stream": False, "web_research": web_research}
+        payload: dict = {
+            "query": query.strip(),
+            "stream": stream_enabled,
+            "web_research": web_research,
+        }
         if repo_label != "All repos":
             owner, name = repo_map.get(repo_label, (None, None))
             if owner and name:
                 payload["repo_owner"] = owner
                 payload["repo_name"] = name
 
-        # Call API
-        research_label = " + web research" if web_research else ""
-        with st.spinner(f"Retrieving code context{research_label} and generating plan… (30–120s)"):
-            t0 = time.monotonic()
-            plan_data, err = api_post("/plan", json=payload, timeout=180)
-            elapsed = time.monotonic() - t0
+        api_url = os.getenv("API_URL", "http://localhost:8000")
 
-        if err:
-            st.error(f"Plan generation failed: {err}")
-            if "ANTHROPIC_API_KEY" in str(err) or "anthropic" in str(err).lower():
-                st.markdown(
-                    "Make sure `ANTHROPIC_API_KEY` is set in your `.env` file "
-                    "and the server has been restarted."
-                )
-            st.stop()
-
-        if plan_data and "error" in plan_data:
-            st.error(plan_data["error"])
-            st.stop()
+        if stream_enabled:
+            plan_data, elapsed = _request_streaming(api_url, payload)
+        else:
+            plan_data, elapsed = _request_sync(api_url, payload)
 
         if not plan_data:
             st.error("Received an empty response from the server.")
@@ -135,6 +133,135 @@ def render():
             _render_analysis(plan_data, elapsed)
         else:
             _render_plan(plan_data, elapsed)
+
+
+# ── Sync request (default) ────────────────────────────────────────────────────
+
+
+def _request_sync(api_url: str, payload: dict) -> tuple[dict | None, float]:
+    """POST /plan with stream=false, wait for the full JSON response."""
+    status_box = st.empty()
+    web_label = " + web research" if payload.get("web_research") else ""
+    status_box.info(f"⏳ Generating plan{web_label}… this may take 20–60 seconds.")
+
+    t0 = time.monotonic()
+    try:
+        with httpx.Client(timeout=180) as client:
+            resp = client.post(f"{api_url}/plan", json=payload)
+    except httpx.ConnectError:
+        status_box.empty()
+        st.error("Cannot connect to the API server. Is it running on `localhost:8000`?")
+        st.stop()
+    except Exception as exc:
+        status_box.empty()
+        st.error(f"Request failed: {exc}")
+        st.stop()
+
+    elapsed = time.monotonic() - t0
+    status_box.empty()
+
+    if resp.status_code != 200:
+        data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+        msg = data.get("error", f"HTTP {resp.status_code}")
+        st.error(f"❌ {msg}")
+        if "overloaded" in str(msg).lower() or "529" in str(msg):
+            st.info(
+                "The Anthropic API is temporarily overloaded. "
+                "The server already retried 3 times. "
+                "Please wait 30–60 seconds and try again."
+            )
+        st.stop()
+
+    return resp.json(), elapsed
+
+
+# ── Streaming request (experimental) ──────────────────────────────────────────
+
+
+def _request_streaming(api_url: str, payload: dict) -> tuple[dict | None, float]:
+    """POST /plan with stream=true, render SSE events in real-time."""
+    status_box = st.empty()
+    progress_box = st.empty()
+    stream_render_box = st.empty()
+
+    plan_data: dict | None = None
+    t0 = time.monotonic()
+    accumulated_text = ""
+
+    try:
+        with httpx.Client(timeout=180) as client, client.stream(
+            "POST", f"{api_url}/plan", json=payload
+        ) as resp:
+            if resp.status_code != 200:
+                st.error(f"API error: HTTP {resp.status_code}")
+                st.stop()
+
+            for line in resp.iter_lines():
+                if not line.startswith("data: "):
+                    continue
+                try:
+                    event = json.loads(line[6:])
+                except json.JSONDecodeError:
+                    continue
+
+                etype = event.get("type")
+
+                if etype == "status":
+                    status_box.info(f"⏳ {event['message']}")
+
+                elif etype == "retrieval_complete":
+                    chunks = event.get("chunks", 0)
+                    tokens = event.get("tokens", 0)
+                    web_icon = " 🌐" if event.get("web_research_used") else ""
+                    status_box.success(
+                        f"✅ Retrieved **{chunks}** chunks · **{tokens}** tokens{web_icon}"
+                    )
+
+                elif etype == "plan_chunk":
+                    accumulated_text += event.get("text", "")
+                    # Answer/analysis → plain markdown → render live.
+                    # Plan → partial JSON from tool_use → progress counter.
+                    if accumulated_text.lstrip().startswith("{"):
+                        progress_box.caption(
+                            f"✍️ Generating… **{len(accumulated_text):,}** chars received"
+                        )
+                    else:
+                        stream_render_box.markdown(accumulated_text + " ▌")
+
+                elif etype == "plan_complete":
+                    plan_data = event.get("plan")
+                    status_box.empty()
+                    progress_box.empty()
+                    stream_render_box.empty()
+
+                elif etype == "error":
+                    status_box.empty()
+                    progress_box.empty()
+                    stream_render_box.empty()
+                    msg = event.get("message", "Unknown error")
+                    st.error(f"❌ {msg}")
+                    if "overloaded" in str(msg).lower() or "529" in str(msg):
+                        st.info(
+                            "The Anthropic API is temporarily overloaded. "
+                            "The server already retried 3 times. "
+                            "Please wait 30–60 seconds and try again."
+                        )
+                    elif "ANTHROPIC_API_KEY" in str(msg):
+                        st.markdown(
+                            "Make sure `ANTHROPIC_API_KEY` is set in your `.env` file "
+                            "and the server has been restarted."
+                        )
+                    st.stop()
+
+    except httpx.ConnectError:
+        st.error("Cannot connect to the API server. Is it running on `localhost:8000`?")
+        st.stop()
+    except Exception as exc:
+        st.error(f"Streaming error: {exc}")
+        st.stop()
+
+    elapsed = time.monotonic() - t0
+    return plan_data, elapsed
 
 
 # ── Shared metadata bar ────────────────────────────────────────────────────────
