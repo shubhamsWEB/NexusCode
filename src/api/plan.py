@@ -104,7 +104,7 @@ async def _sse_generator(req: PlanRequest):
     yield _event({"type": "status", "message": f"Retrieving code context{web_label}…"})
 
     try:
-        from src.planning.claude_planner import generate_plan
+        from src.planning.claude_planner import stream_generate_plan
         from src.planning.retriever import retrieve_planning_context
     except ImportError as exc:
         yield _event({"type": "error", "message": str(exc)})
@@ -132,19 +132,22 @@ async def _sse_generator(req: PlanRequest):
         yield _event({"type": "error", "message": f"Retrieval failed: {exc}"})
         return
 
-    # ── Phase: generation (sync — tool_use forces full response anyway) ───────
+    # ── Phase: generation (real token streaming via input_json_delta) ─────────
     yield _event({"type": "status", "message": "Generating implementation plan…"})
 
     try:
-        plan = await generate_plan(
+        async for chunk in stream_generate_plan(
             query=req.query,
             ctx=ctx,
             repo_owner=req.repo_owner,
             repo_name=req.repo_name,
-        )
-        yield _event({"type": "plan_complete", "plan": plan.model_dump()})
+        ):
+            if chunk["type"] == "token":
+                yield _event({"type": "plan_chunk", "text": chunk["text"]})
+            elif chunk["type"] == "plan_complete":
+                yield _event({"type": "plan_complete", "plan": chunk["plan"].model_dump()})
     except RuntimeError as exc:
         yield _event({"type": "error", "message": str(exc)})
     except Exception as exc:
-        logger.exception("plan generation failed (SSE)")
+        logger.exception("plan streaming failed (SSE)")
         yield _event({"type": "error", "message": f"Plan generation failed: {exc}"})

@@ -262,14 +262,30 @@ async def generate_plan(
     loop = asyncio.get_event_loop()
 
     def _call():
-        return client.messages.create(
-            model=settings.anthropic_model,
-            max_tokens=settings.planning_max_output_tokens,
-            system=PLANNING_SYSTEM_PROMPT,
-            tools=[ANSWER_TOOL_SCHEMA, ANALYZE_IMPROVE_TOOL_SCHEMA, PLAN_TOOL_SCHEMA],
-            tool_choice={"type": "auto"},
-            messages=[{"role": "user", "content": user_message}],
-        )
+        _max_retries = 3
+        for _attempt in range(_max_retries + 1):
+            try:
+                return client.messages.create(
+                    model=settings.anthropic_model,
+                    max_tokens=settings.planning_max_output_tokens,
+                    system=PLANNING_SYSTEM_PROMPT,
+                    tools=[ANSWER_TOOL_SCHEMA, ANALYZE_IMPROVE_TOOL_SCHEMA, PLAN_TOOL_SCHEMA],
+                    tool_choice={"type": "auto"},
+                    messages=[{"role": "user", "content": user_message}],
+                )
+            except anthropic.APIStatusError as exc:
+                if exc.status_code == 529 and _attempt < _max_retries:
+                    _wait = 2**_attempt  # 1 s, 2 s, 4 s
+                    logger.warning(
+                        "planning: API overloaded (529), retry %d/%d in %ds",
+                        _attempt + 1,
+                        _max_retries,
+                        _wait,
+                    )
+                    time.sleep(_wait)
+                else:
+                    raise
+        raise RuntimeError("Anthropic API is overloaded. Please try again in a moment.")
 
     message = await loop.run_in_executor(None, _call)
     elapsed_ms = (time.monotonic() - t0) * 1000
@@ -288,13 +304,27 @@ async def generate_plan(
 # ── Streaming generator ────────────────────────────────────────────────────────
 
 
-async def stream_plan(
+async def stream_generate_plan(
     query: str,
     ctx: PlanningContext,
     repo_owner: str | None = None,
     repo_name: str | None = None,
-) -> AsyncIterator[str]:
-    """Stream raw text chunks from Claude."""
+) -> AsyncIterator[dict]:
+    """
+    Stream plan generation from Claude, yielding incremental events:
+
+      {"type": "token",         "text": "<chunk>"}
+          Fired for every output token Claude emits — plain text for
+          answer/analysis responses, partial-JSON for plan responses
+          (via the Anthropic input_json_delta streaming event).
+
+      {"type": "plan_complete", "plan": ImplementationPlan}
+          Fired once when Claude's full response has been received and the
+          tool-use output has been parsed into a structured ImplementationPlan.
+
+    Uses a thread-queue bridge so the blocking Anthropic SDK stream runs on a
+    thread-pool executor while the async caller can await and yield normally.
+    """
     try:
         import anthropic
     except ImportError as exc:
@@ -303,44 +333,103 @@ async def stream_plan(
         ) from exc
 
     if not settings.anthropic_api_key:
-        raise RuntimeError("ANTHROPIC_API_KEY is not set.")
+        raise RuntimeError("ANTHROPIC_API_KEY is not set. Add it to your .env file.")
+
+    import asyncio
+    import queue as _queue
 
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
     user_message = _build_user_message(query, ctx, repo_owner, repo_name)
+    t0 = time.monotonic()
 
-    import asyncio
-    import queue
+    # (kind, value) tuples pushed by the background thread
+    event_queue: _queue.Queue = _queue.Queue()
 
-    chunk_queue: queue.Queue = queue.Queue()
-
-    def _stream():
+    def _stream() -> None:
+        _max_retries = 3
+        _last_exc: Exception | None = None
         try:
-            with client.messages.stream(
-                model=settings.anthropic_model,
-                max_tokens=settings.planning_max_output_tokens,
-                system=PLANNING_SYSTEM_PROMPT,
-                tools=[ANSWER_TOOL_SCHEMA, ANALYZE_IMPROVE_TOOL_SCHEMA, PLAN_TOOL_SCHEMA],
-                tool_choice={"type": "auto"},
-                messages=[{"role": "user", "content": user_message}],
-            ) as stream:
-                for text in stream.text_stream:
-                    chunk_queue.put(text)
+            for _attempt in range(_max_retries + 1):
+                try:
+                    with client.messages.stream(
+                        model=settings.anthropic_model,
+                        max_tokens=settings.planning_max_output_tokens,
+                        system=PLANNING_SYSTEM_PROMPT,
+                        tools=[ANSWER_TOOL_SCHEMA, ANALYZE_IMPROVE_TOOL_SCHEMA, PLAN_TOOL_SCHEMA],
+                        tool_choice={"type": "auto"},
+                        messages=[{"role": "user", "content": user_message}],
+                    ) as stream:
+                        for event in stream:
+                            event_type = getattr(event, "type", None)
+
+                            # ── answer / analysis responses — plain text tokens
+                            if event_type == "text":
+                                text = getattr(event, "text", None)
+                                if text:
+                                    event_queue.put(("token", text))
+
+                            # ── plan responses — partial JSON from tool_use ───
+                            elif event_type == "input_json":
+                                partial = getattr(event, "partial_json", None)
+                                if partial:
+                                    event_queue.put(("token", partial))
+
+                        final_msg = stream.get_final_message()
+                        event_queue.put(("message", final_msg))
+                        return  # success — exit retry loop
+
+                except anthropic.APIStatusError as exc:
+                    if exc.status_code == 529 and _attempt < _max_retries:
+                        _wait = 2**_attempt  # 1 s, 2 s, 4 s
+                        logger.warning(
+                            "planning: API overloaded (529), retry %d/%d in %ds",
+                            _attempt + 1,
+                            _max_retries,
+                            _wait,
+                        )
+                        _last_exc = exc
+                        time.sleep(_wait)
+                    else:
+                        event_queue.put(("error", exc))
+                        return
+
+            # All retries exhausted
+            event_queue.put(
+                (
+                    "error",
+                    _last_exc
+                    or RuntimeError("Anthropic API is overloaded. Please try again in a moment."),
+                )
+            )
         except Exception as exc:
-            chunk_queue.put(exc)
+            event_queue.put(("error", exc))
         finally:
-            chunk_queue.put(None)
+            event_queue.put(("done", None))
 
     loop = asyncio.get_event_loop()
     loop.run_in_executor(None, _stream)
 
     while True:
         try:
-            item = chunk_queue.get_nowait()
-        except queue.Empty:
+            kind, value = event_queue.get_nowait()
+        except _queue.Empty:
             await asyncio.sleep(0.02)
             continue
-        if item is None:
+
+        if kind == "done":
             break
-        if isinstance(item, Exception):
-            raise item
-        yield item
+        if kind == "error":
+            raise value
+        if kind == "token":
+            yield {"type": "token", "text": value}
+        if kind == "message":
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            tool_used = next((b.name for b in value.content if b.type == "tool_use"), "none")
+            logger.info(
+                "planning: stream complete in %.0fms, stop_reason=%s, tool=%s",
+                elapsed_ms,
+                value.stop_reason,
+                tool_used,
+            )
+            plan = _parse_response(value, query, ctx, elapsed_ms)
+            yield {"type": "plan_complete", "plan": plan}
