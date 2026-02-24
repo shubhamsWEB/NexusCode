@@ -161,7 +161,11 @@ def _request_sync(api_url: str, payload: dict) -> tuple[dict | None, float]:
     status_box.empty()
 
     if resp.status_code != 200:
-        data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+        data = (
+            resp.json()
+            if resp.headers.get("content-type", "").startswith("application/json")
+            else {}
+        )
         msg = data.get("error", f"HTTP {resp.status_code}")
         st.error(f"❌ {msg}")
         if "overloaded" in str(msg).lower() or "529" in str(msg):
@@ -189,9 +193,10 @@ def _request_streaming(api_url: str, payload: dict) -> tuple[dict | None, float]
     accumulated_text = ""
 
     try:
-        with httpx.Client(timeout=180) as client, client.stream(
-            "POST", f"{api_url}/plan", json=payload
-        ) as resp:
+        with (
+            httpx.Client(timeout=180) as client,
+            client.stream("POST", f"{api_url}/plan", json=payload) as resp,
+        ):
             if resp.status_code != 200:
                 st.error(f"API error: HTTP {resp.status_code}")
                 st.stop()

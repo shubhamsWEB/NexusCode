@@ -275,10 +275,12 @@ async def generate_plan(
                 )
             except anthropic.APIStatusError as exc:
                 if exc.status_code == 529 and _attempt < _max_retries:
-                    _wait = 2 ** _attempt  # 1 s, 2 s, 4 s
+                    _wait = 2**_attempt  # 1 s, 2 s, 4 s
                     logger.warning(
                         "planning: API overloaded (529), retry %d/%d in %ds",
-                        _attempt + 1, _max_retries, _wait,
+                        _attempt + 1,
+                        _max_retries,
+                        _wait,
                     )
                     time.sleep(_wait)
                 else:
@@ -378,10 +380,12 @@ async def stream_generate_plan(
 
                 except anthropic.APIStatusError as exc:
                     if exc.status_code == 529 and _attempt < _max_retries:
-                        _wait = 2 ** _attempt  # 1 s, 2 s, 4 s
+                        _wait = 2**_attempt  # 1 s, 2 s, 4 s
                         logger.warning(
                             "planning: API overloaded (529), retry %d/%d in %ds",
-                            _attempt + 1, _max_retries, _wait,
+                            _attempt + 1,
+                            _max_retries,
+                            _wait,
                         )
                         _last_exc = exc
                         time.sleep(_wait)
@@ -390,12 +394,13 @@ async def stream_generate_plan(
                         return
 
             # All retries exhausted
-            event_queue.put((
-                "error",
-                _last_exc or RuntimeError(
-                    "Anthropic API is overloaded. Please try again in a moment."
-                ),
-            ))
+            event_queue.put(
+                (
+                    "error",
+                    _last_exc
+                    or RuntimeError("Anthropic API is overloaded. Please try again in a moment."),
+                )
+            )
         except Exception as exc:
             event_queue.put(("error", exc))
         finally:
@@ -419,9 +424,7 @@ async def stream_generate_plan(
             yield {"type": "token", "text": value}
         if kind == "message":
             elapsed_ms = (time.monotonic() - t0) * 1000
-            tool_used = next(
-                (b.name for b in value.content if b.type == "tool_use"), "none"
-            )
+            tool_used = next((b.name for b in value.content if b.type == "tool_use"), "none")
             logger.info(
                 "planning: stream complete in %.0fms, stop_reason=%s, tool=%s",
                 elapsed_ms,
