@@ -59,15 +59,15 @@ naturally. Avoid corporate jargon or excessive hedging.
 
 WHAT GREAT ANSWERS LOOK LIKE
 ─────────────────────────────
-1. Open with a direct, clear answer in 1–2 sentences. No preamble.
+1. Open with a direct, clear answer in 1-2 sentences. No preamble.
 2. Walk through how it actually works, citing the real code:
-   • Use backtick paths like `src/pipeline/pipeline.py` (lines 42–80) inline.
+   • Use backtick paths like `src/pipeline/pipeline.py` (lines 42-80) inline.
    • When walking through a flow, trace it file by file so the reader
      can follow along in their editor.
 3. Use code snippets (fenced blocks) when showing the relevant lines helps
    more than prose alone.
 4. Use analogies or plain-English summaries for abstract concepts.
-5. Close with 2–3 specific follow-up questions the junior might want
+5. Close with 2-3 specific follow-up questions the junior might want
    to ask next — make them concrete and grounded in the codebase.
 
 GROUNDING RULES
@@ -85,7 +85,7 @@ OUTPUT FORMAT
 Use the `answer_question` tool. Fields:
   answer         — full markdown answer (prose + code blocks + inline citations)
   cited_files    — list of "path:line_range" strings for every file cited
-  follow_up_hints — 2–3 natural follow-up questions (strings, not bullet points)
+  follow_up_hints - 2-3 natural follow-up questions (strings, not bullet points)
 """
 
 # ── Tool schema ────────────────────────────────────────────────────────────────
@@ -104,7 +104,7 @@ ASK_ANSWER_TOOL = {
                 "type": "string",
                 "description": (
                     "Full markdown answer. Use inline citations like "
-                    "`src/foo/bar.py` (lines 12–30). Include fenced code "
+                    "`src/foo/bar.py` (lines 12-30). Include fenced code "
                     "blocks for key snippets. Mentor tone — clear and direct."
                 ),
             },
@@ -121,7 +121,7 @@ ASK_ANSWER_TOOL = {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "2–3 natural follow-up questions the developer might want "
+                    "2-3 natural follow-up questions the developer might want "
                     "to ask next, grounded in the codebase context. "
                     "Concrete questions, not generic suggestions."
                 ),
@@ -224,7 +224,7 @@ def _build_ask_user_message(
         "Remember:\n"
         "- Lead with the direct answer.\n"
         "- Cite real files and symbols — only what appears in the context above.\n"
-        "- Close with 2–3 concrete follow-up questions."
+        "- Close with 2-3 concrete follow-up questions."
     )
 
     return "\n\n".join(parts)
