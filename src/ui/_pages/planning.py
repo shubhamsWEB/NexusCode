@@ -168,10 +168,16 @@ def _request_sync(api_url: str, payload: dict) -> tuple[dict | None, float]:
         )
         msg = data.get("error", f"HTTP {resp.status_code}")
         st.error(f"❌ {msg}")
-        if "overloaded" in str(msg).lower() or "529" in str(msg):
+        if resp.status_code == 429 or "rate limit" in str(msg).lower():
+            st.info(
+                "⏳ **Rate limit exceeded.** The server serializes concurrent "
+                "requests and retries automatically, but your API tier's token "
+                "limit was still reached. Please wait 60 seconds and try again."
+            )
+        elif "overloaded" in str(msg).lower() or "529" in str(msg):
             st.info(
                 "The Anthropic API is temporarily overloaded. "
-                "The server already retried 3 times. "
+                "The server already retried automatically. "
                 "Please wait 30–60 seconds and try again."
             )
         st.stop()
@@ -214,6 +220,9 @@ def _request_streaming(api_url: str, payload: dict) -> tuple[dict | None, float]
                 if etype == "status":
                     status_box.info(f"⏳ {event['message']}")
 
+                elif etype == "thinking":
+                    status_box.info("🧠 Thinking…")
+
                 elif etype == "retrieval_complete":
                     chunks = event.get("chunks", 0)
                     tokens = event.get("tokens", 0)
@@ -245,10 +254,16 @@ def _request_streaming(api_url: str, payload: dict) -> tuple[dict | None, float]
                     stream_render_box.empty()
                     msg = event.get("message", "Unknown error")
                     st.error(f"❌ {msg}")
-                    if "overloaded" in str(msg).lower() or "529" in str(msg):
+                    if "rate limit" in str(msg).lower() or event.get("retry_after"):
+                        st.info(
+                            "⏳ **Rate limit exceeded.** The server serializes concurrent "
+                            "requests and retries automatically, but your API tier's token "
+                            "limit was still reached. Please wait 60 seconds and try again."
+                        )
+                    elif "overloaded" in str(msg).lower() or "529" in str(msg):
                         st.info(
                             "The Anthropic API is temporarily overloaded. "
-                            "The server already retried 3 times. "
+                            "The server already retried automatically. "
                             "Please wait 30–60 seconds and try again."
                         )
                     elif "ANTHROPIC_API_KEY" in str(msg):
@@ -386,6 +401,14 @@ def _render_plan(plan: dict, elapsed: float):
         with st.expander("Clarifying Assumptions"):
             for a in assumptions:
                 st.markdown(f"- {a}")
+
+    # ── Key Design Decisions ──────────────────────────────────────────────────
+    decisions = plan.get("design_decisions") or []
+    if decisions:
+        st.divider()
+        st.subheader("Key Design Decisions")
+        for d in decisions:
+            st.markdown(f"- {d}")
 
     st.divider()
 

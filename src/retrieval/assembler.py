@@ -6,11 +6,16 @@ single, formatted context string ready to inject into an LLM prompt.
 
 Respects a token budget — stops adding chunks once the budget is full.
 Deduplicates by chunk_id so the same chunk never appears twice.
+
+Output format: file-grouped
+  Chunks selected by score rank (greedy), then rendered grouped by file
+  so the LLM sees all code from a file consecutively (improves comprehension).
 """
 
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -39,19 +44,29 @@ def assemble(
     query: str | None = None,
 ) -> AssembledContext:
     """
-    Greedily fill the token budget with the highest-ranked chunks.
+    Greedily fill the token budget with the highest-ranked chunks,
+    then render the selected chunks grouped by file (file-grouped format).
 
-    Format of each chunk in the output:
-    ─────────────────────────────────────
-    File: src/auth/service.py  [lines 42-55]  (typescript)
-    Scope: AuthService > validate_token
-    Score: 0.847
+    Selection phase: iterate by score rank, stop when budget is full.
+    Rendering phase: group selected chunks by file_path, sort by start_line,
+    so the LLM sees consecutive code within each file.
+
+    Format of each file group in the output:
+    ══════════════════════════════════════════════════════════
+    File: src/auth/service.py  (python)  · last: alice @ a1b2c3d
+    ──────────────────────────────────────────────────────────
+    [lines 42-55]  Scope: AuthService > validate_token  Score: 0.847
 
     <raw source code>
-    ─────────────────────────────────────
+    ──────────────────────────────────────────────────────────
+    [lines 80-110]  Scope: AuthService > refresh_token  Score: 0.732
+
+    <raw source code>
+    ══════════════════════════════════════════════════════════
     """
+    # ── Phase 1: greedy selection by score rank ───────────────────────────────
     seen_ids: set[str] = set()
-    sections: list[str] = []
+    selected: list[SearchResult] = []
     chunks_used: list[dict] = []
     tokens_used = 0
 
@@ -59,15 +74,13 @@ def assemble(
         if result.chunk_id in seen_ids:
             continue
 
-        section = _format_chunk(result)
-        section_tokens = count_tokens(section)
-
+        section_tokens = count_tokens(result.raw_content) + 80  # header overhead
         if tokens_used + section_tokens > token_budget:
             # Try to keep going — maybe a later chunk is shorter
             continue
 
         seen_ids.add(result.chunk_id)
-        sections.append(section)
+        selected.append(result)
         tokens_used += section_tokens
         chunks_used.append(
             {
@@ -79,15 +92,70 @@ def assemble(
             }
         )
 
+    # ── Phase 2: group selected chunks by file, sort by start_line ───────────
+    file_order: list[str] = []  # preserve first-seen file order (by top score)
+    file_chunks: dict[str, list[SearchResult]] = defaultdict(list)
+
+    for r in selected:
+        if r.file_path not in file_chunks:
+            file_order.append(r.file_path)
+        file_chunks[r.file_path].append(r)
+
+    # Sort each file's chunks by start_line for narrative reading order
+    for fp in file_order:
+        file_chunks[fp].sort(key=lambda r: r.start_line)
+
+    # ── Phase 3: render file-grouped output ───────────────────────────────────
+    sections: list[str] = []
+    divider_heavy = "═" * 60
+    divider_light = "─" * 60
+
+    for fp in file_order:
+        chunks = file_chunks[fp]
+        if not chunks:
+            continue
+
+        # File-level header (shown once per file)
+        first = chunks[0]
+        short_path = _short_path(fp)
+        lang = first.language or ""
+        file_header_parts = [f"File: {short_path}"]
+        if lang:
+            file_header_parts.append(f"({lang})")
+
+        # Commit info (from first chunk — all chunks in a file share the same commit)
+        commit = first.commit_sha[:7] if first.commit_sha else ""
+        if first.commit_author or commit:
+            commit_parts = []
+            if first.commit_author:
+                commit_parts.append(first.commit_author)
+            if commit:
+                commit_parts.append(f"@ {commit}")
+            file_header_parts.append("· last: " + " ".join(commit_parts))
+
+        file_header = "  ".join(file_header_parts)
+        sections.append(f"{divider_heavy}\n{file_header}")
+
+        # Per-chunk content (each chunk gets a lightweight sub-header)
+        for r in chunks:
+            score = r.rerank_score or r.score
+            chunk_header_parts = [f"[lines {r.start_line}-{r.end_line}]"]
+            if r.scope_chain:
+                chunk_header_parts.append(f"Scope: {r.scope_chain}")
+            chunk_header_parts.append(f"Score: {score:.4f}")
+            chunk_header = "  ".join(chunk_header_parts)
+            sections.append(f"{divider_light}\n{chunk_header}\n\n{r.raw_content}")
+
     context_text = "\n".join(sections)
+    if sections:
+        context_text += f"\n{divider_heavy}"
 
     retrieval_log = _build_log(query, chunks_used, tokens_used, token_budget)
-    # Avoid logging user-supplied token_budget directly (log injection risk).
-    # Full budget details are captured in retrieval_log.
     logger.info(
-        "assembler: %d/%d chunks included, %d tokens used",
+        "assembler: %d/%d chunks included across %d files, %d tokens used",
         len(chunks_used),
         len(results),
+        len(file_order),
         tokens_used,
     )
 
@@ -100,32 +168,6 @@ def assemble(
 
 
 # ── Formatting helpers ────────────────────────────────────────────────────────
-
-
-def _format_chunk(result: SearchResult) -> str:
-    short_path = _short_path(result.file_path)
-    header_parts = [
-        f"File: {short_path}  [lines {result.start_line}-{result.end_line}]  ({result.language})"
-    ]
-    if result.scope_chain:
-        header_parts.append(f"Scope: {result.scope_chain}")
-
-    score = result.rerank_score or result.score
-    header_parts.append(f"Score: {score:.4f}")
-
-    commit = result.commit_sha[:7] if result.commit_sha else ""
-    if result.commit_author or commit:
-        parts = []
-        if result.commit_author:
-            parts.append(result.commit_author)
-        if commit:
-            parts.append(f"@ {commit}")
-        header_parts.append(f"Last changed: {' '.join(parts)}")
-
-    header = "\n".join(header_parts)
-    divider = "─" * 60
-
-    return f"{divider}\n{header}\n\n{result.raw_content}\n"
 
 
 def _short_path(file_path: str) -> str:

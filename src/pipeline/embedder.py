@@ -36,8 +36,13 @@ _BASE_BACKOFF = 2.0  # seconds
 _is_free_tier: bool = False
 
 
+_voyage_client = None
+
 def _make_client() -> voyageai.Client:
-    return voyageai.Client(api_key=settings.voyage_api_key)
+    global _voyage_client
+    if _voyage_client is None:
+        _voyage_client = voyageai.Client(api_key=settings.voyage_api_key)
+    return _voyage_client
 
 
 # ── Main public function ──────────────────────────────────────────────────────
@@ -138,7 +143,7 @@ async def _embed_with_retry(
     Call the Voyage AI embed API with exponential backoff on transient errors.
     Runs the synchronous Voyage client in a thread pool to keep the event loop free.
     """
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     for attempt in range(1, _MAX_RETRIES + 1):
         try:

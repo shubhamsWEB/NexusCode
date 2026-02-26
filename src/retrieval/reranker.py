@@ -25,6 +25,17 @@ logger = logging.getLogger(__name__)
 _model = None
 
 
+def _truncate_to_line(text: str, max_chars: int) -> str:
+    """Truncate text to the last complete line within max_chars."""
+    if len(text) <= max_chars:
+        return text
+    truncated = text[:max_chars]
+    last_newline = truncated.rfind("\n")
+    if last_newline > 0:
+        return truncated[:last_newline]
+    return truncated
+
+
 def _get_model():
     global _model
     if _model is None:
@@ -57,7 +68,7 @@ def rerank(
 
     model = _get_model()
 
-    pairs = [(query, r.raw_content[:1500]) for r in results]
+    pairs = [(query, _truncate_to_line(r.raw_content, 1500)) for r in results]
 
     try:
         scores = model.predict(pairs, show_progress_bar=False)

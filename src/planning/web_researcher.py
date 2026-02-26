@@ -26,6 +26,17 @@ from src.config import settings
 
 logger = logging.getLogger(__name__)
 
+_anthropic_client = None
+
+def _get_anthropic_client():
+    global _anthropic_client
+    if _anthropic_client is None:
+        import anthropic
+        if not settings.anthropic_api_key:
+            return None
+        _anthropic_client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    return _anthropic_client
+
 
 # ── System prompt — gap-analysis mode, NOT tutorial mode ─────────────────────
 
@@ -88,7 +99,9 @@ async def research_implementation(query: str, stack_context: str = "") -> str:
         logger.debug("web_researcher: skipping (anthropic not installed)")
         return ""
 
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    client = _get_anthropic_client()
+    if client is None:
+        return ""
 
     # ── Build a stack-aware user message ─────────────────────────────────────
     if stack_context:
@@ -114,7 +127,7 @@ async def research_implementation(query: str, stack_context: str = "") -> str:
 
     import asyncio
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     def _call():
         return client.messages.create(

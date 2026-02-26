@@ -15,6 +15,7 @@ from typing import Any
 
 from sqlalchemy import text
 
+from src.config import settings
 from src.storage.db import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
@@ -94,6 +95,7 @@ async def _semantic_search(
     vec_str = "[" + ",".join(f"{v:.8f}" for v in vector) + "]"
     where, params = _build_where(repo_owner, repo_name, language)
     params["limit"] = limit
+    params["vec"] = vec_str
 
     sql = text(f"""
         SELECT
@@ -101,11 +103,11 @@ async def _semantic_search(
             symbol_name, symbol_kind, scope_chain,
             start_line, end_line, raw_content, enriched_content,
             commit_sha, commit_author, token_count,
-            1 - (embedding <=> '{vec_str}'::vector) AS score
+            1 - (embedding <=> :vec ::vector) AS score
         FROM chunks
         WHERE {where}
           AND embedding IS NOT NULL
-        ORDER BY embedding <=> '{vec_str}'::vector
+        ORDER BY embedding <=> :vec ::vector
         LIMIT :limit
     """)
 
@@ -246,14 +248,53 @@ async def embed_query(query: str) -> list[float]:
     """Embed a search query using voyage-code-2 with input_type='query'."""
     import asyncio
 
-    import voyageai
+    from src.pipeline.embedder import _make_client
 
-    from src.config import settings
-
-    client = voyageai.Client(api_key=settings.voyage_api_key)
-    loop = asyncio.get_event_loop()
+    client = _make_client()
+    loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(
         None,
         lambda: client.embed([query], model=settings.embedding_model, input_type="query"),
     )
     return result.embeddings[0]
+
+
+async def embed_queries_batch(queries: list[str]) -> list[list[float]]:
+    """
+    Embed multiple search queries in a single Voyage AI API call.
+
+    Batching N sub-queries into one call reduces round-trip overhead
+    and avoids N-fold rate-limit pressure.  The Voyage API accepts up to
+    128 texts per request; callers should not exceed that limit.
+
+    Returns a list of embedding vectors in the same order as `queries`.
+    Falls back to per-query calls if the batch request fails.
+    """
+    import asyncio
+
+    from src.pipeline.embedder import _make_client
+
+    if not queries:
+        return []
+
+    client = _make_client()
+    loop = asyncio.get_running_loop()
+
+    try:
+        result = await loop.run_in_executor(
+            None,
+            lambda: client.embed(
+                queries,
+                model=settings.embedding_model,
+                input_type="query",
+            ),
+        )
+        return result.embeddings
+    except Exception as exc:
+        # Batch failed — fall back to sequential per-query calls
+        logger.warning(
+            "embed_queries_batch: batch of %d failed (%s), falling back to sequential",
+            len(queries),
+            exc,
+        )
+        return [await embed_query(q) for q in queries]

@@ -42,9 +42,30 @@ class Settings(BaseSettings):
     # ── LLM / Planning ───────────────────────────────────────────────────────
     anthropic_api_key: str | None = Field(None)
     anthropic_model: str = Field("claude-sonnet-4-6", description="Claude model for planning")
-    planning_context_budget: int = Field(10000, description="Token budget for planning context")
+    planning_context_budget: int = Field(10000, description="Base token budget for planning context")
     planning_max_output_tokens: int = Field(
-        8000, description="Max output tokens for plan generation"
+        16000, description="Max output tokens for plan generation"
+    )
+    planning_thinking_budget: int = Field(
+        10000, description="Token budget for extended thinking (0 to disable)"
+    )
+    planning_max_context_budget: int = Field(
+        30000, description="Max token budget (used for complex multi-file queries)"
+    )
+    planning_candidate_base: int = Field(
+        15, description="Base candidate count for hybrid search"
+    )
+    planning_candidate_max: int = Field(
+        40, description="Max candidates for complex queries on large codebases"
+    )
+    planning_rerank_base: int = Field(
+        10, description="Base rerank top-N"
+    )
+    planning_rerank_max: int = Field(
+        25, description="Max rerank top-N for complex queries"
+    )
+    planning_import_depth: int = Field(
+        2, description="How many import hops to follow for dependency context"
     )
 
     # ── Webhook Auto-Registration ─────────────────────────────────────────────
