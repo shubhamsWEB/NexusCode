@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from src.config import settings
 
@@ -868,7 +868,7 @@ def _resolve_import_to_path(import_stmt: str) -> str | None:
         path = ts_match.group(1)
         if path.startswith("."):
             return None  # relative
-        if not "/" in path:
+        if "/" not in path:
             return None  # npm package
         return path
 

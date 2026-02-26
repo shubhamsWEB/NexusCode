@@ -15,6 +15,8 @@ no thread-pool blocking via run_in_executor.
 
 from __future__ import annotations
 
+import asyncio as _asyncio
+import importlib.util
 import logging
 import time
 from collections.abc import AsyncIterator
@@ -38,8 +40,6 @@ _anthropic_client = None
 # rate limit (e.g. 30K input tokens/min on lower tiers).  With thinking enabled,
 # a single /plan request can use 10-20K input tokens, so even 2 concurrent calls
 # can trigger 429.  The semaphore queues requests so only one hits the API at a time.
-import asyncio as _asyncio
-
 _anthropic_semaphore = _asyncio.Semaphore(1)
 
 
@@ -271,7 +271,7 @@ def _condense_stack_fingerprint(fingerprint: str) -> str:
         if line.strip():
             condensed.append(line)
 
-        if sum(len(l) for l in condensed) > char_budget:
+        if sum(len(ln) for ln in condensed) > char_budget:
             condensed.append("  ... (truncated)")
             break
 
@@ -494,8 +494,9 @@ async def _with_overload_retry(coro_factory):
     and 529 (overloaded).
     `coro_factory` is a zero-argument callable that returns a fresh coroutine each time.
     """
-    import anthropic
     import asyncio
+
+    import anthropic
 
     last_exc: Exception | None = None
     for attempt in range(_MAX_RETRIES + 1):
@@ -550,8 +551,9 @@ async def _generate_plan_via_stream(client, call_params):
     Consumes the stream and returns the final message.
     Retries on both 429 (rate limit) and 529 (overloaded).
     """
-    import anthropic
     import asyncio
+
+    import anthropic
 
     last_exc: Exception | None = None
     for attempt in range(_MAX_RETRIES + 1):
@@ -594,26 +596,24 @@ async def generate_plan(
 
     Uses the async client directly — no thread blocking via run_in_executor.
     """
-    try:
-        import anthropic  # noqa: F401 — ensure package present
-    except ImportError as exc:
+    if importlib.util.find_spec("anthropic") is None:
         raise RuntimeError(
             "anthropic package not installed. Run: pip install anthropic>=0.40.0"
-        ) from exc
+        )
 
     client = _get_anthropic_client()
     user_message = _build_user_message(query, ctx, repo_owner, repo_name)
     t0 = time.monotonic()
 
     thinking_budget = settings.planning_thinking_budget
-    call_params = dict(
-        model=settings.anthropic_model,
-        max_tokens=settings.planning_max_output_tokens + thinking_budget,
-        system=PLANNING_SYSTEM_PROMPT,
-        tools=[ANSWER_TOOL_SCHEMA, ANALYZE_IMPROVE_TOOL_SCHEMA, PLAN_TOOL_SCHEMA],
-        tool_choice={"type": "auto"},
-        messages=[{"role": "user", "content": user_message}],
-    )
+    call_params = {
+        "model": settings.anthropic_model,
+        "max_tokens": settings.planning_max_output_tokens + thinking_budget,
+        "system": PLANNING_SYSTEM_PROMPT,
+        "tools": [ANSWER_TOOL_SCHEMA, ANALYZE_IMPROVE_TOOL_SCHEMA, PLAN_TOOL_SCHEMA],
+        "tool_choice": {"type": "auto"},
+        "messages": [{"role": "user", "content": user_message}],
+    }
     if thinking_budget > 0:
         call_params["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
 
@@ -664,7 +664,7 @@ async def stream_generate_plan(
           Fired once when Claude's full response has been received and parsed.
     """
     try:
-        import anthropic  # noqa: F401 — ensure package present
+        import anthropic
     except ImportError as exc:
         raise RuntimeError(
             "anthropic package not installed. Run: pip install anthropic>=0.40.0"
@@ -677,14 +677,14 @@ async def stream_generate_plan(
     t0 = time.monotonic()
 
     thinking_budget = settings.planning_thinking_budget
-    call_params = dict(
-        model=settings.anthropic_model,
-        max_tokens=settings.planning_max_output_tokens + thinking_budget,
-        system=PLANNING_SYSTEM_PROMPT,
-        tools=[ANSWER_TOOL_SCHEMA, ANALYZE_IMPROVE_TOOL_SCHEMA, PLAN_TOOL_SCHEMA],
-        tool_choice={"type": "auto"},
-        messages=[{"role": "user", "content": user_message}],
-    )
+    call_params = {
+        "model": settings.anthropic_model,
+        "max_tokens": settings.planning_max_output_tokens + thinking_budget,
+        "system": PLANNING_SYSTEM_PROMPT,
+        "tools": [ANSWER_TOOL_SCHEMA, ANALYZE_IMPROVE_TOOL_SCHEMA, PLAN_TOOL_SCHEMA],
+        "tool_choice": {"type": "auto"},
+        "messages": [{"role": "user", "content": user_message}],
+    }
     if thinking_budget > 0:
         call_params["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
 

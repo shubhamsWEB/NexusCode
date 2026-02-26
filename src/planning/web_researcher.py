@@ -20,6 +20,7 @@ Falls back gracefully to "" on any failure so planning always continues.
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 
 from src.config import settings
@@ -93,9 +94,7 @@ async def research_implementation(query: str, stack_context: str = "") -> str:
         logger.debug("web_researcher: skipping (no ANTHROPIC_API_KEY)")
         return ""
 
-    try:
-        import anthropic
-    except ImportError:
+    if importlib.util.find_spec("anthropic") is None:
         logger.debug("web_researcher: skipping (anthropic not installed)")
         return ""
 
