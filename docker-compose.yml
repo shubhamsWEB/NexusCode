@@ -8,7 +8,7 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD:-secret}
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./src/storage/migrations/001_init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./src/storage/migrations:/docker-entrypoint-initdb.d
     ports:
       - "5432:5432"
     healthcheck:

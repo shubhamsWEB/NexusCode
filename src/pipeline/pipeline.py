@@ -164,10 +164,7 @@ async def _handle_upserts(
         upsert_symbols,
     )
 
-    all_enriched = []  # accumulate across files before batch-embedding
-    file_meta = []  # parallel list: (path, blob_sha, symbols, enriched_slice_range)
-
-    # ── Fetch + parse + chunk + enrich (concurrent with semaphore) ────────
+    BATCH_SIZE = 50  # Process files in batches for rate-limit resilience + progress
     _sem = asyncio.Semaphore(5)  # max 5 concurrent GitHub API calls
 
     async def _process_file(path: str) -> dict | None:
@@ -206,110 +203,143 @@ async def _handle_upserts(
                 log.error("pipeline.parse_error", path=path, error=str(exc))
                 return {"type": "error"}
 
-    results = await asyncio.gather(*[_process_file(p) for p in paths])
+    total_files = len(paths)
+    total_batches = (total_files + BATCH_SIZE - 1) // BATCH_SIZE
+    files_done = 0
 
-    for result in results:
-        if result is None:
+    for batch_idx in range(0, total_files, BATCH_SIZE):
+        batch_num = batch_idx // BATCH_SIZE + 1
+        batch_paths = paths[batch_idx : batch_idx + BATCH_SIZE]
+        log.info(
+            "pipeline.batch_start",
+            batch=f"{batch_num}/{total_batches}",
+            files=f"{files_done}/{total_files}",
+            batch_size=len(batch_paths),
+        )
+
+        # ── Fetch + parse + chunk + enrich this batch ────────────────────
+        results = await asyncio.gather(*[_process_file(p) for p in batch_paths])
+
+        batch_enriched = []
+        batch_meta = []
+
+        for result in results:
+            if result is None:
+                continue
+            if result["type"] == "merkle_skip":
+                stats["files_skipped_merkle"] += 1
+            elif result["type"] == "error":
+                stats["errors"] += 1
+            elif result["type"] == "success":
+                batch_enriched.extend(result["enriched"])
+                batch_meta.append(result)
+                stats["files_processed"] += 1
+
+        files_done += len(batch_paths)
+
+        if not batch_enriched:
+            log.info(
+                "pipeline.batch_skip",
+                batch=f"{batch_num}/{total_batches}",
+                reason="no enriched chunks",
+            )
             continue
-        if result["type"] == "merkle_skip":
-            stats["files_skipped_merkle"] += 1
-        elif result["type"] == "error":
-            stats["errors"] += 1
-        elif result["type"] == "success":
-            all_enriched.extend(result["enriched"])
-            file_meta.append(result)
-            stats["files_processed"] += 1
 
-    if not all_enriched:
-        return
-
-    # ── Batch embed (one API call block for all files) ───────────────────────
-    all_ids = [c.chunk_id for c in all_enriched]
-    existing_ids = await get_existing_chunk_ids(all_ids)
-    stats["embed_cache_hits"] += len(existing_ids)
-
-    try:
-        id_to_vector = await embed_chunks(all_enriched, existing_ids)
-    except Exception as exc:
-        log.error("pipeline.embed_error", error=str(exc))
-        stats["errors"] += 1
-        return
-
-    # ── Store results per file ────────────────────────────────────────────────
-    for meta in file_meta:
-        path = meta["path"]
-        blob_sha = meta["blob_sha"]
-        enriched_for_file = meta["enriched"]
-        symbols_for_file = meta["symbols"]
+        # ── Batch embed ──────────────────────────────────────────────────
+        all_ids = [c.chunk_id for c in batch_enriched]
+        existing_ids = await get_existing_chunk_ids(all_ids)
+        stats["embed_cache_hits"] += len(existing_ids)
 
         try:
-            # Soft-delete old chunks for this file
-            await soft_delete_chunks(path, owner, repo)
-            await delete_symbols_for_file(path, owner, repo)
-
-            # Build chunk rows
-            chunk_rows = []
-            for ec in enriched_for_file:
-                vector = id_to_vector.get(ec.chunk_id)
-                if vector is None and ec.chunk_id not in existing_ids:
-                    # Embedding failed for this chunk — skip it
-                    continue
-                chunk_rows.append(
-                    {
-                        "id": ec.chunk_id,
-                        "file_path": path,
-                        "repo_owner": owner,
-                        "repo_name": repo,
-                        "commit_sha": commit_sha,
-                        "commit_author": commit_author,
-                        "commit_message": commit_message,
-                        "language": ec.language,
-                        "symbol_name": ec.symbol_name,
-                        "symbol_kind": ec.symbol_kind,
-                        "scope_chain": ec.scope_chain,
-                        "start_line": ec.start_line,
-                        "end_line": ec.end_line,
-                        "raw_content": ec.raw_content,
-                        "enriched_content": ec.enriched_content,
-                        "imports": ec.imports,
-                        "token_count": ec.token_count,
-                        "embedding": vector,
-                        "is_deleted": False,
-                    }
-                )
-
-            if chunk_rows:
-                await upsert_chunks(chunk_rows)
-                stats["chunks_upserted"] += len(chunk_rows)
-
-            # Build symbol rows
-            symbol_rows = []
-            for sym in symbols_for_file:
-                symbol_rows.append(
-                    {
-                        "id": f"{path}:{sym.qualified_name}",
-                        "name": sym.name,
-                        "qualified_name": sym.qualified_name,
-                        "kind": sym.kind,
-                        "file_path": path,
-                        "repo_owner": owner,
-                        "repo_name": repo,
-                        "start_line": sym.start_line,
-                        "end_line": sym.end_line,
-                        "signature": sym.signature,
-                        "docstring": sym.docstring,
-                        "is_exported": sym.is_exported,
-                    }
-                )
-
-            if symbol_rows:
-                await upsert_symbols(symbol_rows)
-                stats["symbols_upserted"] += len(symbol_rows)
-
-            # Update merkle hash
-            await upsert_merkle_node(path, owner, repo, blob_sha)
-            log.debug("pipeline.file_done", path=path, chunks=len(chunk_rows))
-
+            id_to_vector = await embed_chunks(batch_enriched, existing_ids)
         except Exception as exc:
-            log.error("pipeline.store_error", path=path, error=str(exc))
+            log.error("pipeline.embed_error", batch=batch_num, error=str(exc))
             stats["errors"] += 1
+            continue
+
+        # ── Store results per file in this batch ─────────────────────────
+        for meta in batch_meta:
+            path = meta["path"]
+            blob_sha = meta["blob_sha"]
+            enriched_for_file = meta["enriched"]
+            symbols_for_file = meta["symbols"]
+
+            try:
+                # Soft-delete old chunks for this file
+                await soft_delete_chunks(path, owner, repo)
+                await delete_symbols_for_file(path, owner, repo)
+
+                # Build chunk rows
+                chunk_rows = []
+                for ec in enriched_for_file:
+                    vector = id_to_vector.get(ec.chunk_id)
+                    if vector is None and ec.chunk_id not in existing_ids:
+                        # Embedding failed for this chunk — skip it
+                        continue
+                    chunk_rows.append(
+                        {
+                            "id": ec.chunk_id,
+                            "file_path": path,
+                            "repo_owner": owner,
+                            "repo_name": repo,
+                            "commit_sha": commit_sha,
+                            "commit_author": commit_author,
+                            "commit_message": commit_message,
+                            "language": ec.language,
+                            "symbol_name": ec.symbol_name,
+                            "symbol_kind": ec.symbol_kind,
+                            "scope_chain": ec.scope_chain,
+                            "start_line": ec.start_line,
+                            "end_line": ec.end_line,
+                            "raw_content": ec.raw_content,
+                            "enriched_content": ec.enriched_content,
+                            "imports": ec.imports,
+                            "token_count": ec.token_count,
+                            "embedding": vector,
+                            "is_deleted": False,
+                        }
+                    )
+
+                if chunk_rows:
+                    await upsert_chunks(chunk_rows)
+                    stats["chunks_upserted"] += len(chunk_rows)
+
+                # Build symbol rows
+                symbol_rows = []
+                for sym in symbols_for_file:
+                    symbol_rows.append(
+                        {
+                            "id": f"{path}:{sym.qualified_name}",
+                            "name": sym.name,
+                            "qualified_name": sym.qualified_name,
+                            "kind": sym.kind,
+                            "file_path": path,
+                            "repo_owner": owner,
+                            "repo_name": repo,
+                            "start_line": sym.start_line,
+                            "end_line": sym.end_line,
+                            "signature": sym.signature,
+                            "docstring": sym.docstring,
+                            "is_exported": sym.is_exported,
+                        }
+                    )
+
+                if symbol_rows:
+                    await upsert_symbols(symbol_rows)
+                    stats["symbols_upserted"] += len(symbol_rows)
+
+                # Update merkle hash
+                await upsert_merkle_node(path, owner, repo, blob_sha)
+                log.debug("pipeline.file_done", path=path, chunks=len(chunk_rows))
+
+            except Exception as exc:
+                log.error("pipeline.store_error", path=path, error=str(exc))
+                stats["errors"] += 1
+
+        log.info(
+            "pipeline.batch_done",
+            batch=f"{batch_num}/{total_batches}",
+            progress=f"{files_done}/{total_files}",
+            chunks=stats["chunks_upserted"],
+            errors=stats["errors"],
+        )

@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 # ── Extension → language name ─────────────────────────────────────────────────
 
 EXTENSION_TO_LANGUAGE: dict[str, str] = {
+    # Tree-sitter supported (AST parsing)
     ".py": "python",
     ".ts": "typescript",
     ".tsx": "tsx",
@@ -25,12 +26,24 @@ EXTENSION_TO_LANGUAGE: dict[str, str] = {
     ".java": "java",
     ".go": "go",
     ".rs": "rust",
+    # Detected but no tree-sitter grammar — indexed via sliding-window chunker
     ".cpp": "cpp",
     ".c": "c",
     ".cs": "c_sharp",
     ".rb": "ruby",
     ".swift": "swift",
     ".kt": "kotlin",
+    ".json": "json",
+    ".md": "markdown",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".html": "html",
+    ".css": "css",
+    ".scss": "scss",
+    ".sh": "shell",
+    ".sql": "sql",
+    ".xml": "xml",
+    ".toml": "toml",
 }
 
 

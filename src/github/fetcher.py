@@ -51,25 +51,45 @@ async def fetch_file(
     repo: str,
     path: str,
     ref: str,
+    *,
+    _max_retries: int = 3,
+    _base_delay: float = 60.0,
 ) -> tuple[str, str] | None:
     """
     Fetch a single file's content from GitHub at a specific ref (commit SHA or branch).
 
     Returns (content_str, blob_sha) or None if the file doesn't exist / is binary.
     Rate limit: 5,000 req/hr (PAT) or 15,000 req/hr (GitHub App).
+
+    Automatically retries with exponential backoff on rate-limit (403) responses.
     """
+    import asyncio
+
     url = f"{_GITHUB_API}/repos/{owner}/{repo}/contents/{path}"
-    async with _make_client() as client:
-        resp = await client.get(url, params={"ref": ref})
 
-    if resp.status_code == 404:
-        logger.debug("fetch_file: not found %s/%s@%s %s", owner, repo, ref, path)
-        return None
+    for attempt in range(_max_retries + 1):
+        async with _make_client() as client:
+            resp = await client.get(url, params={"ref": ref})
 
-    if resp.status_code == 403 and "rate limit" in resp.text.lower():
-        raise RuntimeError(f"GitHub API rate limit hit fetching {path}")
+        if resp.status_code == 404:
+            logger.debug("fetch_file: not found %s/%s@%s %s", owner, repo, ref, path)
+            return None
 
-    resp.raise_for_status()
+        if resp.status_code == 403 and "rate limit" in resp.text.lower():
+            if attempt < _max_retries:
+                delay = _base_delay * (2 ** attempt)  # 60s, 120s, 240s
+                logger.warning(
+                    "Rate limit hit fetching %s (attempt %d/%d). "
+                    "Waiting %.0fs before retry...",
+                    path, attempt + 1, _max_retries, delay,
+                )
+                await asyncio.sleep(delay)
+                continue
+            raise RuntimeError(f"GitHub API rate limit hit fetching {path} (exhausted retries)")
+
+        resp.raise_for_status()
+        break
+
     data = resp.json()
 
     # GitHub returns base64-encoded content; skip non-file objects
@@ -98,6 +118,9 @@ async def fetch_full_tree(
     owner: str,
     repo: str,
     ref: str,
+    *,
+    _max_retries: int = 3,
+    _base_delay: float = 60.0,
 ) -> list[dict]:
     """
     Fetch the complete file tree for a repo at a given ref using the Git Trees API.
@@ -105,16 +128,44 @@ async def fetch_full_tree(
 
     Each item in the returned list is:
       {"path": "src/foo.py", "sha": "<blob_sha>", "size": 1234, "type": "blob"}
+
+    Automatically retries with backoff on rate-limit (403) responses.
     """
+    import asyncio
+    import time
+
     url = f"{_GITHUB_API}/repos/{owner}/{repo}/git/trees/{ref}"
-    async with _make_client() as client:
-        resp = await client.get(url, params={"recursive": "1"})
 
-    if resp.status_code == 409:
-        # Empty repo
-        return []
+    for attempt in range(_max_retries + 1):
+        async with _make_client() as client:
+            resp = await client.get(url, params={"recursive": "1"})
 
-    resp.raise_for_status()
+        if resp.status_code == 409:
+            # Empty repo
+            return []
+
+        if resp.status_code == 403 and "rate limit" in resp.text.lower():
+            if attempt < _max_retries:
+                # Try to use the X-RateLimit-Reset header for exact wait time
+                reset_ts = resp.headers.get("x-ratelimit-reset")
+                if reset_ts:
+                    delay = max(int(reset_ts) - int(time.time()) + 5, 10)  # +5s buffer
+                else:
+                    delay = _base_delay * (2 ** attempt)
+                logger.warning(
+                    "Rate limit hit fetching tree for %s/%s (attempt %d/%d). "
+                    "Waiting %ds before retry...",
+                    owner, repo, attempt + 1, _max_retries, delay,
+                )
+                await asyncio.sleep(delay)
+                continue
+            raise RuntimeError(
+                f"GitHub API rate limit hit fetching tree for {owner}/{repo} (exhausted retries)"
+            )
+
+        resp.raise_for_status()
+        break
+
     data = resp.json()
 
     if data.get("truncated"):
