@@ -11,7 +11,9 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from src.api.ask import router as ask_router
 from src.api.plan import router as plan_router
+
 from src.api.repos import router as repos_router
 from src.github.webhook import router as webhook_router
 from src.mcp.auth import router as auth_router
@@ -28,6 +30,8 @@ app.include_router(webhook_router)
 app.include_router(auth_router)
 app.include_router(repos_router)
 app.include_router(plan_router)
+app.include_router(ask_router)
+
 
 # Mount MCP server — exposes /mcp/sse and /mcp/messages/
 app.mount("/mcp", mcp_server.sse_app())

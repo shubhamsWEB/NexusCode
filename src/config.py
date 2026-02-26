@@ -91,8 +91,17 @@ class Settings(BaseSettings):
     chunk_min_tokens: int = Field(50)
     context_token_budget: int = Field(8000)
 
-    supported_extensions: str = Field(".py,.ts,.tsx,.js,.java,.go,.rs,.cpp,.c,.cs,.rb,.swift,.kt")
-    ignore_patterns: str = Field("node_modules,.git,__pycache__,.venv,dist,build,.next,*.min.js")
+    supported_extensions: str = Field(
+        ".py,.ts,.tsx,.js,.jsx,.java,.go,.rs,.cpp,.c,.cs,.rb,.swift,.kt,"
+        ".json,.md,.yaml,.yml,.html,.css,.scss,.sh,.sql,.xml,.toml"
+    )
+    ignore_patterns: str = Field(
+        "node_modules,.git,__pycache__,.venv,dist,build,.next,*.min.js,"
+        "*.min.css,vendor/,fixtures/,__fixtures__,.yarn,.pnp,"
+        ".cache,.turbo,.parcel-cache,"
+        "__tests__,__mocks__,__snapshots__,.test.,_test.,.spec.,_spec.,"
+        "test/,tests/,testing/,testdata/"
+    )
 
     # ── Reranker ─────────────────────────────────────────────────────────────
     reranker_model: str = Field("cross-encoder/ms-marco-MiniLM-L-6-v2")

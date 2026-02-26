@@ -11,7 +11,9 @@ Pages:
   🔍 Query Tester   — live search UI with results + assembled context
   📡 Activity Feed  — webhook events with status + timing
   🧩 Planning Mode  — generate implementation plans for bugs/features
+  💬 Ask Mode       — chat with your codebase, get cited mentor answers
 """
+
 
 from __future__ import annotations
 
@@ -53,7 +55,9 @@ PAGES = [
     "🔍 Query Tester",
     "📡 Activity Feed",
     "🧩 Planning Mode",
+    "💬 Ask Mode",
 ]
+
 
 page = st.sidebar.radio("Navigate", PAGES, label_visibility="collapsed")
 st.sidebar.divider()
@@ -492,3 +496,9 @@ elif page == "🧩 Planning Mode":
     from src.ui._pages.planning import render
 
     render()
+
+elif page == "💬 Ask Mode":
+    from src.ui._pages.ask import render
+
+    render()
+

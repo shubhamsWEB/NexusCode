@@ -182,6 +182,16 @@ class PlanRequest(BaseModel):
     )
 
 
+class AskRequest(BaseModel):
+    """Request schema for POST /ask — codebase Q&A."""
+
+    query: str = Field(..., min_length=5, description="Natural language question about the codebase")
+    repo_owner: str | None = Field(None, description="Scope to a specific repo owner")
+    repo_name: str | None = Field(None, description="Scope to a specific repo name")
+    stream: bool = Field(True, description="If true, return an SSE stream; if false, wait for full JSON")
+
+
+
 # ── JSON Schema used as Claude's tool input ───────────────────────────────────
 # Defined inline (not derived from Pydantic) to keep it clean for the API.
 
