@@ -42,6 +42,16 @@ def get_queue() -> Queue:
     return _queue
 
 
+def _is_duplicate_job(owner: str, repo: str, commit_sha: str) -> bool:
+    """Check if an indexing job for this exact commit is already queued/running."""
+    import redis as _redis
+    conn = _redis.from_url(settings.redis_url)
+    dedup_key = f"index:{owner}/{repo}:{commit_sha}"
+    # SET NX with 60s TTL — returns True only if the key was newly set
+    was_set = conn.set(dedup_key, "1", nx=True, ex=60)
+    return not was_set  # True if key already existed (duplicate)
+
+
 # ── HMAC verification ─────────────────────────────────────────────────────────
 
 
@@ -137,28 +147,36 @@ async def github_webhook(
 
     # 7. Enqueue indexing job (non-blocking)
     if files_to_upsert or files_to_delete:
-        job_payload = {
-            "repo_owner": event.repo_owner,
-            "repo_name": event.repo_name,
-            "commit_sha": event.after,
-            "commit_author": event.head_commit_author,
-            "commit_message": event.head_commit_message,
-            "files_to_upsert": files_to_upsert,
-            "files_to_delete": files_to_delete,
-            "delivery_id": x_github_delivery,
-        }
-        try:
-            queue = get_queue()
-            job = queue.enqueue(
-                "src.pipeline.pipeline.run_incremental_index",
-                job_payload,
-                job_timeout=600,  # 10 min max per job
-                result_ttl=3600,
+        if _is_duplicate_job(event.repo_owner, event.repo_name, event.after):
+            logger.info(
+                "Skipping duplicate indexing job for %s/%s@%s",
+                event.repo_owner,
+                event.repo_name,
+                event.after[:7],
             )
-            logger.info("Enqueued job %s for %d files", job.id, total_files)
-        except Exception as exc:
-            logger.error("Failed to enqueue indexing job: %s", exc)
-            # Don't fail the webhook response — GitHub would retry
+        else:
+            job_payload = {
+                "repo_owner": event.repo_owner,
+                "repo_name": event.repo_name,
+                "commit_sha": event.after,
+                "commit_author": event.head_commit_author,
+                "commit_message": event.head_commit_message,
+                "files_to_upsert": files_to_upsert,
+                "files_to_delete": files_to_delete,
+                "delivery_id": x_github_delivery,
+            }
+            try:
+                queue = get_queue()
+                job = queue.enqueue(
+                    "src.pipeline.pipeline.run_incremental_index",
+                    job_payload,
+                    job_timeout=600,  # 10 min max per job
+                    result_ttl=3600,
+                )
+                logger.info("Enqueued job %s for %d files", job.id, total_files)
+            except Exception as exc:
+                logger.error("Failed to enqueue indexing job: %s", exc)
+                # Don't fail the webhook response — GitHub would retry
     else:
         logger.info("No indexable files changed — nothing to enqueue")
 

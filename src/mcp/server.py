@@ -25,6 +25,12 @@ from src.storage.db import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
 
+
+def _escape_ilike(value: str) -> str:
+    """Escape ILIKE special characters to prevent wildcard injection."""
+    return value.replace("%", r"\%").replace("_", r"\_")
+
+
 mcp_server = FastMCP(
     name="codebase-intelligence",
     instructions=(
@@ -137,7 +143,7 @@ async def get_symbol(
     where_clauses = [
         "similarity(name, :name) > 0.1 OR name ILIKE :name_like OR qualified_name ILIKE :name_like"
     ]
-    params["name_like"] = f"%{name}%"
+    params["name_like"] = f"%{_escape_ilike(name)}%"
 
     if repo_owner:
         where_clauses.append("repo_owner = :repo_owner")
@@ -197,12 +203,20 @@ async def find_callers(
         str, "Symbol name to find callers of (e.g. 'authenticate', 'PaymentService.charge')"
     ],
     repo: Annotated[str | None, "Scope to 'owner/name' — defaults to all repos"] = None,
-    depth: Annotated[int, "How many call hops deep (default 1, max 3)"] = 1,
+    depth: Annotated[int, "How many call hops deep (1-3). depth=2 finds callers-of-callers."] = 1,
 ) -> str:
     """
-    Find all code that calls or imports a given function or method.
+    Find all code that calls a given function or method, with optional multi-hop traversal.
+
+    depth=1: direct callers only (who calls 'authenticate'?)
+    depth=2: callers of callers (who calls the code that calls 'authenticate'?)
+    depth=3: three hops deep — useful for tracing blast radius of a signature change
+
+    Each hop builds a call graph using BFS: the callers found in hop N become the
+    targets for hop N+1, stopping when no new call sites are found.
+
+    Returns file locations and code snippets for each discovered call site per hop.
     Answers: 'what breaks if I change this function's signature?'
-    Returns file locations and code snippets around each call site.
     """
     from src.retrieval.searcher import _keyword_search
 
@@ -212,46 +226,95 @@ async def find_callers(
     if repo and "/" in repo:
         repo_owner, repo_name = repo.split("/", 1)
 
-    # Phase 1: keyword search for symbol name in chunk content
-    results = await _keyword_search(
-        query=symbol,
-        limit=20,
-        repo_owner=repo_owner,
-        repo_name=repo_name,
-        language=None,
+    _DEFINITION_PREFIXES = (
+        "def ", "async def ", "class ", "function ", "const ", "export ",
+        "export default ", "export async ", "pub fn ", "fn ",
     )
 
-    # Filter out chunks that ARE the symbol definition (start_line match unlikely)
-    # Keep chunks that contain the symbol name but aren't just defining it
-    callers = []
-    for r in results:
-        # Check if symbol appears in the content (it must — keyword search ensures this)
-        lines = r.raw_content.split("\n")
-        call_lines = [
-            {"line_no": r.start_line + i, "text": line.strip()}
-            for i, line in enumerate(lines)
-            if symbol in line
-            and not line.strip().startswith(("def ", "class ", "function ", "const ", "export "))
-        ]
-        if call_lines:
-            callers.append(
+    def _extract_call_sites(results, target_sym: str) -> list[dict]:
+        """Extract non-definition lines that reference `target_sym`."""
+        callers = []
+        for r in results:
+            lines = r.raw_content.split("\n")
+            call_lines = [
+                {"line_no": r.start_line + i, "text": line.strip()}
+                for i, line in enumerate(lines)
+                if target_sym in line
+                and not line.strip().startswith(_DEFINITION_PREFIXES)
+            ]
+            if call_lines:
+                callers.append(
+                    {
+                        "file": r.file_path,
+                        "repo": f"{r.repo_owner}/{r.repo_name}",
+                        "symbol_context": r.symbol_name or "<module>",
+                        "kind": r.symbol_kind,
+                        "lines": f"{r.start_line}-{r.end_line}",
+                        "call_sites": call_lines[:5],
+                    }
+                )
+        return callers
+
+    # ── BFS multi-hop traversal ───────────────────────────────────────────────
+    all_hops: list[dict] = []
+    seen_symbols: set[str] = {symbol}  # avoid re-querying the same symbol
+    frontier: list[str] = [symbol]     # symbols to find callers for in this hop
+
+    for hop_num in range(1, depth + 1):
+        if not frontier:
+            break
+
+        hop_callers: list[dict] = []
+        next_frontier: set[str] = set()
+
+        for target_sym in frontier:
+            try:
+                results = await _keyword_search(
+                    query=target_sym,
+                    limit=20,
+                    repo_owner=repo_owner,
+                    repo_name=repo_name,
+                    language=None,
+                )
+            except Exception as exc:
+                logger.warning("find_callers: keyword search failed for %r: %s", target_sym, exc)
+                continue
+
+            call_entries = _extract_call_sites(results, target_sym)
+            for entry in call_entries:
+                entry["calls"] = target_sym  # tag which symbol triggered this hop
+                hop_callers.append(entry)
+                # Promote the caller's own symbol into the next hop's frontier
+                caller_sym = entry["symbol_context"]
+                if caller_sym and caller_sym != "<module>" and caller_sym not in seen_symbols:
+                    next_frontier.add(caller_sym)
+                    seen_symbols.add(caller_sym)
+
+        if hop_callers:
+            all_hops.append(
                 {
-                    "file": r.file_path,
-                    "repo": f"{r.repo_owner}/{r.repo_name}",
-                    "symbol_context": r.symbol_name or "<module>",
-                    "kind": r.symbol_kind,
-                    "lines": f"{r.start_line}-{r.end_line}",
-                    "call_sites": call_lines[:5],
-                    "preview": r.raw_content[:300],
+                    "hop": hop_num,
+                    "targets_searched": list(frontier),
+                    "callers": hop_callers,
                 }
             )
 
-    if not callers:
+        frontier = list(next_frontier)
+
+    total_callers = sum(len(h["callers"]) for h in all_hops)
+
+    if not all_hops:
         return json.dumps(
             {
                 "symbol": symbol,
-                "callers": [],
-                "message": f"No call sites found for '{symbol}'. It may not be used in the indexed codebase.",
+                "depth": depth,
+                "hops": [],
+                "total_callers": 0,
+                "message": (
+                    f"No call sites found for '{symbol}'. "
+                    "It may not be used in the indexed codebase, or it may only appear "
+                    "in definition contexts."
+                ),
             }
         )
 
@@ -259,8 +322,9 @@ async def find_callers(
         {
             "symbol": symbol,
             "depth": depth,
-            "caller_count": len(callers),
-            "callers": callers,
+            "hops_traversed": len(all_hops),
+            "total_callers": total_callers,
+            "hops": all_hops,
         },
         indent=2,
     )
@@ -284,7 +348,7 @@ async def get_file_context(
         repo_owner, repo_name = repo.split("/", 1)
 
     # Build WHERE for file_path match (support partial paths)
-    params: dict = {"path": path, "path_like": f"%{path}%"}
+    params: dict = {"path": path, "path_like": f"%{_escape_ilike(path)}%"}
     file_where = "file_path = :path OR file_path ILIKE :path_like"
     repo_filter = ""
     if repo_owner:
@@ -419,7 +483,7 @@ async def get_agent_context(
     # 1. Chunks from focal files (highest priority — always include)
     if focal_files:
         for fpath in focal_files[:5]:  # cap at 5 focal files
-            params: dict = {"path": fpath, "path_like": f"%{fpath}%"}
+            params: dict = {"path": fpath, "path_like": f"%{_escape_ilike(fpath)}%"}
             if repo_owner:
                 params["repo_owner"] = repo_owner
             if repo_name:
@@ -599,10 +663,15 @@ def _format_plan_markdown(plan) -> str:
             lines.append("**Analyzed files:** " + " · ".join(f"`{f}`" for f in plan.key_files))
         if plan.metadata:
             m = plan.metadata
+            cq = f" · complexity: {m.query_complexity}" if m.query_complexity else ""
             lines.append(
                 f"\n---\n_ID: `{plan.plan_id}` · {m.context_tokens} tokens · "
-                f"{m.context_files} chunks · {m.elapsed_ms:.0f}ms_"
+                f"{m.context_files} chunks · {m.elapsed_ms:.0f}ms{cq}_"
             )
+            if m.grounding_warnings:
+                lines.append("\n> **⚠ Retrieval warnings:**")
+                for w in m.grounding_warnings:
+                    lines.append(f"> - {w}")
         return "\n".join(lines)
 
     # ── Answer response type ──────────────────────────────────────────────────
@@ -614,10 +683,15 @@ def _format_plan_markdown(plan) -> str:
             lines.append("**Referenced files:** " + " · ".join(f"`{f}`" for f in plan.key_files))
         if plan.metadata:
             m = plan.metadata
+            cq = f" · complexity: {m.query_complexity}" if m.query_complexity else ""
             lines.append(
                 f"\n---\n_ID: `{plan.plan_id}` · {m.context_tokens} tokens · "
-                f"{m.context_files} chunks · {m.elapsed_ms:.0f}ms_"
+                f"{m.context_files} chunks · {m.elapsed_ms:.0f}ms{cq}_"
             )
+            if m.grounding_warnings:
+                lines.append("\n> **⚠ Retrieval warnings:**")
+                for w in m.grounding_warnings:
+                    lines.append(f"> - {w}")
         return "\n".join(lines)
 
     # ── Implementation plan ───────────────────────────────────────────────────
@@ -630,17 +704,8 @@ def _format_plan_markdown(plan) -> str:
         "",
     ]
 
-    # Stack fingerprint (collapsed context — shown collapsed before gap analysis)
-    if plan.metadata and plan.metadata.stack_fingerprint:
-        lines.append("## Codebase Stack (what is already installed)")
-        lines.append(plan.metadata.stack_fingerprint)
-        lines.append("")
-
-    # Stack-aware gap analysis — what is missing and how to integrate
-    if plan.metadata and plan.metadata.web_research_used and plan.metadata.web_research_notes:
-        lines.append("## Stack-Aware Gap Analysis")
-        lines.append(plan.metadata.web_research_notes)
-        lines.append("")
+    # NOTE: Stack fingerprint and web research are NOT rendered in the plan output.
+    # They are reference-only context for the planner — not user-facing content.
 
     if plan.clarifying_assumptions:
         lines += ["## Assumptions"]
@@ -688,10 +753,15 @@ def _format_plan_markdown(plan) -> str:
 
     if plan.metadata:
         m = plan.metadata
+        cq = f" · complexity: {m.query_complexity}" if m.query_complexity else ""
         lines.append(
             f"---\n_Plan ID: `{plan.plan_id}` · Model: {m.model} · "
             f"Context: {m.context_tokens} tokens · {m.context_files} chunks · "
-            f"{m.elapsed_ms:.0f}ms_"
+            f"{m.elapsed_ms:.0f}ms{cq}_"
         )
+        if m.grounding_warnings:
+            lines.append("\n> **⚠ Retrieval warnings:**")
+            for w in m.grounding_warnings:
+                lines.append(f"> - {w}")
 
     return "\n".join(lines)

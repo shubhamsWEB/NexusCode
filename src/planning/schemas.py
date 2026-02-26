@@ -75,6 +75,10 @@ class PlanMetadata(BaseModel):
     stack_fingerprint: str = ""
     web_research_used: bool = False
     web_research_notes: str = ""
+    # Query analysis metadata
+    query_complexity: str = ""  # "simple" | "moderate" | "complex"
+    sub_queries_count: int = 0  # number of decomposed sub-queries
+    grounding_warnings: list[str] = Field(default_factory=list)  # post-retrieval gaps
 
 
 # ── Top-level plan ────────────────────────────────────────────────────────────
@@ -128,6 +132,22 @@ class ImplementationPlan(BaseModel):
         default_factory=list,
         description="Assumptions made where the query was ambiguous",
     )
+    design_decisions: list[str] = Field(
+        default_factory=list,
+        description="Key design decisions with rationale (e.g. 'Base64-in-JSON instead of multipart because...')",
+    )
+    constraints: list[str] = Field(
+        default_factory=list,
+        description="Identified constraints (framework, runtime, API contract, backward compat, performance)",
+    )
+    design_alternatives: list[dict] = Field(
+        default_factory=list,
+        description="Alternative approaches considered, each with approach/pros/cons/rejected_reason",
+    )
+    failure_modes: list[dict] = Field(
+        default_factory=list,
+        description="Potential failure cases with scenario, cause, and mitigation",
+    )
     files: list[FileChange] = Field(
         default_factory=list,
         description="All files that need to change, with per-change detail",
@@ -168,39 +188,102 @@ class PlanRequest(BaseModel):
 PLAN_TOOL_SCHEMA: dict = {
     "name": "output_implementation_plan",
     "description": (
-        "Output a complete, actionable implementation plan for the requested change. "
-        "Be specific: reference real file paths, symbol names, and line numbers from the context."
+        "Output a concise, actionable implementation plan. A coding agent will execute "
+        "this directly — be precise and skip explanations. Reference only real file paths "
+        "and symbols from the context. NEVER include stack inventories, web research, "
+        "or concept explanations in any field."
     ),
     "input_schema": {
         "type": "object",
-        "required": ["query", "summary", "files", "steps"],
+        "required": ["query", "summary", "design_decisions", "files", "steps"],
         "properties": {
             "query": {"type": "string"},
             "summary": {
                 "type": "string",
-                "description": "2-3 sentence high-level summary of the overall approach",
+                "description": (
+                    "2-4 sentences. Describe the data/control flow of the change "
+                    "and which layers are affected. NEVER list packages, imports, "
+                    "stack components, or copy web research content."
+                ),
             },
             "clarifying_assumptions": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Assumptions made where the query was ambiguous",
+                "description": "Only for genuine ambiguity. Max 3 items. Prefer reasonable defaults.",
+            },
+            "design_decisions": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Key non-obvious design decisions with WHY rationale. "
+                    "e.g. 'Base64-in-JSON (not multipart) to keep the existing JSON contract intact.' "
+                    "Max 5. Do NOT include package lists or stack analysis here."
+                ),
+            },
+            "constraints": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Binding constraints identified BEFORE designing the solution. "
+                    "Include: framework constraints, runtime constraints, API contract constraints, "
+                    "backward compatibility constraints, and payload/performance constraints."
+                ),
+            },
+            "design_alternatives": {
+                "type": "array",
+                "description": (
+                    "At least 2 viable approaches for non-trivial changes. "
+                    "Include the selected approach and rejected ones with justification."
+                ),
+                "items": {
+                    "type": "object",
+                    "required": ["approach", "pros", "cons"],
+                    "properties": {
+                        "approach": {"type": "string", "description": "Core idea of this approach"},
+                        "pros": {"type": "array", "items": {"type": "string"}},
+                        "cons": {"type": "array", "items": {"type": "string"}},
+                        "rejected_reason": {
+                            "type": "string",
+                            "description": "Why this approach was rejected (empty for the selected approach)",
+                        },
+                    },
+                },
+            },
+            "failure_modes": {
+                "type": "array",
+                "description": (
+                    "Potential failure modes for API-level or architectural changes. "
+                    "Assume inputs may be invalid or adversarial."
+                ),
+                "items": {
+                    "type": "object",
+                    "required": ["scenario", "cause", "mitigation"],
+                    "properties": {
+                        "scenario": {"type": "string", "description": "What can go wrong"},
+                        "cause": {"type": "string", "description": "Why it would happen"},
+                        "mitigation": {"type": "string", "description": "Guard or fallback"},
+                    },
+                },
             },
             "files": {
                 "type": "array",
-                "description": "All files that need to change",
+                "description": "All files that need to change. Only files from the context.",
                 "items": {
                     "type": "object",
                     "required": ["path", "action", "reason"],
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "File path relative to repo root",
+                            "description": "File path relative to repo root (must exist in context)",
                         },
                         "action": {
                             "type": "string",
                             "enum": ["create", "modify", "delete", "rename", "move"],
                         },
-                        "reason": {"type": "string"},
+                        "reason": {
+                            "type": "string",
+                            "description": "1 sentence — why this file changes",
+                        },
                         "changes": {
                             "type": "array",
                             "items": {
@@ -212,8 +295,18 @@ PLAN_TOOL_SCHEMA: dict = {
                                         "enum": ["add", "modify", "delete", "move"],
                                     },
                                     "symbol": {"type": "string"},
-                                    "description": {"type": "string"},
-                                    "pseudocode": {"type": "string"},
+                                    "description": {
+                                        "type": "string",
+                                        "description": (
+                                            "Exact edit instruction the coding agent can execute. "
+                                            "e.g. 'Add field image_data: str | None = None after line 42'. "
+                                            "Do NOT explain protocols, HTTP constraints, or API design patterns."
+                                        ),
+                                    },
+                                    "pseudocode": {
+                                        "type": "string",
+                                        "description": "Only for non-trivial logic (>5 lines). Skip for simple changes.",
+                                    },
                                     "line_hint": {"type": "string"},
                                 },
                             },
@@ -223,36 +316,46 @@ PLAN_TOOL_SCHEMA: dict = {
             },
             "steps": {
                 "type": "array",
-                "description": "Ordered execution steps",
+                "description": "Ordered execution steps. Concrete actions, not explanations.",
                 "items": {
                     "type": "object",
                     "required": ["step_number", "title", "description"],
                     "properties": {
                         "step_number": {"type": "integer"},
-                        "title": {"type": "string"},
-                        "description": {"type": "string"},
+                        "title": {"type": "string", "description": "Short title, max 8 words"},
+                        "description": {
+                            "type": "string",
+                            "description": "What to do — concrete action. Not a concept explanation.",
+                        },
                         "files_involved": {"type": "array", "items": {"type": "string"}},
                         "depends_on_steps": {"type": "array", "items": {"type": "integer"}},
-                        "verification": {"type": "string"},
+                        "verification": {
+                            "type": "string",
+                            "description": "Specific command or assertion to verify this step.",
+                        },
                     },
                 },
             },
             "risks": {
                 "type": "array",
+                "description": "Max 3 genuine implementation risks that could cause bugs.",
                 "items": {
                     "type": "object",
                     "required": ["severity", "description", "mitigation"],
                     "properties": {
                         "severity": {"type": "string", "enum": ["low", "medium", "high"]},
-                        "description": {"type": "string"},
+                        "description": {
+                            "type": "string",
+                            "description": "1-2 sentences. Only genuine implementation bugs. Not concept explanations.",
+                        },
                         "affected_symbols": {"type": "array", "items": {"type": "string"}},
-                        "mitigation": {"type": "string"},
+                        "mitigation": {"type": "string", "description": "1 sentence."},
                     },
                 },
             },
             "test_plan": {
                 "type": "string",
-                "description": "What to test and how after implementing the changes",
+                "description": "Specific test commands or assertions. Not generic advice.",
             },
         },
     },

@@ -167,49 +167,58 @@ async def _handle_upserts(
     all_enriched = []  # accumulate across files before batch-embedding
     file_meta = []  # parallel list: (path, blob_sha, symbols, enriched_slice_range)
 
-    # ── Fetch + parse + chunk + enrich ───────────────────────────────────────
-    for path in paths:
-        try:
-            # Merkle check — skip if file content hasn't changed
-            result = await fetch_file(owner, repo, path, ref=commit_sha)
-            if result is None:
-                log.debug("pipeline.fetch_none", path=path)
-                continue
+    # ── Fetch + parse + chunk + enrich (concurrent with semaphore) ────────
+    _sem = asyncio.Semaphore(5)  # max 5 concurrent GitHub API calls
 
-            content, blob_sha = result
+    async def _process_file(path: str) -> dict | None:
+        async with _sem:
+            try:
+                result = await fetch_file(owner, repo, path, ref=commit_sha)
+                if result is None:
+                    log.debug("pipeline.fetch_none", path=path)
+                    return None
 
-            stored_sha = await get_merkle_hash(path, owner, repo)
-            if stored_sha == blob_sha:
-                log.debug("pipeline.merkle_hit", path=path)
-                stats["files_skipped_merkle"] += 1
-                continue
+                content, blob_sha = result
 
-            # Parse
-            parsed = parse_file(path, content)
-            if parsed is None:
-                continue
+                stored_sha = await get_merkle_hash(path, owner, repo)
+                if stored_sha == blob_sha:
+                    log.debug("pipeline.merkle_hit", path=path)
+                    return {"type": "merkle_skip"}
 
-            # Chunk + enrich
-            chunks = chunk_file(parsed)
-            enriched = enrich_chunks(chunks)
+                parsed = parse_file(path, content)
+                if parsed is None:
+                    return None
 
-            if not enriched:
-                continue
+                chunks = chunk_file(parsed)
+                enriched = enrich_chunks(chunks)
 
-            all_enriched.extend(enriched)
-            file_meta.append(
-                {
+                if not enriched:
+                    return None
+
+                return {
+                    "type": "success",
                     "path": path,
                     "blob_sha": blob_sha,
                     "symbols": parsed.all_symbols,
                     "enriched": enriched,
                 }
-            )
-            stats["files_processed"] += 1
+            except Exception as exc:
+                log.error("pipeline.parse_error", path=path, error=str(exc))
+                return {"type": "error"}
 
-        except Exception as exc:
-            log.error("pipeline.parse_error", path=path, error=str(exc))
+    results = await asyncio.gather(*[_process_file(p) for p in paths])
+
+    for result in results:
+        if result is None:
+            continue
+        if result["type"] == "merkle_skip":
+            stats["files_skipped_merkle"] += 1
+        elif result["type"] == "error":
             stats["errors"] += 1
+        elif result["type"] == "success":
+            all_enriched.extend(result["enriched"])
+            file_meta.append(result)
+            stats["files_processed"] += 1
 
     if not all_enriched:
         return

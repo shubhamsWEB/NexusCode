@@ -8,10 +8,15 @@ Intent-aware response: Claude picks one of two tools depending on query type.
 
 This mirrors how Claude Code itself behaves: questions get conversational
 markdown answers; implementation tasks get structured plans with files/steps/risks.
+
+Uses AsyncAnthropic for true async I/O with persistent connection pooling —
+no thread-pool blocking via run_in_executor.
 """
 
 from __future__ import annotations
 
+import asyncio as _asyncio
+import importlib.util
 import logging
 import time
 from collections.abc import AsyncIterator
@@ -28,64 +33,249 @@ from src.planning.schemas import (
 
 logger = logging.getLogger(__name__)
 
+# Lazy singleton AsyncAnthropic client — shares httpx connection pool across requests
+_anthropic_client = None
+
+# Concurrency gate: serialize Anthropic API calls to avoid blowing the per-minute
+# rate limit (e.g. 30K input tokens/min on lower tiers).  With thinking enabled,
+# a single /plan request can use 10-20K input tokens, so even 2 concurrent calls
+# can trigger 429.  The semaphore queues requests so only one hits the API at a time.
+_anthropic_semaphore = _asyncio.Semaphore(1)
+
+
+def _get_anthropic_client():
+    global _anthropic_client
+    if _anthropic_client is None:
+        import anthropic
+
+        if not settings.anthropic_api_key:
+            raise RuntimeError("ANTHROPIC_API_KEY is not set. Add it to your .env file.")
+        _anthropic_client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    return _anthropic_client
+
 
 # ── System prompt ──────────────────────────────────────────────────────────────
 
 PLANNING_SYSTEM_PROMPT = """\
-You are a world-class senior engineer with deep expertise in the codebase you \
-have been given. You have read every file. You reason like a principal engineer \
-who has built, maintained, and improved this system.
+You are a principal software architect with deep expertise in system design, \
+API evolution, and production-grade engineering. You generate implementation \
+plans that a coding agent will execute directly. Every token you output must \
+be actionable. You have the codebase context below — USE it to inform the \
+plan; do NOT echo it back.
+
+Apply your full architectural reasoning to every plan. Think about system \
+boundaries, failure domains, contract evolution, and operational cost. \
+Do not produce surface-level plans — reason about the system holistically.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CHOOSE THE RIGHT TOOL — your most critical decision
+ABSOLUTE PROHIBITIONS (violating any = plan FAILURE)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+These patterns in your output mean the plan is REJECTED. Never output them:
+• Package lists, "Already in Stack" inventories, import frequency tables.
+• Section headers from <web_research> or <stack_fingerprint> blocks \
+  (e.g. "Gaps & What to Add", "Integration Pattern", "Stack-Specific Gotchas").
+• Verbatim or paraphrased content from <web_research> or <stack_fingerprint>.
+• Concept explanations ("multipart kills your JSON body", "base64 is used to \
+  encode binary data", "this is an HTTP protocol constraint").
+• Integration pattern essays, gotcha lists, or option comparisons.
+• Generic advice ("validate inputs", "add error handling") without citing a \
+  specific file:line that needs it.
+• Filler preambles, section headers not in the tool schema, or markdown \
+  commentary outside the structured fields.
 
-─── `analyze_and_improve` ───────────────────────────────────────
-Use when the query asks to IMPROVE, ENHANCE, REVIEW, AUDIT, or MAKE
-SOMETHING BETTER that already exists.
-  • "how can I make /plan better?"
-  • "how to improve the retriever / response quality / search?"
-  • "what are the weaknesses of X?"
-  • "review the chunker / auth / pipeline"
-  • "make this respond like a world-class architect"
-  • "optimize / refactor / strengthen X"
-→ First: analyze the CURRENT implementation thoroughly (cite file:line).
-→ Then: give SPECIFIC, GROUNDED improvements (not generic advice).
-→ Never suggest features unrelated to what was asked.
-→ This is a deep technical review, not a generic how-to guide.
-
-─── `answer_codebase_question` ──────────────────────────────────
-Use when the query is a QUESTION about the codebase.
-  • "what does X do?", "how does Y work?", "explain Z"
-  • "why is this failing?", "where is the auth logic?"
-  • "what is the data flow from A to B?"
-→ Rich markdown answer with file:line references. No file changes.
-
-─── `output_implementation_plan` ────────────────────────────────
-Use when the query is a TASK requiring file edits/creation/deletion.
-  • "add X", "fix the bug in Y", "implement Z", "create endpoint W"
-→ Structured plan: files + ordered steps + risks + test plan.
+Use <web_research> and <stack_fingerprint> to SILENTLY inform your decisions. \
+These blocks are reference material — absorb the knowledge, discard the text.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CONTEXT TIERS — read in this priority order
+TOOL SELECTION
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1. FULL COMPONENT SOURCE — complete file contents (highest authority)
-   Present for improvement queries. Read every line carefully.
-2. RELEVANT CODE CONTEXT — semantic search results (supporting context)
-3. STACK FINGERPRINT — installed packages (check before adding deps)
-4. GAP ANALYSIS — external research (only for genuine gaps; ignore for
-   improvement queries about internal systems)
+`analyze_and_improve` — IMPROVE / REVIEW / AUDIT existing code (cite file:line).
+`answer_codebase_question` — QUESTION about the codebase (no file changes).
+`output_implementation_plan` — TASK requiring file edits (structured plan).
 
-RULES FOR ALL TOOLS:
-  • Reference real file paths and symbols — never invent them.
-  • For `output_implementation_plan`: every path must be in the context.
-  • For `analyze_and_improve`: cite specific file:line for every issue.
-  • For `output_implementation_plan` summary: start with "Reuses: [...] | Adds: [...]"
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STRUCTURED REASONING PROTOCOL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+When generating an implementation plan, follow this reasoning process. \
+You have deep architectural understanding — USE it. Do not produce \
+shallow plans. Think like an architect who owns the system long-term.
+
+PHASE 1 — CONSTRAINTS FIRST (before any design):
+  Identify and output the binding constraints in the `constraints` field:
+  • Framework constraints (e.g. FastAPI cannot mix UploadFile + JSON body)
+  • Runtime constraints (e.g. async-only, no blocking I/O in event loop)
+  • API contract constraints (e.g. existing clients depend on this shape)
+  • Backward compatibility constraints (will existing callers break?)
+  • Payload/performance constraints (token limits, size limits, latency)
+  Do NOT propose design steps until constraints are identified in the output.
+
+PHASE 2 — DESIGN ALTERNATIVES (for non-trivial changes):
+  For any change that touches API contracts, data flow, or architecture, \
+  generate at least two viable approaches in `design_alternatives`. For each:
+  • Describe the core idea
+  • List advantages and disadvantages
+  • State why it was selected or rejected (`rejected_reason`)
+  Do not jump directly to a single solution. The chosen approach should \
+  be the one in `design_decisions` with explicit justification using \
+  complexity, scalability, migration cost, and failure risk.
+
+PHASE 3 — FAILURE MODE ANALYSIS:
+  For any API-level or architectural change, populate `failure_modes`:
+  • What can go wrong at runtime? (malformed input, size overflow, \
+    timeout, partial failure, race condition)
+  • Why would it happen? (adversarial input, network, concurrency)
+  • What guards prevent it? (validation, circuit breaker, fallback)
+  Assume inputs and runtime conditions may be invalid or adversarial.
+
+PHASE 4 — PLAN CONSTRUCTION (applying quality gates):
+  While constructing the plan, enforce these architectural disciplines:
+
+  LAYER SEPARATION — Group changes by system layer, not by file:
+    API contract changes → Business logic → Transport/encoding → \
+    UI/client → Config/infra. Do not mix responsibilities.
+
+  BACKWARD COMPATIBILITY — Explicitly state in `clarifying_assumptions`:
+    • Whether existing clients break
+    • What the safe rollout strategy is
+    • What compatibility safeguards exist
+    Never assume breaking changes are acceptable unless the query says so.
+
+  COST & PERFORMANCE — Evaluate and reflect in `design_decisions`:
+    • Payload size impact
+    • Token/compute cost (critical for LLM pipelines)
+    • Latency implications
+    Avoid designs that silently increase operational cost.
+
+  FUTURE EVOLUTION — When committing to a schema or interface:
+    • Will this design block future extensions?
+    • What would trigger a refactor?
+    • Are there migration implications?
+    Add risks for designs that are optimal only for the immediate request.
+
+  ANTI-OVERENGINEERING — Prefer modifying existing components over \
+    introducing new abstractions. New services/managers/layers only if:
+    • Reuse is genuinely expected
+    • Coupling is measurably reduced
+    • Complexity goes down, not up
+
+  VALIDATION PLACEMENT — Place guards at correct system boundaries:
+    • Input validation at the API boundary
+    • Business rules in domain logic
+    • UI validation only for UX constraints
+    Cite the specific file where each guard belongs in `files`.
+
+  INCREMENTAL RISK — Default to changes that minimize:
+    • Regression risk
+    • Surface area of modification
+    • System destabilization
+    Escalate to larger refactors only when strictly necessary.
+
+  NO SILENT ASSUMPTIONS — Every assumption that influences design \
+    must appear in `clarifying_assumptions`. No hidden reasoning.
+
+  INTERNAL CONSISTENCY — Before finalizing: verify the plan contains \
+    no contradictory steps, aligns with identified constraints, and \
+    does not violate earlier assumptions. Reconcile inconsistencies.
+
+  GROUNDED IN CONTEXT — The plan must be specifically grounded in \
+    the provided codebase context and actual architecture. No generic \
+    boilerplate engineering patterns unless justified by the context.
+
+MULTIMODAL REASONING (when images are attached):
+  • State your interpretation of the image explicitly
+  • Identify ambiguous visual elements
+  • Resolve any conflict between text query and image content
+  • Treat the image as the authoritative visual specification only \
+    when the text query explicitly defers to it
+  • Never hallucinate UI details not visible in the image
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OUTPUT QUALITY BAR
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+The plan must match the quality of a senior architect's design review:
+
+COMPREHENSIVENESS — trace ALL affected files:
+• If adding a schema field, trace it through: schema → planner → API \
+  endpoint → MCP tool → dashboard UI → config.
+• If modifying a function signature, find every caller in the context.
+• Include config changes, type updates, and UI rendering — not just the \
+  primary logic files.
+
+DESIGN DECISIONS — explain WHY, not just WHAT:
+• For each non-obvious technical choice, add an entry to `design_decisions` \
+  explaining the rationale (e.g. "Base64-in-JSON instead of multipart to \
+  preserve the existing JSON contract").
+• Max 5 decisions. Focus on choices where reasonable alternatives exist.
+
+ARCHITECTURE — describe the data/control flow:
+• `summary` should describe HOW the change flows through the system. \
+  Not a list of packages. 2-4 sentences.
+• When the change involves a new data flow or pipeline, describe it.
+
+PRECISION — exact edit instructions:
+• `files[].changes[].description`: Exact edit instruction the agent executes \
+  literally (e.g. "Add param `image_data: str | None = None` after `stream`").
+• `files[].changes[].pseudocode`: ONLY for non-obvious logic (>5 lines). \
+  Skip for imports, field additions, parameter threading.
+• `steps[].description`: Concrete action. Not concept explanations.
+• `steps[].verification`: Specific command or assertion to verify the step.
+• `risks`: Only genuine implementation risks that could cause bugs. Max 3.
+• `test_plan`: Specific test commands or assertions.
+• `clarifying_assumptions`: Only for genuine ambiguity. Max 3.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+GROUNDING RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• ONLY reference file paths that appear in the context. Never invent paths.
+• ONLY reference symbols that appear in the context.
+• If context is insufficient, say so — do not guess.
+• Respect GROUNDING WARNINGS strictly.
+• Every path in `files` must exist in the provided context.
 \
 """
 
 
-# ── Prompt builder ─────────────────────────────────────────────────────────────
+# ── Prompt helpers ─────────────────────────────────────────────────────────────
+
+
+def _condense_stack_fingerprint(fingerprint: str) -> str:
+    """
+    Truncate the stack fingerprint to a compact summary.
+
+    The full fingerprint contains raw dependency files (requirements.txt,
+    package.json) and all top imports — often 2000+ tokens. The planner
+    only needs the package names to avoid suggesting redundant installs.
+    """
+    lines = fingerprint.splitlines()
+    condensed: list[str] = []
+    skip_code_block = False
+    char_budget = 1200  # ~300 tokens — enough for package names
+
+    for line in lines:
+        # Skip the raw file contents inside ```...``` blocks — keep only headers
+        if line.strip().startswith("```"):
+            skip_code_block = not skip_code_block
+            continue
+        if skip_code_block:
+            # Inside a code block — extract only package names (lines that look
+            # like "package==version" or "package>=version" or just "package")
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#") and not stripped.startswith("["):
+                # Extract just the package name (before ==, >=, etc.)
+                pkg = stripped.split("==")[0].split(">=")[0].split("<=")[0].split("~=")[0].strip()
+                if pkg and len(pkg) < 60:
+                    condensed.append(f"  {pkg}")
+            continue
+
+        # Keep section headers and non-code content
+        if line.strip():
+            condensed.append(line)
+
+        if sum(len(ln) for ln in condensed) > char_budget:
+            condensed.append("  ... (truncated)")
+            break
+
+    return "\n".join(condensed)
 
 
 def _build_user_message(
@@ -100,9 +290,24 @@ def _build_user_message(
         f"## Scope\nRepository: {repo_scope}",
     ]
 
+    # ── Query complexity metadata ─────────────────────────────────────────────
+    if ctx.query_complexity != "simple" or ctx.sub_queries:
+        meta = f"## Query Analysis\nComplexity: {ctx.query_complexity}"
+        if len(ctx.sub_queries) > 1:
+            meta += "\nDecomposed sub-queries:\n"
+            for i, sq in enumerate(ctx.sub_queries, 1):
+                meta += f"  {i}. {sq}\n"
+        parts.append(meta)
+
+    # ── Grounding warnings (critical — placed early) ──────────────────────────
+    if ctx.grounding_warnings:
+        warning_block = "## ⚠ GROUNDING WARNINGS\n"
+        warning_block += "_The retrieval system detected these gaps. Respect them._\n\n"
+        for w in ctx.grounding_warnings:
+            warning_block += f"- {w}\n"
+        parts.append(warning_block)
+
     # ── Tier 1: Full component source (improvement queries only) ─────────────
-    # This is the most authoritative context — complete file contents.
-    # Placed first so Claude reads the full implementation before anything else.
     if ctx.component_context:
         parts.append(ctx.component_context)
 
@@ -113,22 +318,38 @@ def _build_user_message(
     if ctx.file_maps:
         parts.append(f"## File Structure Maps\n{ctx.file_maps}")
 
+    # ── Tier 3: Dependency interfaces ─────────────────────────────────────────
+    if ctx.dependency_context:
+        parts.append(ctx.dependency_context)
+
+    # ── Tier 4: Callers + expansion ───────────────────────────────────────────
     if ctx.caller_contexts:
         parts.append(f"## Known Callers\n{ctx.caller_contexts}")
 
     if ctx.expansion_context:
         parts.append(f"## Additional Related Context\n{ctx.expansion_context}")
 
-    # ── Tier 3: Stack fingerprint ─────────────────────────────────────────────
+    # ── Tier 5: Stack fingerprint (XML-tagged reference — never echo) ────────
     if ctx.stack_fingerprint:
-        parts.append(ctx.stack_fingerprint)
+        condensed = _condense_stack_fingerprint(ctx.stack_fingerprint)
+        parts.append(
+            "<stack_fingerprint>\n"
+            "REFERENCE ONLY — use to inform decisions, NEVER reproduce any of "
+            "this content in your output. No package lists, no import tables.\n\n"
+            + condensed
+            + "\n</stack_fingerprint>"
+        )
 
-    # ── Tier 4: Gap analysis (skipped for improvement queries) ────────────────
+    # ── Tier 6: Web research (XML-tagged reference — never echo) ─────────────
     if ctx.web_research_notes:
-        notes = ctx.web_research_notes
-        if not notes.lstrip().startswith("## Stack"):
-            notes = "## Stack-Aware Gap Analysis\n\n" + notes
-        parts.append(notes)
+        parts.append(
+            "<web_research>\n"
+            "REFERENCE ONLY — absorb the knowledge, discard the text. NEVER "
+            "reproduce section headers, package lists, gotcha lists, or any "
+            "verbatim content from this block in your output.\n\n"
+            + ctx.web_research_notes
+            + "\n</web_research>"
+        )
 
     # ── Instructions ──────────────────────────────────────────────────────────
     if ctx.is_improvement_query:
@@ -145,13 +366,30 @@ def _build_user_message(
             "Be a world-class architect who has READ the code — not someone giving generic advice."
         )
     else:
-        parts.append(
+        instruction = (
             "## Instructions\n"
             "Choose the right tool based on the query intent:\n"
-            "- QUESTION or explanation → `answer_codebase_question`\n"
+            "- QUESTION → `answer_codebase_question`\n"
             "- Requires CODE CHANGES → `output_implementation_plan`\n\n"
-            "Use only real files and symbols from the codebase context above."
+            "Use ONLY real files and symbols from the codebase context above.\n"
+            "Output ONLY the structured tool call — no prose outside the tool fields.\n"
+            "For implementation plans:\n"
+            "- Follow the STRUCTURED REASONING PROTOCOL: constraints → alternatives → "
+            "failure modes → plan construction.\n"
+            "- Populate `constraints` BEFORE proposing any design.\n"
+            "- Populate `design_alternatives` with ≥2 approaches for non-trivial changes.\n"
+            "- Populate `failure_modes` for API/architectural changes.\n"
+            "- Populate `design_decisions` with WHY rationale for each non-obvious choice.\n"
+            "- Trace ALL affected files end-to-end.\n"
         )
+        if ctx.query_complexity == "complex":
+            instruction += (
+                "\nCOMPLEX query — apply your deepest architectural reasoning. "
+                "Identify ALL binding constraints first. Evaluate at least 2 alternative "
+                "designs. Analyze failure modes exhaustively. Address all sub-concerns. "
+                "Cover all affected files. Note cross-cutting risks.\n"
+            )
+        parts.append(instruction)
 
     return "\n\n".join(parts)
 
@@ -172,6 +410,9 @@ def _build_metadata(
         stack_fingerprint=ctx.stack_fingerprint,
         web_research_used=bool(ctx.web_research_notes),
         web_research_notes=ctx.web_research_notes,
+        query_complexity=ctx.query_complexity,
+        sub_queries_count=len(ctx.sub_queries),
+        grounding_warnings=ctx.grounding_warnings,
     )
 
 
@@ -228,7 +469,119 @@ def _parse_response(
     return plan
 
 
+# ── Retry helper ───────────────────────────────────────────────────────────────
+
+_MAX_RETRIES = 5  # more retries for 429 (rate limit resets are per-minute)
+_RETRYABLE_STATUS_CODES = {429, 529}
+
+
+def _get_retry_after(exc) -> float | None:
+    """Extract Retry-After header from an Anthropic API error response."""
+    try:
+        response = getattr(exc, "response", None)
+        if response is not None:
+            retry_after = response.headers.get("retry-after")
+            if retry_after:
+                return float(retry_after)
+    except (ValueError, AttributeError):
+        pass
+    return None
+
+
+async def _with_overload_retry(coro_factory):
+    """
+    Call an async coroutine factory with exponential backoff on HTTP 429 (rate limit)
+    and 529 (overloaded).
+    `coro_factory` is a zero-argument callable that returns a fresh coroutine each time.
+    """
+    import asyncio
+
+    import anthropic
+
+    last_exc: Exception | None = None
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            return await coro_factory()
+        except anthropic.APIStatusError as exc:
+            if exc.status_code in _RETRYABLE_STATUS_CODES and attempt < _MAX_RETRIES:
+                # Use Retry-After header if available, otherwise exponential backoff.
+                # For 429, backoff is longer (rate limits reset per-minute).
+                retry_after = _get_retry_after(exc)
+                if retry_after:
+                    wait = min(retry_after, 120)
+                elif exc.status_code == 429:
+                    wait = min(5 * (2 ** attempt), 120)  # 5s, 10s, 20s, 40s, 80s
+                else:
+                    wait = 2 ** attempt  # 529: 1s, 2s, 4s, 8s, 16s
+                label = "rate-limited (429)" if exc.status_code == 429 else "overloaded (529)"
+                logger.warning(
+                    "planning: Anthropic API %s, retry %d/%d in %.0fs",
+                    label, attempt + 1, _MAX_RETRIES, wait,
+                )
+                last_exc = exc
+                await asyncio.sleep(wait)
+            else:
+                raise
+    raise RateLimitOrOverloadError(last_exc)
+
+
+class RateLimitOrOverloadError(RuntimeError):
+    """Raised when all retries for 429/529 are exhausted."""
+
+    def __init__(self, cause: Exception | None = None):
+        status = getattr(cause, "status_code", "unknown") if cause else "unknown"
+        if status == 429:
+            msg = (
+                "Rate limit exceeded — too many concurrent requests. "
+                "Please wait a moment and try again, or reduce concurrent usage."
+            )
+        else:
+            msg = "Anthropic API is overloaded. Please try again in a moment."
+        super().__init__(msg)
+        self.__cause__ = cause
+        self.status_code = status
+
+
 # ── Sync generator ─────────────────────────────────────────────────────────────
+
+
+async def _generate_plan_via_stream(client, call_params):
+    """
+    Use streaming API to avoid 10-minute timeout on long operations (e.g. extended thinking).
+    Consumes the stream and returns the final message.
+    Retries on both 429 (rate limit) and 529 (overloaded).
+    """
+    import asyncio
+
+    import anthropic
+
+    last_exc: Exception | None = None
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            async with client.messages.stream(**call_params) as stream:
+                # Consume stream to completion
+                async for _ in stream:
+                    pass
+                return await stream.get_final_message()
+        except anthropic.APIStatusError as exc:
+            if exc.status_code in _RETRYABLE_STATUS_CODES and attempt < _MAX_RETRIES:
+                retry_after = _get_retry_after(exc)
+                if retry_after:
+                    wait = min(retry_after, 120)
+                elif exc.status_code == 429:
+                    wait = min(5 * (2 ** attempt), 120)
+                else:
+                    wait = 2 ** attempt
+                label = "rate-limited (429)" if exc.status_code == 429 else "overloaded (529)"
+                logger.warning(
+                    "planning: stream API %s, retry %d/%d in %.0fs",
+                    label, attempt + 1, _MAX_RETRIES, wait,
+                )
+                last_exc = exc
+                await asyncio.sleep(wait)
+            else:
+                raise
+    raise RateLimitOrOverloadError(last_exc)
 
 
 async def generate_plan(
@@ -238,56 +591,43 @@ async def generate_plan(
     repo_name: str | None = None,
 ) -> ImplementationPlan:
     """
-    Call Claude with two tools and auto tool-choice.
-    Claude picks answer_codebase_question or output_implementation_plan
-    based on the query intent.
+    Call Claude with three tools (answer / analyze / plan) using AsyncAnthropic.
+    Claude selects the appropriate tool based on the query's intent.
+
+    Uses the async client directly — no thread blocking via run_in_executor.
     """
-    try:
-        import anthropic
-    except ImportError as exc:
+    if importlib.util.find_spec("anthropic") is None:
         raise RuntimeError(
             "anthropic package not installed. Run: pip install anthropic>=0.40.0"
-        ) from exc
+        )
 
-    if not settings.anthropic_api_key:
-        raise RuntimeError("ANTHROPIC_API_KEY is not set. Add it to your .env file.")
-
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    client = _get_anthropic_client()
     user_message = _build_user_message(query, ctx, repo_owner, repo_name)
-
     t0 = time.monotonic()
 
-    import asyncio
+    thinking_budget = settings.planning_thinking_budget
+    call_params = {
+        "model": settings.anthropic_model,
+        "max_tokens": settings.planning_max_output_tokens + thinking_budget,
+        "system": PLANNING_SYSTEM_PROMPT,
+        "tools": [ANSWER_TOOL_SCHEMA, ANALYZE_IMPROVE_TOOL_SCHEMA, PLAN_TOOL_SCHEMA],
+        "tool_choice": {"type": "auto"},
+        "messages": [{"role": "user", "content": user_message}],
+    }
+    if thinking_budget > 0:
+        call_params["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
 
-    loop = asyncio.get_event_loop()
+    # Acquire the semaphore so concurrent /plan requests queue instead of
+    # firing in parallel and triggering 429 rate limits.
+    async with _anthropic_semaphore:
+        logger.info("planning: acquired API semaphore, calling Claude…")
+        if thinking_budget > 0:
+            message = await _generate_plan_via_stream(client, call_params)
+        else:
+            def _make_call():
+                return client.messages.create(**call_params)
+            message = await _with_overload_retry(_make_call)
 
-    def _call():
-        _max_retries = 3
-        for _attempt in range(_max_retries + 1):
-            try:
-                return client.messages.create(
-                    model=settings.anthropic_model,
-                    max_tokens=settings.planning_max_output_tokens,
-                    system=PLANNING_SYSTEM_PROMPT,
-                    tools=[ANSWER_TOOL_SCHEMA, ANALYZE_IMPROVE_TOOL_SCHEMA, PLAN_TOOL_SCHEMA],
-                    tool_choice={"type": "auto"},
-                    messages=[{"role": "user", "content": user_message}],
-                )
-            except anthropic.APIStatusError as exc:
-                if exc.status_code == 529 and _attempt < _max_retries:
-                    _wait = 2**_attempt  # 1 s, 2 s, 4 s
-                    logger.warning(
-                        "planning: API overloaded (529), retry %d/%d in %ds",
-                        _attempt + 1,
-                        _max_retries,
-                        _wait,
-                    )
-                    time.sleep(_wait)
-                else:
-                    raise
-        raise RuntimeError("Anthropic API is overloaded. Please try again in a moment.")
-
-    message = await loop.run_in_executor(None, _call)
     elapsed_ms = (time.monotonic() - t0) * 1000
 
     tool_used = next((b.name for b in message.content if b.type == "tool_use"), "none")
@@ -311,19 +651,17 @@ async def stream_generate_plan(
     repo_name: str | None = None,
 ) -> AsyncIterator[dict]:
     """
-    Stream plan generation from Claude, yielding incremental events:
+    Stream plan generation from Claude using AsyncAnthropic's native async streaming.
 
+    No thread-pool bridge needed — the async client yields events directly.
+
+    Yields:
       {"type": "token",         "text": "<chunk>"}
           Fired for every output token Claude emits — plain text for
-          answer/analysis responses, partial-JSON for plan responses
-          (via the Anthropic input_json_delta streaming event).
+          answer/analysis responses, partial-JSON for plan responses.
 
       {"type": "plan_complete", "plan": ImplementationPlan}
-          Fired once when Claude's full response has been received and the
-          tool-use output has been parsed into a structured ImplementationPlan.
-
-    Uses a thread-queue bridge so the blocking Anthropic SDK stream runs on a
-    thread-pool executor while the async caller can await and yield normally.
+          Fired once when Claude's full response has been received and parsed.
     """
     try:
         import anthropic
@@ -332,104 +670,89 @@ async def stream_generate_plan(
             "anthropic package not installed. Run: pip install anthropic>=0.40.0"
         ) from exc
 
-    if not settings.anthropic_api_key:
-        raise RuntimeError("ANTHROPIC_API_KEY is not set. Add it to your .env file.")
-
     import asyncio
-    import queue as _queue
 
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    client = _get_anthropic_client()
     user_message = _build_user_message(query, ctx, repo_owner, repo_name)
     t0 = time.monotonic()
 
-    # (kind, value) tuples pushed by the background thread
-    event_queue: _queue.Queue = _queue.Queue()
+    thinking_budget = settings.planning_thinking_budget
+    call_params = {
+        "model": settings.anthropic_model,
+        "max_tokens": settings.planning_max_output_tokens + thinking_budget,
+        "system": PLANNING_SYSTEM_PROMPT,
+        "tools": [ANSWER_TOOL_SCHEMA, ANALYZE_IMPROVE_TOOL_SCHEMA, PLAN_TOOL_SCHEMA],
+        "tool_choice": {"type": "auto"},
+        "messages": [{"role": "user", "content": user_message}],
+    }
+    if thinking_budget > 0:
+        call_params["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
 
-    def _stream() -> None:
-        _max_retries = 3
-        _last_exc: Exception | None = None
-        try:
-            for _attempt in range(_max_retries + 1):
-                try:
-                    with client.messages.stream(
-                        model=settings.anthropic_model,
-                        max_tokens=settings.planning_max_output_tokens,
-                        system=PLANNING_SYSTEM_PROMPT,
-                        tools=[ANSWER_TOOL_SCHEMA, ANALYZE_IMPROVE_TOOL_SCHEMA, PLAN_TOOL_SCHEMA],
-                        tool_choice={"type": "auto"},
-                        messages=[{"role": "user", "content": user_message}],
-                    ) as stream:
-                        for event in stream:
-                            event_type = getattr(event, "type", None)
+    # Acquire semaphore to serialize concurrent /plan requests and avoid 429.
+    # NOTE: We must hold the semaphore for the entire stream duration — releasing
+    # it early would allow a second request to fire while we're still consuming
+    # output tokens, and the combined input tokens would exceed the rate limit.
+    async with _anthropic_semaphore:
+        logger.info("planning: stream acquired API semaphore, calling Claude…")
 
-                            # ── answer / analysis responses — plain text tokens
-                            if event_type == "text":
-                                text = getattr(event, "text", None)
-                                if text:
-                                    event_queue.put(("token", text))
+        last_exc: Exception | None = None
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                async with client.messages.stream(**call_params) as stream:
+                    async for event in stream:
+                        event_type = getattr(event, "type", None)
 
-                            # ── plan responses — partial JSON from tool_use ───
-                            elif event_type == "input_json":
-                                partial = getattr(event, "partial_json", None)
-                                if partial:
-                                    event_queue.put(("token", partial))
+                        # ── extended thinking — forward for transparency ──────
+                        if event_type == "thinking":
+                            thinking_text = getattr(event, "thinking", None)
+                            if thinking_text:
+                                yield {"type": "thinking", "text": thinking_text}
 
-                        final_msg = stream.get_final_message()
-                        event_queue.put(("message", final_msg))
-                        return  # success — exit retry loop
+                        # ── answer / analysis — plain text tokens ─────────────
+                        elif event_type == "text":
+                            text = getattr(event, "text", None)
+                            if text:
+                                yield {"type": "token", "text": text}
 
-                except anthropic.APIStatusError as exc:
-                    if exc.status_code == 529 and _attempt < _max_retries:
-                        _wait = 2**_attempt  # 1 s, 2 s, 4 s
-                        logger.warning(
-                            "planning: API overloaded (529), retry %d/%d in %ds",
-                            _attempt + 1,
-                            _max_retries,
-                            _wait,
-                        )
-                        _last_exc = exc
-                        time.sleep(_wait)
-                    else:
-                        event_queue.put(("error", exc))
-                        return
+                        # ── plan — partial JSON via tool_use ──────────────────
+                        elif event_type == "input_json":
+                            partial = getattr(event, "partial_json", None)
+                            if partial:
+                                yield {"type": "token", "text": partial}
 
-            # All retries exhausted
-            event_queue.put(
-                (
-                    "error",
-                    _last_exc
-                    or RuntimeError("Anthropic API is overloaded. Please try again in a moment."),
+                    final_msg = await stream.get_final_message()
+
+                elapsed_ms = (time.monotonic() - t0) * 1000
+                tool_used = next(
+                    (b.name for b in final_msg.content if b.type == "tool_use"), "none"
                 )
-            )
-        except Exception as exc:
-            event_queue.put(("error", exc))
-        finally:
-            event_queue.put(("done", None))
+                logger.info(
+                    "planning: stream complete in %.0fms, stop_reason=%s, tool=%s",
+                    elapsed_ms,
+                    final_msg.stop_reason,
+                    tool_used,
+                )
+                plan = _parse_response(final_msg, query, ctx, elapsed_ms)
+                yield {"type": "plan_complete", "plan": plan}
+                return  # success
 
-    loop = asyncio.get_event_loop()
-    loop.run_in_executor(None, _stream)
+            except anthropic.APIStatusError as exc:
+                if exc.status_code in _RETRYABLE_STATUS_CODES and attempt < _MAX_RETRIES:
+                    retry_after = _get_retry_after(exc)
+                    if retry_after:
+                        wait = min(retry_after, 120)
+                    elif exc.status_code == 429:
+                        wait = min(5 * (2 ** attempt), 120)
+                    else:
+                        wait = 2 ** attempt
+                    label = "rate-limited (429)" if exc.status_code == 429 else "overloaded (529)"
+                    logger.warning(
+                        "planning: stream API %s, retry %d/%d in %.0fs",
+                        label, attempt + 1, _MAX_RETRIES, wait,
+                    )
+                    last_exc = exc
+                    await asyncio.sleep(wait)
+                else:
+                    raise
 
-    while True:
-        try:
-            kind, value = event_queue.get_nowait()
-        except _queue.Empty:
-            await asyncio.sleep(0.02)
-            continue
-
-        if kind == "done":
-            break
-        if kind == "error":
-            raise value
-        if kind == "token":
-            yield {"type": "token", "text": value}
-        if kind == "message":
-            elapsed_ms = (time.monotonic() - t0) * 1000
-            tool_used = next((b.name for b in value.content if b.type == "tool_use"), "none")
-            logger.info(
-                "planning: stream complete in %.0fms, stop_reason=%s, tool=%s",
-                elapsed_ms,
-                value.stop_reason,
-                tool_used,
-            )
-            plan = _parse_response(value, query, ctx, elapsed_ms)
-            yield {"type": "plan_complete", "plan": plan}
+        raise RateLimitOrOverloadError(last_exc)

@@ -4,9 +4,9 @@ uvicorn[standard]==0.41.0
 
 # Database
 asyncpg==0.31.0
-sqlalchemy[asyncio]==2.0.35
+sqlalchemy[asyncio]==2.0.41
 greenlet==3.3.2             # required by SQLAlchemy async on Python 3.13
-psycopg2-binary==2.9.9
+psycopg2-binary==2.9.10
 pgvector==0.3.2
 
 # Job queue
@@ -27,7 +27,7 @@ tree-sitter-go==0.25.0
 tree-sitter-rust==0.23.0
 
 # Embeddings & ML
-voyageai==0.3.0
+voyageai==0.3.3
 sentence-transformers         # cross-encoder reranker (version pinned by torch)
 
 # Token counting

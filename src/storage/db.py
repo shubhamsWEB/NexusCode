@@ -9,7 +9,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -58,6 +58,15 @@ async def upsert_chunks(chunks: list[dict[str, Any]]) -> int:
                 "commit_message": stmt.excluded.commit_message,
                 "embedding": stmt.excluded.embedding,
                 "indexed_at": stmt.excluded.indexed_at,
+                "start_line": stmt.excluded.start_line,
+                "end_line": stmt.excluded.end_line,
+                "raw_content": stmt.excluded.raw_content,
+                "enriched_content": stmt.excluded.enriched_content,
+                "token_count": stmt.excluded.token_count,
+                "symbol_name": stmt.excluded.symbol_name,
+                "symbol_kind": stmt.excluded.symbol_kind,
+                "scope_chain": stmt.excluded.scope_chain,
+                "file_path": stmt.excluded.file_path,
             },
         )
         result = await session.execute(stmt)
@@ -91,13 +100,13 @@ async def get_chunk_count(repo_owner: str, repo_name: str) -> int:
     """Active (non-deleted) chunk count for a repo."""
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            select(Chunk).where(
+            select(func.count()).select_from(Chunk).where(
                 Chunk.repo_owner == repo_owner,
                 Chunk.repo_name == repo_name,
                 Chunk.is_deleted.is_(False),
             )
         )
-        return len(result.scalars().all())
+        return result.scalar() or 0
 
 
 # ── Symbol operations ────────────────────────────────────────────────────────
