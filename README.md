@@ -20,6 +20,8 @@ A centralized, always-fresh knowledge service that indexes your GitHub repositor
 | No symbol awareness | Tree-sitter AST: functions, classes, methods |
 | Raw grep for search | Hybrid semantic + keyword + cross-encoder rerank |
 | Each agent needs GitHub access | One server, all agents use MCP |
+| "How does X work?" slows down senior engineers | Ask Mode: instant mentor-style answers with code citations |
+| Planning a feature takes hours of reading | Planning Mode: grounded implementation plan in seconds |
 
 ---
 
@@ -34,12 +36,12 @@ GitHub Repository
 │  FastAPI app    │ ──────────────────► │   RQ Worker          │
 │  POST /webhook  │                     │   pipeline.py        │
 │  POST /search   │                     │   ├─ fetch (GitHub)  │
-│  GET  /health   │                     │   ├─ merkle check    │
-│  /mcp  (SSE)    │                     │   ├─ Tree-sitter AST │
-└─────────────────┘                     │   ├─ chunk + enrich  │
-       │                                │   ├─ voyage-code-2   │
-       │                                │   └─ store in PG     │
-       ▼                                └──────────────────────┘
+│  POST /plan     │                     │   ├─ merkle check    │
+│  POST /ask      │                     │   ├─ Tree-sitter AST │
+│  GET  /health   │                     │   ├─ chunk + enrich  │
+│  /mcp  (SSE)    │                     │   ├─ voyage-code-2   │
+└─────────────────┘                     │   └─ store in PG     │
+       │                                └──────────────────────┘
 ┌─────────────────────────────────────────┐
 │  PostgreSQL + pgvector                  │
 │  chunks (vector(1536))                  │
@@ -146,9 +148,9 @@ This powers the AI semantic search ("find code by meaning").
 
 ---
 
-#### 2.3 Anthropic API Key (required for Planning Mode)
+#### 2.3 Anthropic API Key (required for Planning Mode and Ask Mode)
 
-This powers the implementation plan generator.
+This powers both the implementation plan generator and the Ask Mode conversational Q&A.
 
 1. Go to [console.anthropic.com](https://console.anthropic.com) and create an account
 2. Click **"API Keys"** → **"Create Key"**
@@ -674,6 +676,61 @@ curl -s -X POST http://localhost:8000/auth/token \
 | `find_callers` | Who calls this function? | `symbol`, `depth`, `repo` |
 | `get_file_context` | Full structural map of a file | `path`, `repo`, `include_deps` |
 | `get_agent_context` | Pre-assembled task context (start here!) | `task`, `focal_files`, `token_budget`, `repo` |
+| `plan_implementation` | Web research + codebase → full implementation plan | `query`, `repo`, `web_research` |
+| `ask_codebase` | Answer natural-language questions in mentor tone | `question`, `repo` |
+
+---
+
+## Ask Mode
+
+Ask Mode answers natural-language questions about your codebase in a mentor tone — clear, direct, and grounded in real code with inline file citations and follow-up suggestions.
+
+```bash
+# Ask a question (streaming)
+curl -s -X POST http://localhost:8000/ask \
+  -H "Content-Type: application/json" \
+  -d '{"query": "How does the webhook processing pipeline work?", "stream": false}' \
+  | python3 -m json.tool
+```
+
+**Response shape:**
+```json
+{
+  "query": "How does the webhook processing pipeline work?",
+  "answer": "The webhook pipeline starts in `src/github/webhook.py`…",
+  "cited_files": ["src/github/webhook.py:1-40", "src/pipeline/pipeline.py:80-120"],
+  "follow_up_hints": [
+    "How does the merkle check work to skip unchanged files?",
+    "What happens when the RQ worker is not running?"
+  ],
+  "elapsed_ms": 1840
+}
+```
+
+Or use the **💬 Ask Mode** page in the Streamlit dashboard at [http://localhost:8501](http://localhost:8501) for a full chat interface with streaming, follow-up chips, and retrieval logs.
+
+---
+
+## Planning Mode
+
+Planning Mode generates a complete, codebase-grounded implementation plan before you start coding.
+
+```bash
+# Generate an implementation plan
+curl -s -X POST http://localhost:8000/plan \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Add rate limiting to the search endpoint — 100 req/min per token", "stream": false}' \
+  | python3 -m json.tool
+```
+
+**What you get back:**
+- Files to modify (exact paths + symbols from your codebase)
+- Step-by-step execution order with dependencies
+- Pseudocode for complex logic
+- Risk assessment and mitigation
+- A concrete test plan
+
+Or use the **🧩 Planning Mode** page in the Streamlit dashboard.
 
 ---
 
@@ -706,7 +763,7 @@ Try these in the Query Tester dashboard or via `/search`:
 | `EMBEDDING_DIMENSIONS` | — | Default `1536` (voyage-code-2) |
 | `GITHUB_APP_ID` | — | GitHub App ID (alternative to PAT) |
 | `GITHUB_APP_PRIVATE_KEY_PATH` | — | Path to App `.pem` file |
-| `ANTHROPIC_API_KEY` | — | For future Claude-powered tools |
+| `ANTHROPIC_API_KEY` | ✓ | Claude — required for Planning Mode (`POST /plan`) and Ask Mode (`POST /ask`) |
 
 ---
 
@@ -835,7 +892,12 @@ pytest tests/test_webhook.py -v
 nexusCode_server/
 ├── src/
 │   ├── config.py              # Pydantic settings
-│   ├── api/app.py             # FastAPI: webhook, search, health, MCP mount
+│   ├── api/
+│   │   ├── app.py             # FastAPI: router mounts, MCP mount
+│   │   ├── ask.py             # POST /ask  — Ask Mode (sync + SSE)
+│   │   ├── plan.py            # POST /plan — Planning Mode (sync + SSE)
+│   │   ├── repos.py           # GET/POST/DELETE /repos
+│   │   └── search.py          # POST /search
 │   ├── github/
 │   │   ├── webhook.py         # HMAC-verified webhook receiver
 │   │   ├── fetcher.py         # GitHub REST API client + webhook management
@@ -850,8 +912,10 @@ nexusCode_server/
 │   │   ├── searcher.py        # Hybrid vector+keyword + RRF merge
 │   │   ├── reranker.py        # Cross-encoder (ms-marco-MiniLM-L-6-v2)
 │   │   └── assembler.py       # Token-budget context assembly
+│   ├── ask/
+│   │   └── ask_agent.py       # Ask Mode LLM agent (mentor tone + citations)
 │   ├── mcp/
-│   │   ├── server.py          # 5 MCP tools (FastMCP)
+│   │   ├── server.py          # 7 MCP tools (FastMCP)
 │   │   └── auth.py            # JWT bearer token auth
 │   ├── storage/
 │   │   ├── db.py              # Async SQLAlchemy queries
@@ -859,7 +923,15 @@ nexusCode_server/
 │   │   └── migrations/
 │   │       ├── 001_init.sql
 │   │       └── 002_webhook_hook_id.sql
-│   └── ui/dashboard.py        # Streamlit admin dashboard
+│   ├── planning/
+│   │   ├── schemas.py         # ImplementationPlan + AskRequest models
+│   │   ├── retriever.py       # 5-phase retrieval (shared by plan + ask)
+│   │   └── claude_planner.py  # Anthropic SDK tool_use caller
+│   └── ui/
+│       ├── dashboard.py       # Streamlit router + admin dashboard
+│       └── _pages/
+│           ├── planning.py    # Planning Mode chat page
+│           └── ask.py         # Ask Mode chat page
 ├── scripts/
 │   ├── full_index.py          # Initial full repo index
 │   ├── simulate_webhook.py    # Local end-to-end testing

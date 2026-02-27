@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from src.api.ask import router as ask_router
+from src.api.history import router as history_router
 from src.api.plan import router as plan_router
 from src.api.repos import router as repos_router
 from src.github.webhook import router as webhook_router
@@ -30,6 +31,7 @@ app.include_router(auth_router)
 app.include_router(repos_router)
 app.include_router(plan_router)
 app.include_router(ask_router)
+app.include_router(history_router)
 
 
 # Mount MCP server — exposes /mcp/sse and /mcp/messages/
@@ -43,6 +45,17 @@ app.mount("/mcp", mcp_server.sse_app())
 async def health() -> JSONResponse:
     stats = await get_index_stats()
     return JSONResponse({"status": "ok", **stats})
+
+
+# ── Available LLM models ─────────────────────────────────────────────────────
+
+
+@app.get("/models", tags=["ops"])
+async def available_models() -> JSONResponse:
+    """Return LLM models whose API keys are configured."""
+    from src.llm.registry import list_available_models
+
+    return JSONResponse(list_available_models())
 
 
 # ── Search ────────────────────────────────────────────────────────────────────

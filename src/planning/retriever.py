@@ -263,6 +263,7 @@ async def retrieve_planning_context(
     repo_owner: str | None = None,
     repo_name: str | None = None,
     web_research: bool = True,
+    model: str | None = None,
 ) -> PlanningContext:
     """
     Run the retrieval pipeline and return a PlanningContext ready to inject
@@ -316,7 +317,7 @@ async def retrieve_planning_context(
 
         logger.info("planning retriever: starting stack-aware web research (background)")
         web_research_task = asyncio.create_task(
-            research_implementation(query, stack_context=stack_fingerprint)
+            research_implementation(query, stack_context=stack_fingerprint, model=model)
         )
     elif analysis.is_improvement and web_research:
         logger.info(
@@ -380,6 +381,13 @@ async def retrieve_planning_context(
     if analysis.mentioned_paths:
         candidates = await _boost_mentioned_paths(
             candidates, analysis.mentioned_paths, repo_owner, repo_name
+        )
+
+    # ── Mentioned-symbol boosting ────────────────────────────────────────
+    # If the user explicitly mentioned symbols, ensure those chunks appear
+    if analysis.mentioned_symbols:
+        candidates = await _boost_mentioned_symbols(
+            candidates, analysis.mentioned_symbols, repo_owner, repo_name
         )
 
     # ── Phase 3: cross-encoder rerank → adaptive top-N ──────────────────
@@ -673,6 +681,123 @@ async def _boost_mentioned_paths(
 
     except Exception as exc:
         logger.warning("mentioned-path boost failed: %s", exc)
+
+    return candidates
+
+
+async def _boost_mentioned_symbols(
+    candidates: list,
+    mentioned_symbols: list[str],
+    repo_owner: str | None,
+    repo_name: str | None,
+) -> list:
+    """
+    Ensure chunks containing explicitly-mentioned symbols appear in results.
+
+    Mirrors _boost_mentioned_paths: if the user asks about 'get_agent_context',
+    we MUST include the chunk that defines it, even if semantic search didn't
+    rank it highly enough.
+
+    Strategy:
+      1. Check if each mentioned symbol already appears in candidate symbol_names
+         or raw_content.
+      2. For missing symbols, search the symbols table for matching names, then
+         pull their containing chunks.
+    """
+    from sqlalchemy import text
+
+    from src.storage.db import AsyncSessionLocal
+
+    # Determine which symbols are already in candidates
+    found_in_meta = {r.symbol_name for r in candidates if r.symbol_name}
+    found_in_content = set()
+    for sym in mentioned_symbols:
+        if any(sym in r.raw_content for r in candidates):
+            found_in_content.add(sym)
+
+    missing_symbols = [
+        sym for sym in mentioned_symbols
+        if not any(sym.lower() in (fs or "").lower() for fs in found_in_meta)
+        and sym not in found_in_content
+    ]
+
+    if not missing_symbols:
+        return candidates
+
+    logger.info("mentioned-symbol boost: searching for %d symbols not in results: %s",
+                len(missing_symbols), missing_symbols)
+
+    params: dict = {}
+    repo_filter = ""
+    if repo_owner:
+        repo_filter += " AND c.repo_owner = :repo_owner"
+        params["repo_owner"] = repo_owner
+    if repo_name:
+        repo_filter += " AND c.repo_name = :repo_name"
+        params["repo_name"] = repo_name
+
+    # Build symbol ILIKE conditions — match against both symbol_name in chunks
+    # and the symbols table (which has the qualified_name)
+    sym_conditions = []
+    for i, sym in enumerate(missing_symbols[:5]):
+        escaped = _escape_ilike(sym)
+        params[f"sym_{i}"] = f"%{escaped}%"
+        sym_conditions.append(f"c.symbol_name ILIKE :sym_{i}")
+        sym_conditions.append(f"c.raw_content ILIKE :sym_{i}")
+
+    where = " OR ".join(sym_conditions)
+    sql = text(f"""
+        SELECT DISTINCT ON (c.id)
+               c.id, c.file_path, c.repo_owner, c.repo_name, c.language,
+               c.symbol_name, c.symbol_kind, c.scope_chain,
+               c.start_line, c.end_line, c.raw_content, c.enriched_content,
+               c.commit_sha, c.commit_author, c.token_count,
+               0.6 AS score
+        FROM chunks c
+        WHERE NOT c.is_deleted
+          AND ({where})
+          {repo_filter}
+        ORDER BY c.id, c.start_line
+        LIMIT 15
+    """)
+
+    try:
+        async with AsyncSessionLocal() as session:
+            rows = (await session.execute(sql, params)).mappings().all()
+
+        from src.retrieval.searcher import SearchResult
+
+        seen_ids = {r.chunk_id for r in candidates}
+        boosted = []
+        for row in rows:
+            if row["id"] not in seen_ids:
+                seen_ids.add(row["id"])
+                boosted.append(SearchResult(
+                    chunk_id=row["id"],
+                    file_path=row["file_path"],
+                    repo_owner=row["repo_owner"],
+                    repo_name=row["repo_name"],
+                    language=row["language"],
+                    symbol_name=row.get("symbol_name"),
+                    symbol_kind=row.get("symbol_kind"),
+                    scope_chain=row.get("scope_chain"),
+                    start_line=row["start_line"],
+                    end_line=row["end_line"],
+                    raw_content=row["raw_content"],
+                    enriched_content=row.get("enriched_content", ""),
+                    commit_sha=row.get("commit_sha", ""),
+                    commit_author=row.get("commit_author"),
+                    token_count=row.get("token_count", 0),
+                    score=0.6,
+                ))
+
+        if boosted:
+            logger.info("mentioned-symbol boost: added %d chunks for missing symbols", len(boosted))
+            # Insert boosted results near the top (after first 3 semantic results)
+            return candidates[:3] + boosted + candidates[3:]
+
+    except Exception as exc:
+        logger.warning("mentioned-symbol boost failed: %s", exc)
 
     return candidates
 

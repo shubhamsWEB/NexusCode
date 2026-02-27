@@ -175,9 +175,11 @@ NexusCode is not just a search tool. It is an **AI orchestration foundation**.
   │ impl. plans   │    │ Symbol Lookup  │    │  Onboarding Bot  │
   │ from tickets  │    │ File Context   │    │  Slack Q&A Bot   │
   │               │    │ Caller Graph   │    │  Doc Generator   │
+  │               │    │ Ask Mode (Q&A) │    │                  │
+  │               │    │ Planning Mode  │    │                  │
   └───────────────┘    └────────────────┘    └──────────────────┘
-         ↑
-   Already built
+         ↑                    ↑
+   Blueprint ready      Already built
 ```
 
 Any team in the organization can:
@@ -190,9 +192,9 @@ Any team in the organization can:
 
 ---
 
-## Already Live: 6 Knowledge API Tools
+## Already Live: 7 Knowledge API Tools
 
-NexusCode already exposes 6 tools via a standard AI protocol (MCP):
+NexusCode already exposes 7 tools via a standard AI protocol (MCP):
 
 | Tool | What It Does | Example Use |
 |---|---|---|
@@ -202,10 +204,44 @@ NexusCode already exposes 6 tools via a standard AI protocol (MCP):
 | `get_file_context` | Full structure of a file | "What does `pipeline.py` contain?" |
 | `get_agent_context` | Pre-assembled context for a task | "Give me everything relevant to add a new payment method" |
 | `plan_implementation` | Generate implementation plans | "How do I add rate limiting to the API?" |
+| `ask_codebase` | Answer questions in mentor tone | "How does the webhook pipeline work?" |
 
 ---
 
-## Use Case Already Built: Implementation Planning
+## Use Cases Already Built
+
+### Ask Mode: Instant Codebase Q&A
+
+**The problem:** Developers waste 30–50% of their time understanding the codebase. Every "how does X work?" question either blocks them or interrupts a senior engineer.
+
+**NexusCode's solution:** Ask Mode answers any question about the codebase in seconds — in a mentor tone, with inline code citations and follow-up suggestions.
+
+```
+Developer types:
+"How does the webhook processing pipeline work?"
+
+NexusCode responds in ~2 seconds with:
+┌──────────────────────────────────────────────────┐
+│  The webhook pipeline starts in                  │
+│  `src/github/webhook.py` (lines 1-40), where    │
+│  HMAC-256 verification ensures the payload is   │
+│  genuinely from GitHub. The verified event is   │
+│  then enqueued via Redis into the RQ worker…    │
+│                                                  │
+│  Referenced files:                               │
+│   • src/github/webhook.py:1-40                  │
+│   • src/pipeline/pipeline.py:80-120             │
+│                                                  │
+│  Follow-up questions:                            │
+│   • How does the merkle check skip unchanged     │
+│     files?                                       │
+│   • What happens when the worker isn't running? │
+└──────────────────────────────────────────────────┘
+```
+
+---
+
+### Implementation Planning
 
 **The problem:** Developers start a ticket and spend the first few hours just understanding the codebase well enough to write the plan.
 
@@ -437,11 +473,12 @@ This is a working proof of concept with all core infrastructure in place:
 | Hybrid search (semantic + keyword) | ✅ Production ready |
 | ML reranking for precision | ✅ Production ready |
 | Implementation planning (via Claude) | ✅ Production ready |
+| **Ask Mode — codebase Q&A with citations** | ✅ Production ready |
 | REST API with JWT auth | ✅ Production ready |
-| MCP protocol (standard AI tool interface) | ✅ Production ready |
-| Admin dashboard | ✅ Production ready |
+| MCP protocol (7 tools, standard AI interface) | ✅ Production ready |
+| Admin dashboard (planning + ask chat pages) | ✅ Production ready |
 | Docker / Railway deployment | ✅ Production ready |
-| 64 automated tests (all passing) | ✅ Production ready |
+| 53 automated tests (all passing) | ✅ Production ready |
 | Auto webhook registration on repo add | ✅ Production ready |
 | **JIRA integration** | 🔲 Next to build (blueprint ready) |
 
@@ -453,7 +490,7 @@ Because the platform is running and the API is stable, any team can start buildi
 
 ### Near Term (Low Effort, High Impact)
 - **JIRA Workflow** (described above) — highest priority
-- **Slack bot** — "Hey @nexuscode, how does auth work?" in any Slack channel
+- **Slack bot** — connect Ask Mode to Slack: "Hey @nexuscode, how does auth work?" answers in any channel
 - **PR review context** — automatically add context about changed files to every pull request
 
 ### Medium Term
@@ -496,9 +533,9 @@ The codebase intelligence foundation is already built. Everything else is an app
 | | |
 |---|---|
 | **What is NexusCode?** | An organization-owned AI brain that knows our entire codebase |
-| **How does it work?** | Indexes GitHub repos automatically, searches by meaning, generates plans |
+| **How does it work?** | Indexes GitHub repos automatically, searches by meaning, generates plans, answers questions |
 | **Who built it?** | Internal — we own and control 100% of it |
-| **What's already live?** | Full indexing pipeline, hybrid search, planning API, admin dashboard |
+| **What's already live?** | Full indexing pipeline, hybrid search, Ask Mode Q&A, Planning Mode, 7 MCP tools, admin dashboard |
 | **First big workflow?** | JIRA → auto implementation plan → comment back on ticket |
 | **Bigger vision?** | Every team's AI workflows powered by a shared codebase knowledge platform |
 | **What's needed?** | Index more repos + build JIRA integration + production infrastructure |

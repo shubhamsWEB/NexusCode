@@ -41,7 +41,10 @@ class Settings(BaseSettings):
 
     # ── LLM / Planning ───────────────────────────────────────────────────────
     anthropic_api_key: str | None = Field(None)
-    anthropic_model: str = Field("claude-sonnet-4-6", description="Claude model for planning")
+    openai_api_key: str | None = Field(None, description="OpenAI API key")
+    grok_api_key: str | None = Field(None, description="xAI API key for Grok models")
+    default_model: str = Field("claude-sonnet-4-6", description="Default LLM model for planning and ask")
+    anthropic_model: str = Field("claude-sonnet-4-6", description="Deprecated: use default_model instead")
     planning_context_budget: int = Field(10000, description="Base token budget for planning context")
     planning_max_output_tokens: int = Field(
         16000, description="Max output tokens for plan generation"

@@ -12,22 +12,24 @@ push webhooks and exposes them through MCP tools and a REST API.
 | Skill | When to use | Primary interface |
 |---|---|---|
 | `plan-implementation` | Before writing code for any bug/feature/refactor — web searches for best approach + retrieves codebase context → grounded plan | `POST /plan` or MCP `plan_implementation` |
-| `search-codebase` | Find relevant code, symbols, callers, or pre-assembled task context | `POST /search` or any of the 6 MCP tools |
+| `search-codebase` | Find relevant code, symbols, callers, or pre-assembled task context | `POST /search` or any of the 7 MCP tools |
 | `manage-repos` | Register a new repo, trigger indexing, inspect stats, or delete a repo | `GET/POST /repos`, dashboard |
+| `ask-codebase` | Answer natural-language questions — explain how code works, trace data flows, clarify architecture | `POST /ask` or MCP `ask_codebase` |
 
 **Load the matching skill** (`skills/<name>/SKILL.md`) for full instructions.
 
 ---
 
-## MCP Tools (6 total)
+## MCP Tools (7 total)
 
 ```
-search_codebase(query, repo?, language?, top_k?, mode?)    — hybrid semantic+keyword search
-get_symbol(name, repo?)                                    — fuzzy symbol lookup (Go to Definition)
-find_callers(symbol, repo?, depth?)                        — who calls this function?
-get_file_context(path, repo?, include_deps?)               — structural file map
+search_codebase(query, repo?, language?, top_k?, mode?)     — hybrid semantic+keyword search
+get_symbol(name, repo?)                                     — fuzzy symbol lookup (Go to Definition)
+find_callers(symbol, repo?, depth?)                         — who calls this function?
+get_file_context(path, repo?, include_deps?)                — structural file map
 get_agent_context(task, focal_files?, token_budget?, repo?) — pre-assembled context for a task
-plan_implementation(query, repo?, web_research?)           — web research + codebase → implementation plan
+plan_implementation(query, repo?, web_research?)            — web research + codebase → implementation plan
+ask_codebase(question, repo?)                               — answer natural-language questions, mentor tone
 ```
 
 MCP endpoint: `http://localhost:8000/mcp` (SSE transport)
@@ -45,6 +47,7 @@ POST /repos/{owner}/{name}/index  → trigger full re-index job
 GET  /config                      → masked env config viewer
 POST /webhook                     → GitHub push webhook receiver
 POST /plan                        → generate implementation plan {query, repo_owner?, repo_name?, stream?}
+POST /ask                         → answer codebase question {query, repo_owner?, repo_name?, stream?}
 POST /search                      → search {query, repo?, language?, top_k?, mode?, rerank?, token_budget?}
 GET  /jobs                        → recent RQ job history
 ```
@@ -94,6 +97,7 @@ DB (PostgreSQL + pgvector + pg_trgm): chunks, symbols, merkle_nodes, repos, webh
 Retrieval: searcher.py (hybrid RRF) → reranker.py (cross-encoder) → assembler.py
 MCP server: FastMCP → 6 tools → SSE transport at /mcp
 Planning: retriever.py (5-phase) → claude_planner.py (tool_use) → ImplementationPlan JSON
+Ask Mode: retriever.py (5-phase, no web) → ask_agent.py (tool_use) → markdown answer + citations
 ```
 
 ---
@@ -105,3 +109,4 @@ Full instructions for each capability live in `skills/`:
 - `skills/plan-implementation/` — generate grounded implementation plans
 - `skills/search-codebase/`     — search code, look up symbols, get context
 - `skills/manage-repos/`        — register, index, and manage repositories
+- `skills/ask-codebase/`        — answer natural-language questions about the codebase

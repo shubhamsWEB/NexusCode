@@ -78,7 +78,7 @@ ones can't cover it.
 """
 
 
-async def research_implementation(query: str, stack_context: str = "") -> str:
+async def research_implementation(query: str, stack_context: str = "", model: str | None = None) -> str:
     """
     Call Claude with web_search_20250305 to gather stack-aware implementation
     research for `query`.
@@ -90,6 +90,18 @@ async def research_implementation(query: str, stack_context: str = "") -> str:
     Returns a markdown string or "" on any failure.
     Designed to run as an asyncio background task alongside codebase retrieval.
     """
+    # Web search (web_search_20250305) is Anthropic-only.
+    # If a non-Anthropic model is explicitly requested, skip web research.
+    if model:
+        from src.llm.registry import resolve_provider
+        try:
+            provider_name = resolve_provider(model)
+        except ValueError:
+            provider_name = "unknown"
+        if provider_name != "anthropic":
+            logger.debug("web_researcher: skipping (model=%s is not Anthropic, web search unavailable)", model)
+            return ""
+
     if not settings.anthropic_api_key:
         logger.debug("web_researcher: skipping (no ANTHROPIC_API_KEY)")
         return ""

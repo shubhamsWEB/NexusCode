@@ -40,8 +40,8 @@ def render():
     )
 
     st.info(
-        "**Requires:** `ANTHROPIC_API_KEY` in `.env` — used for both web research "
-        "and plan generation. Web research runs in parallel with codebase retrieval.",
+        "**Requires:** At least one LLM API key in `.env` (ANTHROPIC_API_KEY, "
+        "OPENAI_API_KEY, or GROK_API_KEY). Web research requires Anthropic.",
         icon="ℹ️",
     )
 
@@ -59,6 +59,16 @@ def render():
                 repo_options.append(label)
                 repo_map[label] = (owner, name)
 
+    # ── Model selector ────────────────────────────────────────────────────────
+    models_data, _ = api_get("/models", timeout=5)
+    model_options = ["Default"]
+    model_map: dict[str, str] = {}
+    if models_data:
+        for m in models_data:
+            label = f"{m['model']} ({m['provider']})"
+            model_options.append(label)
+            model_map[label] = m["model"]
+
     with st.form("plan_form"):
         query = st.text_area(
             "Describe your task",
@@ -70,25 +80,28 @@ def render():
             height=130,
         )
 
-        col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
+        col1, col2, col3, col4, col5 = st.columns([2, 1.5, 1, 1, 1])
         with col1:
             repo_label = st.selectbox("Scope to repository (optional)", options=repo_options)
         with col2:
+            model_label = st.selectbox("LLM Model", options=model_options)
+        with col3:
             web_research = st.checkbox(
                 "🌐 Web research",
                 value=True,
                 help=(
                     "Search the web for best practices and library recommendations "
-                    "before generating the plan. Runs in parallel — no extra wait time."
+                    "before generating the plan. Runs in parallel — no extra wait time. "
+                    "Only available with Anthropic models."
                 ),
             )
-        with col3:
+        with col4:
             stream_enabled = st.checkbox(
                 "⚡ Stream",
                 value=False,
                 help="Stream tokens in real-time (experimental). Off = wait for full response.",
             )
-        with col4:
+        with col5:
             st.markdown("&nbsp;", unsafe_allow_html=True)
             submitted = st.form_submit_button(
                 "Generate Plan", type="primary", use_container_width=True
@@ -108,6 +121,8 @@ def render():
             "stream": stream_enabled,
             "web_research": web_research,
         }
+        if model_label != "Default":
+            payload["model"] = model_map.get(model_label)
         if repo_label != "All repos":
             owner, name = repo_map.get(repo_label, (None, None))
             if owner and name:

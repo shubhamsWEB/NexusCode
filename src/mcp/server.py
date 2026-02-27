@@ -1,12 +1,14 @@
 """
-MCP server — exposes 5 codebase intelligence tools via FastMCP.
+MCP server — exposes 7 codebase intelligence tools via FastMCP.
 
 Tools:
-  1. search_codebase   — hybrid semantic+keyword search + rerank
-  2. get_symbol        — fuzzy symbol lookup (like "Go to Definition")
-  3. find_callers      — who calls this function/method?
-  4. get_file_context  — structural map of a file (symbols + imports + imported_by)
-  5. get_agent_context — pre-assembled token-budget-aware context for a task
+  1. search_codebase      — hybrid semantic+keyword search + rerank
+  2. get_symbol           — fuzzy symbol lookup (like "Go to Definition")
+  3. find_callers         — who calls this function/method?
+  4. get_file_context     — structural map of a file (symbols + imports + imported_by)
+  5. get_agent_context    — pre-assembled token-budget-aware context for a task
+  6. plan_implementation  — web research + codebase context → structured implementation plan
+  7. ask_codebase         — answer a natural-language question about the codebase
 
 Mount the Starlette SSE app via:
     app.mount("/mcp", mcp_server.sse_app())
@@ -40,7 +42,8 @@ mcp_server = FastMCP(
         "Use find_callers to trace usage of a symbol. "
         "Use get_file_context for a structural overview of a file. "
         "Use get_agent_context to get pre-assembled context before starting a task. "
-        "Use plan_implementation to generate a complete implementation plan for a bug/feature/refactor."
+        "Use plan_implementation to generate a complete implementation plan for a bug/feature/refactor. "
+        "Use ask_codebase to answer any natural-language question about the codebase in a mentor tone."
     ),
     warn_on_duplicate_tools=False,
 )
@@ -598,6 +601,9 @@ async def plan_implementation(
     web_research: Annotated[
         bool, "Search the web for best practices before generating the plan (default true)"
     ] = True,
+    model: Annotated[
+        str | None, "LLM model to use (e.g. 'gpt-4o', 'claude-opus-4-6'). Defaults to server config."
+    ] = None,
 ) -> str:
     """
     Generate a complete, grounded implementation plan for a coding task.
@@ -630,6 +636,7 @@ async def plan_implementation(
             repo_owner=repo_owner,
             repo_name=repo_name,
             web_research=web_research,
+            model=model,
         )
     except Exception as exc:
         return json.dumps({"error": f"Retrieval failed: {exc}"})
@@ -640,6 +647,7 @@ async def plan_implementation(
             ctx=ctx,
             repo_owner=repo_owner,
             repo_name=repo_name,
+            model=model,
         )
     except RuntimeError as exc:
         return json.dumps({"error": str(exc)})
@@ -649,6 +657,89 @@ async def plan_implementation(
 
     # Format as markdown for readability in Claude Desktop
     return _format_plan_markdown(plan)
+
+
+# ── Tool 7: ask_codebase ──────────────────────────────────────────────────────
+
+
+@mcp_server.tool()
+async def ask_codebase(
+    question: Annotated[
+        str, "Natural-language question about the codebase (min 5 chars)"
+    ],
+    repo: Annotated[str | None, "Scope to 'owner/name' — defaults to all repos"] = None,
+    model: Annotated[
+        str | None, "LLM model to use (e.g. 'gpt-4o', 'claude-opus-4-6'). Defaults to server config."
+    ] = None,
+) -> str:
+    """
+    Answer a natural-language question about the codebase in a mentor tone.
+
+    Unlike plan_implementation (which outputs file changes and steps), this tool
+    answers questions conversationally — explaining how code works, tracing data
+    flows, clarifying architecture decisions, and pointing to real file locations.
+
+    Returns a markdown answer with:
+    - Inline file citations (e.g. `src/pipeline/pipeline.py` lines 42-80)
+    - Fenced code snippets for key examples
+    - 2-3 concrete follow-up questions grounded in the codebase
+
+    Use this for questions like:
+    - "How does the webhook processing pipeline work?"
+    - "Where is authentication handled?"
+    - "What does the reranker do and when is it called?"
+    - "Explain the chunking algorithm"
+    """
+    from src.ask.ask_agent import generate_answer
+    from src.planning.retriever import retrieve_planning_context
+
+    repo_owner = repo_name = None
+    if repo and "/" in repo:
+        repo_owner, repo_name = repo.split("/", 1)
+
+    try:
+        ctx = await retrieve_planning_context(
+            query=question,
+            repo_owner=repo_owner,
+            repo_name=repo_name,
+            web_research=False,
+            model=model,
+        )
+    except Exception as exc:
+        return json.dumps({"error": f"Retrieval failed: {exc}"})
+
+    try:
+        result = await generate_answer(
+            query=question,
+            ctx=ctx,
+            repo_owner=repo_owner,
+            repo_name=repo_name,
+            model=model,
+        )
+    except RuntimeError as exc:
+        return json.dumps({"error": str(exc)})
+    except Exception as exc:
+        logger.exception("ask_codebase MCP tool failed")
+        return json.dumps({"error": f"Answer generation failed: {exc}"})
+
+    lines = [result.answer]
+
+    if result.cited_files:
+        lines.append("\n**Referenced files:**")
+        for f in result.cited_files:
+            lines.append(f"- `{f}`")
+
+    if result.follow_up_hints:
+        lines.append("\n**Follow-up questions you might ask:**")
+        for hint in result.follow_up_hints:
+            lines.append(f"- {hint}")
+
+    lines.append(
+        f"\n---\n_Context: {ctx.tokens_used} tokens · "
+        f"{len(ctx.chunks_used)} chunks · {result.elapsed_ms:.0f}ms_"
+    )
+
+    return "\n".join(lines)
 
 
 def _format_plan_markdown(plan) -> str:

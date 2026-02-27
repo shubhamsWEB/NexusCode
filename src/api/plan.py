@@ -18,6 +18,7 @@ SSE event types:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
@@ -29,6 +30,29 @@ from src.planning.schemas import PlanRequest
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/plan", tags=["planning"])
+
+
+# ── Persistence helper ─────────────────────────────────────────────────────────
+
+
+async def _save_plan(plan, repo_owner, repo_name):
+    """Best-effort plan history persistence — never raises."""
+    try:
+        from src.storage.db import save_plan_history
+        metadata = plan.metadata
+        await save_plan_history(
+            plan_id=plan.plan_id,
+            query=plan.query,
+            response_type=plan.response_type,
+            plan_json_str=json.dumps(plan.model_dump()),
+            repo_owner=repo_owner,
+            repo_name=repo_name,
+            elapsed_ms=metadata.elapsed_ms if metadata else None,
+            context_tokens=metadata.context_tokens if metadata else None,
+            web_research_used=metadata.web_research_used if metadata else False,
+        )
+    except Exception:
+        logger.exception("plan history persistence failed (non-fatal)")
 
 
 # ── Sync endpoint ─────────────────────────────────────────────────────────────
@@ -60,6 +84,7 @@ async def _sync_plan(req: PlanRequest) -> JSONResponse:
             repo_owner=req.repo_owner,
             repo_name=req.repo_name,
             web_research=req.web_research,
+            model=req.model,
         )
     except Exception as exc:
         logger.exception("planning retriever failed")
@@ -71,6 +96,7 @@ async def _sync_plan(req: PlanRequest) -> JSONResponse:
             ctx=ctx,
             repo_owner=req.repo_owner,
             repo_name=req.repo_name,
+            model=req.model,
         )
     except RuntimeError as exc:
         # Check if it's a rate limit error (our custom RateLimitOrOverloadError)
@@ -87,6 +113,7 @@ async def _sync_plan(req: PlanRequest) -> JSONResponse:
         logger.exception("plan generation failed")
         return JSONResponse({"error": f"Plan generation failed: {exc}"}, status_code=500)
 
+    asyncio.create_task(_save_plan(plan, req.repo_owner, req.repo_name))
     return JSONResponse(plan.model_dump())
 
 
@@ -125,6 +152,7 @@ async def _sse_generator(req: PlanRequest):
             repo_owner=req.repo_owner,
             repo_name=req.repo_name,
             web_research=req.web_research,
+            model=req.model,
         )
         yield _event(
             {
@@ -149,13 +177,20 @@ async def _sse_generator(req: PlanRequest):
             ctx=ctx,
             repo_owner=req.repo_owner,
             repo_name=req.repo_name,
+            model=req.model,
         ):
             if chunk["type"] == "thinking":
                 yield _event({"type": "thinking", "text": chunk["text"]})
             elif chunk["type"] == "token":
                 yield _event({"type": "plan_chunk", "text": chunk["text"]})
             elif chunk["type"] == "plan_complete":
-                yield _event({"type": "plan_complete", "plan": chunk["plan"].model_dump()})
+                plan = chunk["plan"]
+                await _save_plan(plan, req.repo_owner, req.repo_name)
+                yield _event({
+                    "type": "plan_complete",
+                    "plan": plan.model_dump(),
+                    "plan_id": plan.plan_id,
+                })
     except RuntimeError as exc:
         status = getattr(exc, "status_code", None)
         if status == 429:

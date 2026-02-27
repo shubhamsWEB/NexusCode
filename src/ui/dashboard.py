@@ -12,6 +12,7 @@ Pages:
   📡 Activity Feed  — webhook events with status + timing
   🧩 Planning Mode  — generate implementation plans for bugs/features
   💬 Ask Mode       — chat with your codebase, get cited mentor answers
+  📜 History        — browse past Ask sessions and Planning plans
 """
 
 
@@ -56,6 +57,7 @@ PAGES = [
     "📡 Activity Feed",
     "🧩 Planning Mode",
     "💬 Ask Mode",
+    "📜 History",
 ]
 
 
@@ -499,6 +501,11 @@ elif page == "🧩 Planning Mode":
 
 elif page == "💬 Ask Mode":
     from src.ui._pages.ask import render
+
+    render()
+
+elif page == "📜 History":
+    from src.ui._pages.history import render
 
     render()
 

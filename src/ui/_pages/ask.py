@@ -27,6 +27,8 @@ def _init_state():
         st.session_state.ask_messages = []  # list of {role, content, meta}
     if "ask_pending_hint" not in st.session_state:
         st.session_state.ask_pending_hint = None
+    if "ask_session_id" not in st.session_state:
+        st.session_state.ask_session_id = None
 
 
 # ── Main render ────────────────────────────────────────────────────────────────
@@ -42,7 +44,8 @@ def render():
     )
 
     st.info(
-        "**Requires:** `ANTHROPIC_API_KEY` in `.env`. "
+        "**Requires:** At least one LLM API key in `.env` (ANTHROPIC_API_KEY, "
+        "OPENAI_API_KEY, or GROK_API_KEY). "
         "Answers are cited to real files and line numbers in your codebase index.",
         icon="ℹ️",
     )
@@ -61,18 +64,35 @@ def render():
                 repo_options.append(label)
                 repo_map[label] = (owner, name)
 
-    col_repo, col_clear = st.columns([4, 1])
+    # ── Model selector ────────────────────────────────────────────────────────
+    models_data, _ = api_get("/models", timeout=5)
+    model_options = ["Default"]
+    model_map: dict[str, str] = {}
+    if models_data:
+        for m in models_data:
+            label = f"{m['model']} ({m['provider']})"
+            model_options.append(label)
+            model_map[label] = m["model"]
+
+    col_repo, col_model, col_clear = st.columns([3, 2, 1])
     with col_repo:
         repo_label = st.selectbox(
             "Scope to repository (optional)",
             options=repo_options,
             key="ask_repo",
         )
+    with col_model:
+        model_label = st.selectbox(
+            "LLM Model",
+            options=model_options,
+            key="ask_model",
+        )
     with col_clear:
         st.markdown("&nbsp;", unsafe_allow_html=True)
         if st.button("🗑 Clear chat", use_container_width=True):
             st.session_state.ask_messages = []
             st.session_state.ask_pending_hint = None
+            st.session_state.ask_session_id = None
             st.rerun()
 
     st.divider()
@@ -91,7 +111,7 @@ def render():
     if st.session_state.ask_pending_hint:
         hint = st.session_state.ask_pending_hint
         st.session_state.ask_pending_hint = None
-        _handle_query(hint, repo_label, repo_map)
+        _handle_query(hint, repo_label, repo_map, model_label, model_map)
         st.rerun()
 
     # ── Follow-up suggestion chips (shown below conversation) ─────────────────
@@ -111,19 +131,25 @@ def render():
     user_input = st.chat_input("Ask anything about the codebase…")
 
     if user_input and user_input.strip():
-        _handle_query(user_input.strip(), repo_label, repo_map)
+        _handle_query(user_input.strip(), repo_label, repo_map, model_label, model_map)
         st.rerun()
 
 
 # ── Query handler ──────────────────────────────────────────────────────────────
 
 
-def _handle_query(query: str, repo_label: str, repo_map: dict):
+def _handle_query(query: str, repo_label: str, repo_map: dict, model_label: str = "Default", model_map: dict | None = None):
     """Send the query to /ask (streaming) and append messages to session state."""
     # Append user message immediately
     st.session_state.ask_messages.append({"role": "user", "content": query})
 
     payload: dict = {"query": query, "stream": True}
+    if st.session_state.ask_session_id:
+        payload["session_id"] = st.session_state.ask_session_id
+    if model_label != "Default" and model_map:
+        model_val = model_map.get(model_label)
+        if model_val:
+            payload["model"] = model_val
     if repo_label != "All repos":
         owner, name = repo_map.get(repo_label, (None, None))
         if owner and name:
@@ -201,6 +227,9 @@ def _stream_ask(api_url: str, payload: dict, query: str) -> tuple[str, dict]:
                         hints = event.get("follow_up_hints", [])
                         elapsed = round(event.get("elapsed_ms", 0) / 1000, 1)
                         meta = event.get("metadata", {})
+                        sid = event.get("session_id")
+                        if sid:
+                            st.session_state.ask_session_id = sid
 
                         # Clear streaming box, render final answer
                         answer_box.empty()

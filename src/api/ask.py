@@ -19,8 +19,10 @@ SSE event types:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import uuid as _uuid
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -30,6 +32,29 @@ from src.planning.schemas import AskRequest
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ask", tags=["ask"])
+
+
+# ── Persistence helper ─────────────────────────────────────────────────────────
+
+
+async def _save_ask_turn(session_id: str, query: str, result, ctx, repo_owner, repo_name):
+    """Best-effort DB persistence — never raises, never blocks the response."""
+    try:
+        from src.storage.db import append_chat_turn, ensure_chat_session
+        await ensure_chat_session(session_id, query, repo_owner=repo_owner, repo_name=repo_name)
+        await append_chat_turn(
+            session_id=session_id,
+            user_query=query,
+            answer=result.answer,
+            cited_files=result.cited_files,
+            follow_up_hints=result.follow_up_hints,
+            elapsed_ms=result.elapsed_ms,
+            context_tokens=ctx.tokens_used,
+            context_files=len(ctx.chunks_used),
+            query_complexity=getattr(ctx, "query_complexity", None),
+        )
+    except Exception:
+        logger.exception("ask turn persistence failed (non-fatal)")
 
 
 # ── Sync endpoint ──────────────────────────────────────────────────────────────
@@ -49,6 +74,8 @@ async def ask_question(req: AskRequest):
 
 
 async def _sync_ask(req: AskRequest) -> JSONResponse:
+    effective_session_id = req.session_id or str(_uuid.uuid4())
+
     try:
         from src.ask.ask_agent import generate_answer
         from src.planning.retriever import retrieve_planning_context
@@ -61,6 +88,7 @@ async def _sync_ask(req: AskRequest) -> JSONResponse:
             repo_owner=req.repo_owner,
             repo_name=req.repo_name,
             web_research=False,  # Ask Mode is fast — no web research by default
+            model=req.model,
         )
     except Exception as exc:
         logger.exception("ask retriever failed")
@@ -72,6 +100,7 @@ async def _sync_ask(req: AskRequest) -> JSONResponse:
             ctx=ctx,
             repo_owner=req.repo_owner,
             repo_name=req.repo_name,
+            model=req.model,
         )
     except RuntimeError as exc:
         status = getattr(exc, "status_code", None)
@@ -86,6 +115,10 @@ async def _sync_ask(req: AskRequest) -> JSONResponse:
         logger.exception("ask generation failed")
         return JSONResponse({"error": f"Answer generation failed: {exc}"}, status_code=500)
 
+    asyncio.create_task(_save_ask_turn(
+        effective_session_id, req.query, result, ctx, req.repo_owner, req.repo_name
+    ))
+
     return JSONResponse(
         {
             "query": req.query,
@@ -93,6 +126,7 @@ async def _sync_ask(req: AskRequest) -> JSONResponse:
             "cited_files": result.cited_files,
             "follow_up_hints": result.follow_up_hints,
             "elapsed_ms": result.elapsed_ms,
+            "session_id": effective_session_id,
             "metadata": {
                 "context_tokens": ctx.tokens_used,
                 "context_files": len(ctx.chunks_used),
@@ -121,6 +155,8 @@ async def _sse_generator(req: AskRequest):
     def _event(data: dict) -> str:
         return f"data: {json.dumps(data)}\n\n"
 
+    effective_session_id = req.session_id or str(_uuid.uuid4())
+
     yield _event({"type": "status", "message": "Searching codebase…"})
 
     try:
@@ -137,6 +173,7 @@ async def _sse_generator(req: AskRequest):
             repo_owner=req.repo_owner,
             repo_name=req.repo_name,
             web_research=False,
+            model=req.model,
         )
         yield _event(
             {
@@ -160,11 +197,15 @@ async def _sse_generator(req: AskRequest):
             ctx=ctx,
             repo_owner=req.repo_owner,
             repo_name=req.repo_name,
+            model=req.model,
         ):
             if chunk["type"] == "token":
                 yield _event({"type": "answer_chunk", "text": chunk["text"]})
             elif chunk["type"] == "answer_complete":
                 result = chunk["result"]
+                await _save_ask_turn(
+                    effective_session_id, req.query, result, ctx, req.repo_owner, req.repo_name
+                )
                 yield _event(
                     {
                         "type": "answer_complete",
@@ -172,6 +213,7 @@ async def _sse_generator(req: AskRequest):
                         "cited_files": result.cited_files,
                         "follow_up_hints": result.follow_up_hints,
                         "elapsed_ms": result.elapsed_ms,
+                        "session_id": effective_session_id,
                         "metadata": {
                             "context_tokens": ctx.tokens_used,
                             "context_files": len(ctx.chunks_used),
