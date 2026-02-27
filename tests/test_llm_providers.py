@@ -14,7 +14,6 @@ All tests are unit tests — no network calls, no API keys required.
 
 import pytest
 
-
 # ── Types ─────────────────────────────────────────────────────────────────────
 
 

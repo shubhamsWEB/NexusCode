@@ -17,16 +17,15 @@ Mount the Starlette SSE app via:
 from __future__ import annotations
 
 import json
-import logging
 from typing import Annotated
 
 from mcp.server.fastmcp import FastMCP
 from sqlalchemy import text
 
 from src.storage.db import AsyncSessionLocal
+from src.utils.logging import get_secure_logger
 from src.utils.sanitize import sanitize_log
 
-from src.utils.logging import get_secure_logger
 logger = get_secure_logger(__name__)
 
 
@@ -232,8 +231,16 @@ async def find_callers(
         repo_owner, repo_name = repo.split("/", 1)
 
     _DEFINITION_PREFIXES = (
-        "def ", "async def ", "class ", "function ", "const ", "export ",
-        "export default ", "export async ", "pub fn ", "fn ",
+        "def ",
+        "async def ",
+        "class ",
+        "function ",
+        "const ",
+        "export ",
+        "export default ",
+        "export async ",
+        "pub fn ",
+        "fn ",
     )
 
     def _extract_call_sites(results, target_sym: str) -> list[dict]:
@@ -244,8 +251,7 @@ async def find_callers(
             call_lines = [
                 {"line_no": r.start_line + i, "text": line.strip()}
                 for i, line in enumerate(lines)
-                if target_sym in line
-                and not line.strip().startswith(_DEFINITION_PREFIXES)
+                if target_sym in line and not line.strip().startswith(_DEFINITION_PREFIXES)
             ]
             if call_lines:
                 callers.append(
@@ -263,7 +269,7 @@ async def find_callers(
     # ── BFS multi-hop traversal ───────────────────────────────────────────────
     all_hops: list[dict] = []
     seen_symbols: set[str] = {symbol}  # avoid re-querying the same symbol
-    frontier: list[str] = [symbol]     # symbols to find callers for in this hop
+    frontier: list[str] = [symbol]  # symbols to find callers for in this hop
 
     for hop_num in range(1, depth + 1):
         if not frontier:
@@ -282,7 +288,11 @@ async def find_callers(
                     language=None,
                 )
             except Exception as exc:
-                logger.warning("find_callers: keyword search failed for %r: %s", sanitize_log(target_sym), sanitize_log(exc))
+                logger.warning(
+                    "find_callers: keyword search failed for %r: %s",
+                    sanitize_log(target_sym),
+                    sanitize_log(exc),
+                )
                 continue
 
             call_entries = _extract_call_sites(results, target_sym)
@@ -604,7 +614,8 @@ async def plan_implementation(
         bool, "Search the web for best practices before generating the plan (default true)"
     ] = True,
     model: Annotated[
-        str | None, "LLM model to use (e.g. 'gpt-4o', 'claude-opus-4-6'). Defaults to server config."
+        str | None,
+        "LLM model to use (e.g. 'gpt-4o', 'claude-opus-4-6'). Defaults to server config.",
     ] = None,
 ) -> str:
     """
@@ -666,12 +677,11 @@ async def plan_implementation(
 
 @mcp_server.tool()
 async def ask_codebase(
-    question: Annotated[
-        str, "Natural-language question about the codebase (min 5 chars)"
-    ],
+    question: Annotated[str, "Natural-language question about the codebase (min 5 chars)"],
     repo: Annotated[str | None, "Scope to 'owner/name' — defaults to all repos"] = None,
     model: Annotated[
-        str | None, "LLM model to use (e.g. 'gpt-4o', 'claude-opus-4-6'). Defaults to server config."
+        str | None,
+        "LLM model to use (e.g. 'gpt-4o', 'claude-opus-4-6'). Defaults to server config.",
     ] = None,
 ) -> str:
     """

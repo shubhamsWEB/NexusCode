@@ -20,14 +20,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from src.planning.schemas import PlanRequest
-
 from src.utils.logging import get_secure_logger
+
 logger = get_secure_logger(__name__)
 
 router = APIRouter(prefix="/plan", tags=["planning"])
@@ -42,6 +41,7 @@ async def _save_plan(plan, repo_owner, repo_name):
     """Best-effort plan history persistence — never raises."""
     try:
         from src.storage.db import save_plan_history
+
         metadata = plan.metadata
         await save_plan_history(
             plan_id=plan.plan_id,
@@ -79,7 +79,9 @@ async def _sync_plan(req: PlanRequest) -> JSONResponse:
         from src.planning.claude_planner import generate_plan
         from src.planning.retriever import retrieve_planning_context
     except ImportError:
-        return JSONResponse({"error": "Service unavailable. Required modules not loaded."}, status_code=503)
+        return JSONResponse(
+            {"error": "Service unavailable. Required modules not loaded."}, status_code=503
+        )
 
     try:
         ctx = await retrieve_planning_context(
@@ -89,7 +91,7 @@ async def _sync_plan(req: PlanRequest) -> JSONResponse:
             web_research=req.web_research,
             model=req.model,
         )
-    except Exception as exc:
+    except Exception:
         logger.exception("planning retriever failed")
         return JSONResponse({"error": "Retrieval failed. Please try again."}, status_code=500)
 
@@ -112,7 +114,7 @@ async def _sync_plan(req: PlanRequest) -> JSONResponse:
             )
         # anthropic not installed / no API key / overload
         return JSONResponse({"error": "Service unavailable. Please try again."}, status_code=503)
-    except Exception as exc:
+    except Exception:
         logger.exception("plan generation failed")
         return JSONResponse({"error": "Plan generation failed. Please try again."}, status_code=500)
 
@@ -147,7 +149,9 @@ async def _sse_generator(req: PlanRequest):
         from src.planning.claude_planner import stream_generate_plan
         from src.planning.retriever import retrieve_planning_context
     except ImportError:
-        yield _event({"type": "error", "message": "Service unavailable. Required modules not loaded."})
+        yield _event(
+            {"type": "error", "message": "Service unavailable. Required modules not loaded."}
+        )
         return
 
     # ── Phase: retrieval ──────────────────────────────────────────────────────
@@ -168,7 +172,7 @@ async def _sse_generator(req: PlanRequest):
                 "web_research_used": bool(ctx.web_research_notes),
             }
         )
-    except Exception as exc:
+    except Exception:
         logger.exception("planning retriever failed (SSE)")
         yield _event({"type": "error", "message": "Retrieval failed. Please try again."})
         return
@@ -191,21 +195,25 @@ async def _sse_generator(req: PlanRequest):
             elif chunk["type"] == "plan_complete":
                 plan = chunk["plan"]
                 await _save_plan(plan, req.repo_owner, req.repo_name)
-                yield _event({
-                    "type": "plan_complete",
-                    "plan": plan.model_dump(),
-                    "plan_id": plan.plan_id,
-                })
+                yield _event(
+                    {
+                        "type": "plan_complete",
+                        "plan": plan.model_dump(),
+                        "plan_id": plan.plan_id,
+                    }
+                )
     except RuntimeError as exc:
         status = getattr(exc, "status_code", None)
         if status == 429:
-            yield _event({
-                "type": "error",
-                "message": "Rate limit reached. Please try again in 60 seconds.",
-                "retry_after": 60,
-            })
+            yield _event(
+                {
+                    "type": "error",
+                    "message": "Rate limit reached. Please try again in 60 seconds.",
+                    "retry_after": 60,
+                }
+            )
         else:
             yield _event({"type": "error", "message": "Service unavailable. Please try again."})
-    except Exception as exc:
+    except Exception:
         logger.exception("plan streaming failed (SSE)")
         yield _event({"type": "error", "message": "Plan generation failed. Please try again."})

@@ -8,7 +8,6 @@ Supported languages: Python, TypeScript/TSX, JavaScript, Java, Go, Rust.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -587,7 +586,7 @@ def parse_file(file_path: str, source: str) -> ParsedFile | None:
     """
     language = detect_language(file_path)
     if not language:
-        logger.debug("parse_file: unsupported extension for %s", sanitize_log(file_path))
+        logger.debug("parse_file: unsupported extension for %s", file_path)
         return None
 
     try:

@@ -85,44 +85,32 @@ class SecureLogger:
 
     def debug(self, msg: object, *args: Any, **kwargs: Any) -> None:
         if self._logger.isEnabledFor(logging.DEBUG):
-            self._logger.debug(
-                self._sanitize_msg(msg), *self._sanitize_args(args), **kwargs
-            )
+            self._logger.debug(self._sanitize_msg(msg), *self._sanitize_args(args), **kwargs)
 
     def info(self, msg: object, *args: Any, **kwargs: Any) -> None:
         if self._logger.isEnabledFor(logging.INFO):
-            self._logger.info(
-                self._sanitize_msg(msg), *self._sanitize_args(args), **kwargs
-            )
+            self._logger.info(self._sanitize_msg(msg), *self._sanitize_args(args), **kwargs)
 
     def warning(self, msg: object, *args: Any, **kwargs: Any) -> None:
         if self._logger.isEnabledFor(logging.WARNING):
-            self._logger.warning(
-                self._sanitize_msg(msg), *self._sanitize_args(args), **kwargs
-            )
+            self._logger.warning(self._sanitize_msg(msg), *self._sanitize_args(args), **kwargs)
 
     # Alias
     warn = warning
 
     def error(self, msg: object, *args: Any, **kwargs: Any) -> None:
         if self._logger.isEnabledFor(logging.ERROR):
-            self._logger.error(
-                self._sanitize_msg(msg), *self._sanitize_args(args), **kwargs
-            )
+            self._logger.error(self._sanitize_msg(msg), *self._sanitize_args(args), **kwargs)
 
     def critical(self, msg: object, *args: Any, **kwargs: Any) -> None:
         if self._logger.isEnabledFor(logging.CRITICAL):
-            self._logger.critical(
-                self._sanitize_msg(msg), *self._sanitize_args(args), **kwargs
-            )
+            self._logger.critical(self._sanitize_msg(msg), *self._sanitize_args(args), **kwargs)
 
     def exception(self, msg: object, *args: Any, **kwargs: Any) -> None:
         """Log at ERROR level with current exception info attached."""
         kwargs.setdefault("exc_info", True)
         if self._logger.isEnabledFor(logging.ERROR):
-            self._logger.exception(
-                self._sanitize_msg(msg), *self._sanitize_args(args), **kwargs
-            )
+            self._logger.exception(self._sanitize_msg(msg), *self._sanitize_args(args), **kwargs)
 
     # ── Forward all other Logger attributes unchanged ─────────────────────────
 

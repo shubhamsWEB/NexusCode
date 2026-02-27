@@ -180,19 +180,30 @@ class PlanRequest(BaseModel):
             "Set false to skip (useful when offline or for speed tests)."
         ),
     )
-    model: str | None = Field(None, description="LLM model to use (e.g. 'gpt-4o', 'claude-opus-4-6'). Defaults to server config.")
+    model: str | None = Field(
+        None,
+        description="LLM model to use (e.g. 'gpt-4o', 'claude-opus-4-6'). Defaults to server config.",
+    )
 
 
 class AskRequest(BaseModel):
     """Request schema for POST /ask — codebase Q&A."""
 
-    query: str = Field(..., min_length=5, description="Natural language question about the codebase")
+    query: str = Field(
+        ..., min_length=5, description="Natural language question about the codebase"
+    )
     repo_owner: str | None = Field(None, description="Scope to a specific repo owner")
     repo_name: str | None = Field(None, description="Scope to a specific repo name")
-    stream: bool = Field(True, description="If true, return an SSE stream; if false, wait for full JSON")
-    session_id: str | None = Field(None, description="Chat session ID — server generates if omitted, returned in response")
-    model: str | None = Field(None, description="LLM model to use (e.g. 'gpt-4o', 'claude-opus-4-6'). Defaults to server config.")
-
+    stream: bool = Field(
+        True, description="If true, return an SSE stream; if false, wait for full JSON"
+    )
+    session_id: str | None = Field(
+        None, description="Chat session ID — server generates if omitted, returned in response"
+    )
+    model: str | None = Field(
+        None,
+        description="LLM model to use (e.g. 'gpt-4o', 'claude-opus-4-6'). Defaults to server config.",
+    )
 
 
 # ── JSON Schema used as Claude's tool input ───────────────────────────────────

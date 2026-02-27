@@ -10,7 +10,6 @@ Converts a ParsedFile into a list of RawChunks that:
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
 
 import tiktoken

@@ -21,20 +21,21 @@ Falls back gracefully to "" on any failure so planning always continues.
 from __future__ import annotations
 
 import importlib.util
-import logging
 
 from src.config import settings
+from src.utils.logging import get_secure_logger
 from src.utils.sanitize import sanitize_log
 
-from src.utils.logging import get_secure_logger
 logger = get_secure_logger(__name__)
 
 _anthropic_client = None
+
 
 def _get_anthropic_client():
     global _anthropic_client
     if _anthropic_client is None:
         import anthropic
+
         if not settings.anthropic_api_key:
             return None
         _anthropic_client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
@@ -80,7 +81,9 @@ ones can't cover it.
 """
 
 
-async def research_implementation(query: str, stack_context: str = "", model: str | None = None) -> str:
+async def research_implementation(
+    query: str, stack_context: str = "", model: str | None = None
+) -> str:
     """
     Call Claude with web_search_20250305 to gather stack-aware implementation
     research for `query`.
@@ -96,12 +99,16 @@ async def research_implementation(query: str, stack_context: str = "", model: st
     # If a non-Anthropic model is explicitly requested, skip web research.
     if model:
         from src.llm.registry import resolve_provider
+
         try:
             provider_name = resolve_provider(model)
         except ValueError:
             provider_name = "unknown"
         if provider_name != "anthropic":
-            logger.debug("web_researcher: skipping (model=%s is not Anthropic, web search unavailable)", sanitize_log(model))
+            logger.debug(
+                "web_researcher: skipping (model=%s is not Anthropic, web search unavailable)",
+                sanitize_log(model),
+            )
             return ""
 
     if not settings.anthropic_api_key:
@@ -170,7 +177,9 @@ async def research_implementation(query: str, stack_context: str = "", model: st
         return notes
     except Exception as exc:
         # Graceful degradation — web search is enrichment, not required
-        logger.warning("web_researcher: search failed (planning continues without it): %s", sanitize_log(exc))
+        logger.warning(
+            "web_researcher: search failed (planning continues without it): %s", sanitize_log(exc)
+        )
         return ""
 
 

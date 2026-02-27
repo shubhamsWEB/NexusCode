@@ -11,7 +11,6 @@ Features:
 from __future__ import annotations
 
 import asyncio
-import logging
 
 import voyageai
 
@@ -38,6 +37,7 @@ _is_free_tier: bool = False
 
 
 _voyage_client = None
+
 
 def _make_client() -> voyageai.Client:
     global _voyage_client

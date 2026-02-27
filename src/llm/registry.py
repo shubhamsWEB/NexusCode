@@ -7,7 +7,6 @@ Maps model names to provider instances. Providers are lazy singletons
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING
 
 from src.config import settings
@@ -45,12 +44,15 @@ def _create_provider(provider_name: str) -> LLMProvider:
     """Lazy-create a provider instance."""
     if provider_name == "anthropic":
         from src.llm.anthropic_provider import AnthropicProvider
+
         return AnthropicProvider()
     elif provider_name == "openai":
         from src.llm.openai_provider import OpenAIProvider
+
         return OpenAIProvider()
     elif provider_name == "grok":
         from src.llm.grok_provider import GrokProvider
+
         return GrokProvider()
     else:
         raise ValueError(f"Unknown provider: {provider_name}")
@@ -69,7 +71,12 @@ def resolve_provider(model: str) -> str:
     model_lower = model.lower()
     if "claude" in model_lower:
         return "anthropic"
-    if "gpt" in model_lower or model_lower.startswith("o1") or model_lower.startswith("o3") or model_lower.startswith("o4"):
+    if (
+        "gpt" in model_lower
+        or model_lower.startswith("o1")
+        or model_lower.startswith("o3")
+        or model_lower.startswith("o4")
+    ):
         return "openai"
     if "grok" in model_lower:
         return "grok"

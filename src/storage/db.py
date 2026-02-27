@@ -5,7 +5,6 @@ All public methods use async/await and are safe to call concurrently.
 
 from __future__ import annotations
 
-import logging
 from datetime import UTC, datetime
 from typing import Any
 
@@ -24,8 +23,8 @@ from src.storage.models import (
     Symbol,
     WebhookEvent,
 )
-
 from src.utils.logging import get_secure_logger
+
 logger = get_secure_logger(__name__)
 
 # ── Engine ───────────────────────────────────────────────────────────────────
@@ -110,7 +109,9 @@ async def get_chunk_count(repo_owner: str, repo_name: str) -> int:
     """Active (non-deleted) chunk count for a repo."""
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            select(func.count()).select_from(Chunk).where(
+            select(func.count())
+            .select_from(Chunk)
+            .where(
                 Chunk.repo_owner == repo_owner,
                 Chunk.repo_name == repo_name,
                 Chunk.is_deleted.is_(False),
@@ -405,13 +406,17 @@ async def ensure_chat_session(
 ) -> None:
     """Idempotent — creates the session row only if it doesn't exist yet."""
     async with AsyncSessionLocal() as session:
-        stmt = pg_insert(ChatSession).values(
-            id=session_id,
-            title=first_query[:120].strip(),
-            repo_owner=repo_owner,
-            repo_name=repo_name,
-            turn_count=0,
-        ).on_conflict_do_nothing(index_elements=["id"])
+        stmt = (
+            pg_insert(ChatSession)
+            .values(
+                id=session_id,
+                title=first_query[:120].strip(),
+                repo_owner=repo_owner,
+                repo_name=repo_name,
+                turn_count=0,
+            )
+            .on_conflict_do_nothing(index_elements=["id"])
+        )
         await session.execute(stmt)
         await session.commit()
 
@@ -429,24 +434,30 @@ async def append_chat_turn(
 ) -> None:
     """Append one turn to a session, atomically incrementing turn_count."""
     async with AsyncSessionLocal() as session:
-        row = (await session.execute(
-            select(ChatSession).where(ChatSession.id == session_id).with_for_update()
-        )).scalar_one_or_none()
+        row = (
+            await session.execute(
+                select(ChatSession).where(ChatSession.id == session_id).with_for_update()
+            )
+        ).scalar_one_or_none()
         if not row:
             return  # session not found — skip silently
         turn_index = row.turn_count
-        stmt = pg_insert(ChatTurn).values(
-            session_id=session_id,
-            turn_index=turn_index,
-            user_query=user_query,
-            answer=answer,
-            cited_files=cited_files or [],
-            follow_up_hints=follow_up_hints or [],
-            elapsed_ms=elapsed_ms,
-            context_tokens=context_tokens,
-            context_files=context_files,
-            query_complexity=query_complexity,
-        ).on_conflict_do_nothing(constraint="chat_turns_session_id_turn_index_key")
+        stmt = (
+            pg_insert(ChatTurn)
+            .values(
+                session_id=session_id,
+                turn_index=turn_index,
+                user_query=user_query,
+                answer=answer,
+                cited_files=cited_files or [],
+                follow_up_hints=follow_up_hints or [],
+                elapsed_ms=elapsed_ms,
+                context_tokens=context_tokens,
+                context_files=context_files,
+                query_complexity=query_complexity,
+            )
+            .on_conflict_do_nothing(constraint="chat_turns_session_id_turn_index_key")
+        )
         await session.execute(stmt)
         await session.execute(
             update(ChatSession)
@@ -469,17 +480,21 @@ async def save_plan_history(
 ) -> None:
     """Persist a completed plan. on_conflict_do_nothing makes it retry-safe."""
     async with AsyncSessionLocal() as session:
-        stmt = pg_insert(PlanHistoryEntry).values(
-            plan_id=plan_id,
-            query=query,
-            response_type=response_type,
-            plan_json=plan_json_str,
-            repo_owner=repo_owner,
-            repo_name=repo_name,
-            elapsed_ms=elapsed_ms,
-            context_tokens=context_tokens,
-            web_research_used=web_research_used,
-        ).on_conflict_do_nothing(index_elements=["plan_id"])
+        stmt = (
+            pg_insert(PlanHistoryEntry)
+            .values(
+                plan_id=plan_id,
+                query=query,
+                response_type=response_type,
+                plan_json=plan_json_str,
+                repo_owner=repo_owner,
+                repo_name=repo_name,
+                elapsed_ms=elapsed_ms,
+                context_tokens=context_tokens,
+                web_research_used=web_research_used,
+            )
+            .on_conflict_do_nothing(index_elements=["plan_id"])
+        )
         await session.execute(stmt)
         await session.commit()
 
@@ -516,16 +531,22 @@ async def list_chat_sessions(
 async def get_chat_session_with_turns(session_id: str) -> dict[str, Any] | None:
     """Return a session and all its turns ordered by turn_index."""
     async with AsyncSessionLocal() as session:
-        sess_row = (await session.execute(
-            select(ChatSession).where(ChatSession.id == session_id)
-        )).scalar_one_or_none()
+        sess_row = (
+            await session.execute(select(ChatSession).where(ChatSession.id == session_id))
+        ).scalar_one_or_none()
         if not sess_row:
             return None
-        turns = (await session.execute(
-            select(ChatTurn)
-            .where(ChatTurn.session_id == session_id)
-            .order_by(ChatTurn.turn_index)
-        )).scalars().all()
+        turns = (
+            (
+                await session.execute(
+                    select(ChatTurn)
+                    .where(ChatTurn.session_id == session_id)
+                    .order_by(ChatTurn.turn_index)
+                )
+            )
+            .scalars()
+            .all()
+        )
         return {
             "session_id": sess_row.id,
             "title": sess_row.title,
@@ -533,7 +554,9 @@ async def get_chat_session_with_turns(session_id: str) -> dict[str, Any] | None:
             "repo_name": sess_row.repo_name,
             "turn_count": sess_row.turn_count,
             "created_at": sess_row.created_at.isoformat() if sess_row.created_at else None,
-            "last_active_at": sess_row.last_active_at.isoformat() if sess_row.last_active_at else None,
+            "last_active_at": sess_row.last_active_at.isoformat()
+            if sess_row.last_active_at
+            else None,
             "turns": [
                 {
                     "turn_index": t.turn_index,
@@ -591,9 +614,11 @@ async def get_plan_history_entry(plan_id: str) -> dict[str, Any] | None:
     import json as _json
 
     async with AsyncSessionLocal() as session:
-        row = (await session.execute(
-            select(PlanHistoryEntry).where(PlanHistoryEntry.plan_id == plan_id)
-        )).scalar_one_or_none()
+        row = (
+            await session.execute(
+                select(PlanHistoryEntry).where(PlanHistoryEntry.plan_id == plan_id)
+            )
+        ).scalar_one_or_none()
         if not row:
             return None
         try:

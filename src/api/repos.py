@@ -179,7 +179,12 @@ async def _try_auto_register_webhook(owner: str, name: str) -> dict:
             "manual_instructions": None,
         }
     except WebhookCreationError as exc:
-        logger.warning("Auto-register webhook failed for %s/%s: %s", sanitize_log(owner), sanitize_log(name), sanitize_log(exc))
+        logger.warning(
+            "Auto-register webhook failed for %s/%s: %s",
+            sanitize_log(owner),
+            sanitize_log(name),
+            sanitize_log(exc),
+        )
         return {
             "success": False,
             "hook_id": None,
@@ -188,8 +193,12 @@ async def _try_auto_register_webhook(owner: str, name: str) -> dict:
             if exc.manual_instructions
             else None,
         }
-    except Exception as exc:
-        logger.exception("Unexpected error auto-registering webhook for %s/%s", sanitize_log(owner), sanitize_log(name))
+    except Exception:
+        logger.exception(
+            "Unexpected error auto-registering webhook for %s/%s",
+            sanitize_log(owner),
+            sanitize_log(name),
+        )
         return {
             "success": False,
             "hook_id": None,
@@ -278,7 +287,11 @@ async def delete_repo_endpoint(owner: str, name: str) -> JSONResponse:
 
             await delete_webhook(owner, name, repo.webhook_hook_id)
     except Exception:
-        logger.warning("Failed to clean up webhook for %s/%s during delete", sanitize_log(owner), sanitize_log(name))
+        logger.warning(
+            "Failed to clean up webhook for %s/%s during delete",
+            sanitize_log(owner),
+            sanitize_log(name),
+        )
 
     deleted = await delete_repo(owner, name)
     if not deleted:

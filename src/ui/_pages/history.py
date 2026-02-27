@@ -86,7 +86,9 @@ def _render_ask_sessions():
         if sess.get("repo_owner") and sess.get("repo_name"):
             repo_scope = f"  ·  `{sess['repo_owner']}/{sess['repo_name']}`"
 
-        label = f"**{title[:80]}{'…' if len(title) > 80 else ''}** — {turn_count} turn(s){repo_scope}"
+        label = (
+            f"**{title[:80]}{'…' if len(title) > 80 else ''}** — {turn_count} turn(s){repo_scope}"
+        )
         with st.expander(label):
             # Show timestamp
             if last_active:
@@ -128,17 +130,19 @@ def _render_ask_sessions():
                 rebuilt = []
                 for t in turns:
                     rebuilt.append({"role": "user", "content": t.get("user_query", "")})
-                    rebuilt.append({
-                        "role": "assistant",
-                        "content": t.get("answer", ""),
-                        "meta": {
-                            "cited_files": t.get("cited_files", []),
-                            "follow_up_hints": t.get("follow_up_hints", []),
-                            "elapsed_ms": round((t.get("elapsed_ms") or 0) / 1000, 1),
-                            "context_tokens": t.get("context_tokens") or 0,
-                            "context_files": t.get("context_files") or 0,
-                        },
-                    })
+                    rebuilt.append(
+                        {
+                            "role": "assistant",
+                            "content": t.get("answer", ""),
+                            "meta": {
+                                "cited_files": t.get("cited_files", []),
+                                "follow_up_hints": t.get("follow_up_hints", []),
+                                "elapsed_ms": round((t.get("elapsed_ms") or 0) / 1000, 1),
+                                "context_tokens": t.get("context_tokens") or 0,
+                                "context_files": t.get("context_files") or 0,
+                            },
+                        }
+                    )
                 st.session_state.ask_messages = rebuilt
                 st.session_state.ask_session_id = session_id
                 st.info("Session loaded. Navigate to **💬 Ask Mode** to continue.")
@@ -229,6 +233,7 @@ def _render_plan_history():
             # Re-use planning page renderers
             try:
                 from src.ui._pages.planning import _render_analysis, _render_answer, _render_plan
+
                 response_type = plan_data.get("response_type", rtype)
                 elapsed_sec = round((elapsed_full or 0) / 1000, 1)
                 if response_type == "answer":

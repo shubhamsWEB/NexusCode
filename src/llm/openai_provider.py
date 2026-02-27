@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -47,9 +46,7 @@ class OpenAIProvider:
 
             api_key = self._api_key or settings.openai_api_key
             if not api_key:
-                raise RuntimeError(
-                    "OPENAI_API_KEY is not set. Add it to your .env file."
-                )
+                raise RuntimeError("OPENAI_API_KEY is not set. Add it to your .env file.")
             kwargs: dict[str, Any] = {"api_key": api_key}
             if self._base_url:
                 kwargs["base_url"] = self._base_url
@@ -146,12 +143,15 @@ class OpenAIProvider:
             except APIStatusError as exc:
                 if exc.status_code in _RETRYABLE_STATUS_CODES and attempt < _MAX_RETRIES:
                     if exc.status_code == 429:
-                        wait = min(5 * (2 ** attempt), 120)
+                        wait = min(5 * (2**attempt), 120)
                     else:
-                        wait = 2 ** attempt
+                        wait = 2**attempt
                     logger.warning(
                         "openai: HTTP %d, retry %d/%d in %.0fs",
-                        exc.status_code, attempt + 1, _MAX_RETRIES, wait,
+                        exc.status_code,
+                        attempt + 1,
+                        _MAX_RETRIES,
+                        wait,
                     )
                     last_exc = exc
                     await asyncio.sleep(wait)
@@ -171,14 +171,18 @@ class OpenAIProvider:
     ) -> LLMResponse:
         client = self._get_client()
         params = self._build_call_params(
-            model, system, messages, tools, tool_choice, max_tokens, thinking_budget,
+            model,
+            system,
+            messages,
+            tools,
+            tool_choice,
+            max_tokens,
+            thinking_budget,
         )
 
         async with self._semaphore:
             logger.info("openai: acquired semaphore, calling %s…", model)
-            message = await self._retry_loop(
-                lambda: client.chat.completions.create(**params)
-            )
+            message = await self._retry_loop(lambda: client.chat.completions.create(**params))
 
         return self._parse_response(message)
 
@@ -196,7 +200,13 @@ class OpenAIProvider:
 
         client = self._get_client()
         params = self._build_call_params(
-            model, system, messages, tools, tool_choice, max_tokens, thinking_budget,
+            model,
+            system,
+            messages,
+            tools,
+            tool_choice,
+            max_tokens,
+            thinking_budget,
         )
         params["stream"] = True
 
@@ -267,12 +277,15 @@ class OpenAIProvider:
                 except APIStatusError as exc:
                     if exc.status_code in _RETRYABLE_STATUS_CODES and attempt < _MAX_RETRIES:
                         if exc.status_code == 429:
-                            wait = min(5 * (2 ** attempt), 120)
+                            wait = min(5 * (2**attempt), 120)
                         else:
-                            wait = 2 ** attempt
+                            wait = 2**attempt
                         logger.warning(
                             "openai: stream HTTP %d, retry %d/%d in %.0fs",
-                            exc.status_code, attempt + 1, _MAX_RETRIES, wait,
+                            exc.status_code,
+                            attempt + 1,
+                            _MAX_RETRIES,
+                            wait,
                         )
                         last_exc = exc
                         await asyncio.sleep(wait)
@@ -287,7 +300,7 @@ def _repair_json(raw: str) -> dict:
     if not raw or not raw.strip():
         return {}
     # Try adding closing brace
-    for suffix in ["", "}", '"}', '"}'  ]:
+    for suffix in ["", "}", '"}', '"}']:
         try:
             return json.loads(raw + suffix)
         except json.JSONDecodeError:

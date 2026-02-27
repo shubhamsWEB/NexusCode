@@ -73,8 +73,14 @@ async def main() -> None:
         print(f"\n✓ Tables found: {tables}")
 
         expected = {
-            "chunks", "symbols", "merkle_nodes", "repos", "webhook_events",
-            "chat_sessions", "chat_turns", "plan_history",
+            "chunks",
+            "symbols",
+            "merkle_nodes",
+            "repos",
+            "webhook_events",
+            "chat_sessions",
+            "chat_turns",
+            "plan_history",
         }
         missing = expected - set(tables)
         if missing:

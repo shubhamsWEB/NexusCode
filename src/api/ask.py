@@ -21,15 +21,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import uuid as _uuid
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from src.planning.schemas import AskRequest
-
 from src.utils.logging import get_secure_logger
+
 logger = get_secure_logger(__name__)
 
 router = APIRouter(prefix="/ask", tags=["ask"])
@@ -44,6 +43,7 @@ async def _save_ask_turn(session_id: str, query: str, result, ctx, repo_owner, r
     """Best-effort DB persistence — never raises, never blocks the response."""
     try:
         from src.storage.db import append_chat_turn, ensure_chat_session
+
         await ensure_chat_session(session_id, query, repo_owner=repo_owner, repo_name=repo_name)
         await append_chat_turn(
             session_id=session_id,
@@ -83,7 +83,9 @@ async def _sync_ask(req: AskRequest) -> JSONResponse:
         from src.ask.ask_agent import generate_answer
         from src.planning.retriever import retrieve_planning_context
     except ImportError:
-        return JSONResponse({"error": "Service unavailable. Required modules not loaded."}, status_code=503)
+        return JSONResponse(
+            {"error": "Service unavailable. Required modules not loaded."}, status_code=503
+        )
 
     try:
         ctx = await retrieve_planning_context(
@@ -93,7 +95,7 @@ async def _sync_ask(req: AskRequest) -> JSONResponse:
             web_research=False,  # Ask Mode is fast — no web research by default
             model=req.model,
         )
-    except Exception as exc:
+    except Exception:
         logger.exception("ask retriever failed")
         return JSONResponse({"error": "Retrieval failed. Please try again."}, status_code=500)
 
@@ -114,13 +116,15 @@ async def _sync_ask(req: AskRequest) -> JSONResponse:
                 headers={"Retry-After": "60"},
             )
         return JSONResponse({"error": "Service unavailable. Please try again."}, status_code=503)
-    except Exception as exc:
+    except Exception:
         logger.exception("ask generation failed")
-        return JSONResponse({"error": "Answer generation failed. Please try again."}, status_code=500)
+        return JSONResponse(
+            {"error": "Answer generation failed. Please try again."}, status_code=500
+        )
 
-    task = asyncio.create_task(_save_ask_turn(
-        effective_session_id, req.query, result, ctx, req.repo_owner, req.repo_name
-    ))
+    task = asyncio.create_task(
+        _save_ask_turn(effective_session_id, req.query, result, ctx, req.repo_owner, req.repo_name)
+    )
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
 
@@ -168,7 +172,9 @@ async def _sse_generator(req: AskRequest):
         from src.ask.ask_agent import stream_generate_answer
         from src.planning.retriever import retrieve_planning_context
     except ImportError:
-        yield _event({"type": "error", "message": "Service unavailable. Required modules not loaded."})
+        yield _event(
+            {"type": "error", "message": "Service unavailable. Required modules not loaded."}
+        )
         return
 
     # ── Phase: retrieval ───────────────────────────────────────────────────────
@@ -188,7 +194,7 @@ async def _sse_generator(req: AskRequest):
                 "tokens": ctx.tokens_used,
             }
         )
-    except Exception as exc:
+    except Exception:
         logger.exception("ask retriever failed (SSE)")
         yield _event({"type": "error", "message": "Retrieval failed. Please try again."})
         return
@@ -239,6 +245,6 @@ async def _sse_generator(req: AskRequest):
             )
         else:
             yield _event({"type": "error", "message": "Service unavailable. Please try again."})
-    except Exception as exc:
+    except Exception:
         logger.exception("ask streaming failed (SSE)")
         yield _event({"type": "error", "message": "Answer generation failed. Please try again."})

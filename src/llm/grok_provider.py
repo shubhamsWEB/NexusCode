@@ -28,9 +28,7 @@ class GrokProvider(OpenAIProvider):
 
             api_key = self._api_key or settings.grok_api_key
             if not api_key:
-                raise RuntimeError(
-                    "GROK_API_KEY is not set. Add it to your .env file."
-                )
+                raise RuntimeError("GROK_API_KEY is not set. Add it to your .env file.")
             self._client = AsyncOpenAI(
                 api_key=api_key,
                 base_url="https://api.x.ai/v1",

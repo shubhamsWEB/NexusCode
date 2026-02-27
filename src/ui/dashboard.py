@@ -15,7 +15,6 @@ Pages:
   📜 History        — browse past Ask sessions and Planning plans
 """
 
-
 from __future__ import annotations
 
 import os
@@ -508,4 +507,3 @@ elif page == "📜 History":
     from src.ui._pages.history import render
 
     render()
-

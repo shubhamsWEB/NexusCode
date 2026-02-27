@@ -7,7 +7,6 @@ No local git clone — everything goes through the API.
 from __future__ import annotations
 
 import base64
-import logging
 from collections.abc import AsyncIterator
 
 import httpx
@@ -78,11 +77,13 @@ async def fetch_file(
 
         if resp.status_code == 403 and "rate limit" in resp.text.lower():
             if attempt < _max_retries:
-                delay = _base_delay * (2 ** attempt)  # 60s, 120s, 240s
+                delay = _base_delay * (2**attempt)  # 60s, 120s, 240s
                 logger.warning(
-                    "Rate limit hit fetching %s (attempt %d/%d). "
-                    "Waiting %.0fs before retry...",
-                    path, attempt + 1, _max_retries, delay,
+                    "Rate limit hit fetching %s (attempt %d/%d). Waiting %.0fs before retry...",
+                    path,
+                    attempt + 1,
+                    _max_retries,
+                    delay,
                 )
                 await asyncio.sleep(delay)
                 continue
@@ -152,11 +153,15 @@ async def fetch_full_tree(
                 if reset_ts:
                     delay = max(int(reset_ts) - int(time.time()) + 5, 10)  # +5s buffer
                 else:
-                    delay = _base_delay * (2 ** attempt)
+                    delay = _base_delay * (2**attempt)
                 logger.warning(
                     "Rate limit hit fetching tree for %s/%s (attempt %d/%d). "
                     "Waiting %ds before retry...",
-                    owner, repo, attempt + 1, _max_retries, delay,
+                    owner,
+                    repo,
+                    attempt + 1,
+                    _max_retries,
+                    delay,
                 )
                 await asyncio.sleep(delay)
                 continue

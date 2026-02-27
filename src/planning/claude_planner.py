@@ -13,7 +13,6 @@ Uses the provider abstraction layer (src.llm) to support multiple LLM backends
 
 from __future__ import annotations
 
-import logging
 import time
 from collections.abc import AsyncIterator
 
@@ -29,8 +28,8 @@ from src.planning.schemas import (
     ImplementationPlan,
     PlanMetadata,
 )
-
 from src.utils.logging import get_secure_logger
+
 logger = get_secure_logger(__name__)
 
 # Convert Anthropic-format tool schemas to provider-agnostic LLMToolSchema
@@ -404,7 +403,11 @@ def _build_metadata(
 
 
 def _parse_response(
-    response: LLMResponse, query: str, ctx: PlanningContext, elapsed_ms: float, model: str,
+    response: LLMResponse,
+    query: str,
+    ctx: PlanningContext,
+    elapsed_ms: float,
+    model: str,
 ) -> ImplementationPlan:
     """
     Parse a unified LLMResponse that may contain a tool call.
@@ -511,7 +514,10 @@ async def generate_plan(
     tool_name = response.tool_calls[0].name if response.tool_calls else "none"
     logger.info(
         "planning: %s responded in %.0fms, stop_reason=%s, tool=%s",
-        effective_model, elapsed_ms, response.stop_reason, tool_name,
+        effective_model,
+        elapsed_ms,
+        response.stop_reason,
+        tool_name,
     )
 
     return _parse_response(response, query, ctx, elapsed_ms, effective_model)
@@ -563,7 +569,9 @@ async def stream_generate_plan(
             tool_name = event.tool_calls[0].name if event.tool_calls else "none"
             logger.info(
                 "planning: stream complete in %.0fms, stop_reason=%s, tool=%s",
-                elapsed_ms, event.stop_reason, tool_name,
+                elapsed_ms,
+                event.stop_reason,
+                tool_name,
             )
             plan = _parse_response(event, query, ctx, elapsed_ms, effective_model)
             yield {"type": "plan_complete", "plan": plan}

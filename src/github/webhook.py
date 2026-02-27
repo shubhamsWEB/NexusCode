@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import logging
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Request, status
@@ -46,6 +45,7 @@ def get_queue() -> Queue:
 def _is_duplicate_job(owner: str, repo: str, commit_sha: str) -> bool:
     """Check if an indexing job for this exact commit is already queued/running."""
     import redis as _redis
+
     conn = _redis.from_url(settings.redis_url)
     dedup_key = f"index:{owner}/{repo}:{commit_sha}"
     # SET NX with 60s TTL — returns True only if the key was newly set

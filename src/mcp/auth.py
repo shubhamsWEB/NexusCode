@@ -9,7 +9,6 @@ In production: integrate with GitHub OAuth 2.1 + PKCE (future work).
 
 from __future__ import annotations
 
-import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -19,8 +18,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from src.config import settings
-
 from src.utils.logging import get_secure_logger
+
 logger = get_secure_logger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])

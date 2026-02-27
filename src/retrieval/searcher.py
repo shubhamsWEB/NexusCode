@@ -9,7 +9,6 @@ Three modes:
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -17,9 +16,9 @@ from sqlalchemy import text
 
 from src.config import settings
 from src.storage.db import AsyncSessionLocal
+from src.utils.logging import get_secure_logger
 from src.utils.sanitize import sanitize_log
 
-from src.utils.logging import get_secure_logger
 logger = get_secure_logger(__name__)
 
 # RRF constant — higher = less penalty for low-ranked results

@@ -14,7 +14,6 @@ Output format: file-grouped
 
 from __future__ import annotations
 
-import logging
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +25,7 @@ if TYPE_CHECKING:
     from src.retrieval.searcher import SearchResult
 
 from src.utils.logging import get_secure_logger
+
 logger = get_secure_logger(__name__)
 
 _PATH_SEGMENTS = 3

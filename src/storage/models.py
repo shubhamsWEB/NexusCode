@@ -131,44 +131,54 @@ class WebhookEvent(Base):
 class ChatSession(Base):
     __tablename__ = "chat_sessions"
 
-    id:             Mapped[str]               = mapped_column(Text, primary_key=True)
-    title:          Mapped[str]               = mapped_column(Text, nullable=False)
-    repo_owner:     Mapped[str | None]        = mapped_column(Text)
-    repo_name:      Mapped[str | None]        = mapped_column(Text)
-    turn_count:     Mapped[int]               = mapped_column(Integer, default=0)
-    created_at:     Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    last_active_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    repo_owner: Mapped[str | None] = mapped_column(Text)
+    repo_name: Mapped[str | None] = mapped_column(Text)
+    turn_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    last_active_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 class ChatTurn(Base):
     __tablename__ = "chat_turns"
     __table_args__ = (UniqueConstraint("session_id", "turn_index"),)
 
-    id:               Mapped[int]              = mapped_column(Integer, primary_key=True, autoincrement=True)
-    session_id:       Mapped[str]              = mapped_column(Text, ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False)
-    turn_index:       Mapped[int]              = mapped_column(Integer, nullable=False)
-    user_query:       Mapped[str]              = mapped_column(Text, nullable=False)
-    answer:           Mapped[str]              = mapped_column(Text, nullable=False)
-    cited_files:      Mapped[list[str] | None] = mapped_column(ARRAY(Text))
-    follow_up_hints:  Mapped[list[str] | None] = mapped_column(ARRAY(Text))
-    elapsed_ms:       Mapped[float | None]     = mapped_column(Float)
-    context_tokens:   Mapped[int | None]       = mapped_column(Integer)
-    context_files:    Mapped[int | None]       = mapped_column(Integer)
-    query_complexity: Mapped[str | None]       = mapped_column(Text)
-    created_at:       Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    turn_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    user_query: Mapped[str] = mapped_column(Text, nullable=False)
+    answer: Mapped[str] = mapped_column(Text, nullable=False)
+    cited_files: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
+    follow_up_hints: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
+    elapsed_ms: Mapped[float | None] = mapped_column(Float)
+    context_tokens: Mapped[int | None] = mapped_column(Integer)
+    context_files: Mapped[int | None] = mapped_column(Integer)
+    query_complexity: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 class PlanHistoryEntry(Base):
     __tablename__ = "plan_history"
 
-    id:                Mapped[int]               = mapped_column(Integer, primary_key=True, autoincrement=True)
-    plan_id:           Mapped[str]               = mapped_column(Text, unique=True, nullable=False)
-    query:             Mapped[str]               = mapped_column(Text, nullable=False)
-    response_type:     Mapped[str]               = mapped_column(Text, nullable=False)
-    repo_owner:        Mapped[str | None]        = mapped_column(Text)
-    repo_name:         Mapped[str | None]        = mapped_column(Text)
-    plan_json:         Mapped[str]               = mapped_column(Text, nullable=False)
-    elapsed_ms:        Mapped[float | None]      = mapped_column(Float)
-    context_tokens:    Mapped[int | None]        = mapped_column(Integer)
-    web_research_used: Mapped[bool]              = mapped_column(Boolean, default=False)
-    created_at:        Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    plan_id: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    query: Mapped[str] = mapped_column(Text, nullable=False)
+    response_type: Mapped[str] = mapped_column(Text, nullable=False)
+    repo_owner: Mapped[str | None] = mapped_column(Text)
+    repo_name: Mapped[str | None] = mapped_column(Text)
+    plan_json: Mapped[str] = mapped_column(Text, nullable=False)
+    elapsed_ms: Mapped[float | None] = mapped_column(Float)
+    context_tokens: Mapped[int | None] = mapped_column(Integer)
+    web_research_used: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

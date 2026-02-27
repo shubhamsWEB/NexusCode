@@ -8,7 +8,6 @@ streaming event normalization into the unified LLMProvider interface.
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import AsyncIterator
 
 from src.config import settings
@@ -146,13 +145,16 @@ class AnthropicProvider:
                     if retry_after:
                         wait = min(retry_after, 120)
                     elif exc.status_code == 429:
-                        wait = min(5 * (2 ** attempt), 120)
+                        wait = min(5 * (2**attempt), 120)
                     else:
-                        wait = 2 ** attempt
+                        wait = 2**attempt
                     label = "rate-limited (429)" if exc.status_code == 429 else "overloaded (529)"
                     logger.warning(
                         "anthropic: %s, retry %d/%d in %.0fs",
-                        label, attempt + 1, _MAX_RETRIES, wait,
+                        label,
+                        attempt + 1,
+                        _MAX_RETRIES,
+                        wait,
                     )
                     last_exc = exc
                     await asyncio.sleep(wait)
@@ -172,7 +174,13 @@ class AnthropicProvider:
     ) -> LLMResponse:
         client = self._get_client()
         params = self._build_call_params(
-            model, system, messages, tools, tool_choice, max_tokens, thinking_budget,
+            model,
+            system,
+            messages,
+            tools,
+            tool_choice,
+            max_tokens,
+            thinking_budget,
         )
 
         async with self._semaphore:
@@ -181,9 +189,7 @@ class AnthropicProvider:
                 # Use streaming internally to avoid 10-min timeout with thinking
                 message = await self._stream_to_message(client, params)
             else:
-                message = await self._retry_loop(
-                    lambda: client.messages.create(**params)
-                )
+                message = await self._retry_loop(lambda: client.messages.create(**params))
 
         return self._parse_response(message)
 
@@ -204,12 +210,15 @@ class AnthropicProvider:
                     if retry_after:
                         wait = min(retry_after, 120)
                     elif exc.status_code == 429:
-                        wait = min(5 * (2 ** attempt), 120)
+                        wait = min(5 * (2**attempt), 120)
                     else:
-                        wait = 2 ** attempt
+                        wait = 2**attempt
                     logger.warning(
                         "anthropic: stream %s, retry %d/%d in %.0fs",
-                        exc.status_code, attempt + 1, _MAX_RETRIES, wait,
+                        exc.status_code,
+                        attempt + 1,
+                        _MAX_RETRIES,
+                        wait,
                     )
                     last_exc = exc
                     await asyncio.sleep(wait)
@@ -231,7 +240,13 @@ class AnthropicProvider:
 
         client = self._get_client()
         params = self._build_call_params(
-            model, system, messages, tools, tool_choice, max_tokens, thinking_budget,
+            model,
+            system,
+            messages,
+            tools,
+            tool_choice,
+            max_tokens,
+            thinking_budget,
         )
 
         async with self._semaphore:
@@ -270,12 +285,15 @@ class AnthropicProvider:
                         if retry_after:
                             wait = min(retry_after, 120)
                         elif exc.status_code == 429:
-                            wait = min(5 * (2 ** attempt), 120)
+                            wait = min(5 * (2**attempt), 120)
                         else:
-                            wait = 2 ** attempt
+                            wait = 2**attempt
                         logger.warning(
                             "anthropic: stream %s, retry %d/%d in %.0fs",
-                            exc.status_code, attempt + 1, _MAX_RETRIES, wait,
+                            exc.status_code,
+                            attempt + 1,
+                            _MAX_RETRIES,
+                            wait,
                         )
                         last_exc = exc
                         await asyncio.sleep(wait)

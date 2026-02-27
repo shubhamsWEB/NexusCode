@@ -21,7 +21,6 @@ import streamlit as st
 
 from src.ui.helpers import api_get
 
-
 # ── Session state helpers ──────────────────────────────────────────────────────
 
 
@@ -119,7 +118,11 @@ def render():
 
     # ── Follow-up suggestion chips (shown below conversation) ─────────────────
     last_msg = st.session_state.ask_messages[-1] if st.session_state.ask_messages else None
-    hints = (last_msg or {}).get("meta", {}).get("follow_up_hints", []) if last_msg and last_msg["role"] == "assistant" else []
+    hints = (
+        (last_msg or {}).get("meta", {}).get("follow_up_hints", [])
+        if last_msg and last_msg["role"] == "assistant"
+        else []
+    )
 
     if hints:
         st.markdown("**Suggested follow-ups:**")
@@ -141,7 +144,13 @@ def render():
 # ── Query handler ──────────────────────────────────────────────────────────────
 
 
-def _handle_query(query: str, repo_label: str, repo_map: dict, model_label: str = "Default", model_map: dict | None = None):
+def _handle_query(
+    query: str,
+    repo_label: str,
+    repo_map: dict,
+    model_label: str = "Default",
+    model_map: dict | None = None,
+):
     """Send the query to /ask (streaming) and append messages to session state."""
     # Append user message immediately
     st.session_state.ask_messages.append({"role": "user", "content": query})
@@ -163,9 +172,7 @@ def _handle_query(query: str, repo_label: str, repo_map: dict, model_label: str 
 
     answer, meta = _stream_ask(api_url, payload, query)
 
-    st.session_state.ask_messages.append(
-        {"role": "assistant", "content": answer, "meta": meta}
-    )
+    st.session_state.ask_messages.append({"role": "assistant", "content": answer, "meta": meta})
 
 
 # ── Streaming request ──────────────────────────────────────────────────────────
@@ -241,10 +248,7 @@ def _stream_ask(api_url: str, payload: dict, query: str) -> tuple[str, dict]:
                         # Cited files
                         if cited:
                             st.divider()
-                            st.caption(
-                                "📁 **Citations:** "
-                                + "  ·  ".join(f"`{f}`" for f in cited)
-                            )
+                            st.caption("📁 **Citations:** " + "  ·  ".join(f"`{f}`" for f in cited))
 
                         # Retrieval debug (collapsed)
                         if meta.get("retrieval_log"):
@@ -339,9 +343,7 @@ def _render_assistant_extras(meta: dict):
     cited = meta.get("cited_files", [])
     if cited:
         st.divider()
-        st.caption(
-            "📁 **Citations:** " + "  ·  ".join(f"`{f}`" for f in cited)
-        )
+        st.caption("📁 **Citations:** " + "  ·  ".join(f"`{f}`" for f in cited))
 
     if meta.get("retrieval_log"):
         with st.expander("Retrieval log (debug)", expanded=False):

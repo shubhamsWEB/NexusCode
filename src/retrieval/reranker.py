@@ -11,7 +11,6 @@ for free — no API calls, no latency dependency on external services.
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING
 
 from src.config import settings
@@ -21,6 +20,7 @@ if TYPE_CHECKING:
     from src.retrieval.searcher import SearchResult
 
 from src.utils.logging import get_secure_logger
+
 logger = get_secure_logger(__name__)
 
 # Lazy-loaded — only downloaded on first use
