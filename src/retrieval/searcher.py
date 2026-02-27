@@ -19,7 +19,8 @@ from src.config import settings
 from src.storage.db import AsyncSessionLocal
 from src.utils.sanitize import sanitize_log
 
-logger = logging.getLogger(__name__)
+from src.utils.logging import get_secure_logger
+logger = get_secure_logger(__name__)
 
 # RRF constant — higher = less penalty for low-ranked results
 _RRF_K = 60

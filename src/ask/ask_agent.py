@@ -24,7 +24,8 @@ from src.llm.tool_converter import from_anthropic_schema
 from src.llm.types import LLMResponse, LLMStreamEvent
 from src.planning.retriever import PlanningContext
 
-logger = logging.getLogger(__name__)
+from src.utils.logging import get_secure_logger
+logger = get_secure_logger(__name__)
 
 # ── System prompt ──────────────────────────────────────────────────────────────
 

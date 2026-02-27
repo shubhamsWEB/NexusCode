@@ -17,8 +17,9 @@ import tiktoken
 
 from src.config import settings
 from src.pipeline.parser import ParsedFile, ParsedSymbol
+from src.utils.logging import get_secure_logger
 
-logger = logging.getLogger(__name__)
+logger = get_secure_logger(__name__)
 
 # Token counting — cl100k_base is fast and a good proxy for voyage-code-2
 _ENCODER = tiktoken.get_encoding("cl100k_base")

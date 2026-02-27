@@ -13,9 +13,9 @@ from collections.abc import AsyncIterator
 import httpx
 
 from src.config import settings
-from src.utils.sanitize import sanitize_log
+from src.utils.logging import get_secure_logger
 
-logger = logging.getLogger(__name__)
+logger = get_secure_logger(__name__)
 
 _GITHUB_API = "https://api.github.com"
 _DEFAULT_TIMEOUT = 30.0
@@ -73,7 +73,7 @@ async def fetch_file(
             resp = await client.get(url, params={"ref": ref})
 
         if resp.status_code == 404:
-            logger.debug("fetch_file: not found %s/%s@%s %s", sanitize_log(owner), sanitize_log(repo), sanitize_log(ref), sanitize_log(path))
+            logger.debug("fetch_file: not found %s/%s@%s %s", owner, repo, ref, path)
             return None
 
         if resp.status_code == 403 and "rate limit" in resp.text.lower():
@@ -82,7 +82,7 @@ async def fetch_file(
                 logger.warning(
                     "Rate limit hit fetching %s (attempt %d/%d). "
                     "Waiting %.0fs before retry...",
-                    sanitize_log(path), attempt + 1, _max_retries, delay,
+                    path, attempt + 1, _max_retries, delay,
                 )
                 await asyncio.sleep(delay)
                 continue
@@ -102,14 +102,14 @@ async def fetch_file(
     blob_sha = data.get("sha", "")
 
     if encoding != "base64":
-        logger.warning("Unexpected encoding '%s' for %s — skipping", sanitize_log(encoding), sanitize_log(path))
+        logger.warning("Unexpected encoding '%s' for %s — skipping", encoding, path)
         return None
 
     try:
         content_bytes = base64.b64decode(raw_content)
         content_str = content_bytes.decode("utf-8")
     except (UnicodeDecodeError, Exception):
-        logger.debug("fetch_file: binary file skipped %s", sanitize_log(path))
+        logger.debug("fetch_file: binary file skipped %s", path)
         return None
 
     return content_str, blob_sha
@@ -156,7 +156,7 @@ async def fetch_full_tree(
                 logger.warning(
                     "Rate limit hit fetching tree for %s/%s (attempt %d/%d). "
                     "Waiting %ds before retry...",
-                    sanitize_log(owner), sanitize_log(repo), attempt + 1, _max_retries, delay,
+                    owner, repo, attempt + 1, _max_retries, delay,
                 )
                 await asyncio.sleep(delay)
                 continue
@@ -172,8 +172,8 @@ async def fetch_full_tree(
     if data.get("truncated"):
         logger.warning(
             "Tree response truncated for %s/%s — repo may be too large for single tree call",
-            sanitize_log(owner),
-            sanitize_log(repo),
+            owner,
+            repo,
         )
 
     return [
@@ -230,9 +230,9 @@ async def fetch_indexable_files(
         "fetch_indexable_files: %d/%d files to index for %s/%s@%s",
         len(indexable),
         len(all_paths),
-        sanitize_log(owner),
-        sanitize_log(repo),
-        sanitize_log(ref),
+        owner,
+        repo,
+        ref,
     )
 
     for path in indexable:
@@ -284,14 +284,14 @@ async def create_webhook(
     if resp.status_code == 201:
         data = resp.json()
         hook_id = data.get("id")
-        logger.info("Webhook created: hook_id=%s for %s/%s", hook_id, sanitize_log(owner), sanitize_log(repo))
+        logger.info("Webhook created: hook_id=%s for %s/%s", hook_id, owner, repo)
         return hook_id
 
     if resp.status_code == 422:
         # Likely "Hook already exists" — try to find and return existing
         existing = await _find_existing_webhook(owner, repo, webhook_url)
         if existing:
-            logger.info("Webhook already exists: hook_id=%s for %s/%s", existing, sanitize_log(owner), sanitize_log(repo))
+            logger.info("Webhook already exists: hook_id=%s for %s/%s", existing, owner, repo)
             return existing
         raise WebhookCreationError(
             f"GitHub returned 422 for {owner}/{repo} but could not find existing webhook. "
@@ -327,19 +327,19 @@ async def delete_webhook(owner: str, repo: str, hook_id: int) -> bool:
         resp = await client.delete(url)
 
     if resp.status_code == 204:
-        logger.info("Webhook deleted: hook_id=%s for %s/%s", hook_id, sanitize_log(owner), sanitize_log(repo))
+        logger.info("Webhook deleted: hook_id=%s for %s/%s", hook_id, owner, repo)
         return True
     if resp.status_code == 404:
-        logger.warning("Webhook not found: hook_id=%s for %s/%s", hook_id, sanitize_log(owner), sanitize_log(repo))
+        logger.warning("Webhook not found: hook_id=%s for %s/%s", hook_id, owner, repo)
         return False
 
     logger.error(
         "Failed to delete webhook hook_id=%s for %s/%s: %s %s",
         hook_id,
-        sanitize_log(owner),
-        sanitize_log(repo),
+        owner,
+        repo,
         resp.status_code,
-        sanitize_log(resp.text[:200]),
+        resp.text[:200],
     )
     return False
 
@@ -367,8 +367,8 @@ async def get_webhook_status(owner: str, repo: str, hook_id: int) -> dict | None
     logger.warning(
         "Unexpected response checking webhook hook_id=%s for %s/%s: %s",
         hook_id,
-        sanitize_log(owner),
-        sanitize_log(repo),
+        owner,
+        repo,
         resp.status_code,
     )
     return None

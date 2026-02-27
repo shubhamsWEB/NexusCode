@@ -23,9 +23,9 @@ from src.config import settings
 from src.github.events import PushEvent
 from src.github.fetcher import filter_indexable_paths
 from src.storage.db import log_webhook_event
-from src.utils.sanitize import sanitize_log
+from src.utils.logging import get_secure_logger
 
-logger = logging.getLogger(__name__)
+logger = get_secure_logger(__name__)
 
 router = APIRouter(tags=["webhook"])
 
@@ -92,7 +92,7 @@ async def github_webhook(
 
     # 1. Verify signature
     if not _verify_signature(body, x_hub_signature_256):
-        logger.warning("Webhook signature mismatch — delivery_id=%s", sanitize_log(x_github_delivery))
+        logger.warning("Webhook signature mismatch — delivery_id=%s", x_github_delivery)
         raise HTTPException(status_code=401, detail="Invalid webhook signature")
 
     payload: dict[str, Any] = await request.json()
@@ -103,7 +103,7 @@ async def github_webhook(
         return JSONResponse({"message": "pong"})
 
     if x_github_event != "push":
-        logger.debug("Ignoring event type: %s", sanitize_log(x_github_event))
+        logger.debug("Ignoring event type: %s", x_github_event)
         return JSONResponse({"message": f"event '{x_github_event}' ignored"})
 
     # 3. Parse push payload
@@ -113,7 +113,7 @@ async def github_webhook(
     if event.branch != settings.github_default_branch:
         logger.debug(
             "Ignoring push to branch '%s' (tracking '%s')",
-            sanitize_log(event.branch),
+            event.branch,
             settings.github_default_branch,
         )
         return JSONResponse({"message": f"branch '{event.branch}' not tracked"})
@@ -125,10 +125,10 @@ async def github_webhook(
     total_files = len(files_to_upsert) + len(files_to_delete)
     logger.info(
         "Push event %s: %s/%s@%s — upsert=%d delete=%d",
-        sanitize_log(x_github_delivery),
-        sanitize_log(event.repo_owner),
-        sanitize_log(event.repo_name),
-        sanitize_log(event.after[:7]),
+        x_github_delivery,
+        event.repo_owner,
+        event.repo_name,
+        event.after[:7],
         len(files_to_upsert),
         len(files_to_delete),
     )
@@ -144,16 +144,16 @@ async def github_webhook(
             files_changed=total_files,
         )
     except Exception as exc:
-        logger.warning("Failed to log webhook event: %s", sanitize_log(exc))
+        logger.warning("Failed to log webhook event: %s", exc)
 
     # 7. Enqueue indexing job (non-blocking)
     if files_to_upsert or files_to_delete:
         if _is_duplicate_job(event.repo_owner, event.repo_name, event.after):
             logger.info(
                 "Skipping duplicate indexing job for %s/%s@%s",
-                sanitize_log(event.repo_owner),
-                sanitize_log(event.repo_name),
-                sanitize_log(event.after[:7]),
+                event.repo_owner,
+                event.repo_name,
+                event.after[:7],
             )
         else:
             job_payload = {
@@ -176,7 +176,7 @@ async def github_webhook(
                 )
                 logger.info("Enqueued job %s for %d files", job.id, total_files)
             except Exception as exc:
-                logger.error("Failed to enqueue indexing job: %s", sanitize_log(exc))
+                logger.error("Failed to enqueue indexing job: %s", exc)
                 # Don't fail the webhook response — GitHub would retry
     else:
         logger.info("No indexable files changed — nothing to enqueue")

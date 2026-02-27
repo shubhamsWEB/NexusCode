@@ -12,9 +12,9 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from src.utils.sanitize import sanitize_log
+from src.utils.logging import get_secure_logger
 
-logger = logging.getLogger(__name__)
+logger = get_secure_logger(__name__)
 
 # ── Extension → language name ─────────────────────────────────────────────────
 
@@ -605,6 +605,6 @@ def parse_file(file_path: str, source: str) -> ParsedFile | None:
         return ParsedFile(file_path=file_path, language=language, source=source)
 
     except Exception as exc:
-        logger.warning("parse_file: error parsing %s: %s", sanitize_log(file_path), sanitize_log(exc), exc_info=exc)
+        logger.warning("parse_file: error parsing %s: %s", file_path, exc, exc_info=exc)
         # Return a minimal ParsedFile so the file still gets chunked by content
         return ParsedFile(file_path=file_path, language=language or "unknown", source=source)

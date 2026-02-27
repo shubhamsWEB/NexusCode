@@ -26,7 +26,8 @@ import logging
 from src.config import settings
 from src.utils.sanitize import sanitize_log
 
-logger = logging.getLogger(__name__)
+from src.utils.logging import get_secure_logger
+logger = get_secure_logger(__name__)
 
 _anthropic_client = None
 

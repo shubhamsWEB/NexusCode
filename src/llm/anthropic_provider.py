@@ -14,8 +14,9 @@ from collections.abc import AsyncIterator
 from src.config import settings
 from src.llm.tool_converter import to_anthropic_format
 from src.llm.types import LLMResponse, LLMStreamEvent, LLMToolCall, LLMToolSchema
+from src.utils.logging import get_secure_logger
 
-logger = logging.getLogger(__name__)
+logger = get_secure_logger(__name__)
 
 _MAX_RETRIES = 5
 _RETRYABLE_STATUS_CODES = {429, 529}

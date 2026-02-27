@@ -20,7 +20,8 @@ from src.utils.sanitize import sanitize_log
 if TYPE_CHECKING:
     from src.retrieval.searcher import SearchResult
 
-logger = logging.getLogger(__name__)
+from src.utils.logging import get_secure_logger
+logger = get_secure_logger(__name__)
 
 # Lazy-loaded — only downloaded on first use
 _model = None

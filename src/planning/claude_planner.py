@@ -30,7 +30,8 @@ from src.planning.schemas import (
     PlanMetadata,
 )
 
-logger = logging.getLogger(__name__)
+from src.utils.logging import get_secure_logger
+logger = get_secure_logger(__name__)
 
 # Convert Anthropic-format tool schemas to provider-agnostic LLMToolSchema
 _TOOLS = [

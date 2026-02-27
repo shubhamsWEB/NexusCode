@@ -12,7 +12,9 @@ import logging
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
-logger = logging.getLogger(__name__)
+from src.utils.logging import get_secure_logger
+
+logger = get_secure_logger(__name__)
 
 router = APIRouter(prefix="/history", tags=["history"])
 

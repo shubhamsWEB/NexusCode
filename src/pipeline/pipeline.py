@@ -137,9 +137,9 @@ async def _handle_deletions(
             await delete_symbols_for_file(path, owner, repo)
             await delete_merkle_node(path, owner, repo)
             stats["files_deleted"] += 1
-            log.debug("pipeline.deleted", path=sanitize_log(path))
+            log.debug("pipeline.deleted", path=path)
         except Exception as exc:
-            log.error("pipeline.delete_error", path=sanitize_log(path), error=sanitize_log(exc))
+            log.error("pipeline.delete_error", path=path, error=str(exc))
             stats["errors"] += 1
 
 
@@ -178,14 +178,14 @@ async def _handle_upserts(
             try:
                 result = await fetch_file(owner, repo, path, ref=commit_sha)
                 if result is None:
-                    log.debug("pipeline.fetch_none", path=sanitize_log(path))
+                    log.debug("pipeline.fetch_none", path=path)
                     return None
 
                 content, blob_sha = result
 
                 stored_sha = await get_merkle_hash(path, owner, repo)
                 if stored_sha == blob_sha:
-                    log.debug("pipeline.merkle_hit", path=sanitize_log(path))
+                    log.debug("pipeline.merkle_hit", path=path)
                     return {"type": "merkle_skip"}
 
                 parsed = parse_file(path, content)
@@ -206,7 +206,7 @@ async def _handle_upserts(
                     "enriched": enriched,
                 }
             except Exception as exc:
-                log.error("pipeline.parse_error", path=sanitize_log(path), error=sanitize_log(exc))
+                log.error("pipeline.parse_error", path=path, error=str(exc))
                 return {"type": "error"}
 
     total_files = len(paths)
@@ -259,7 +259,7 @@ async def _handle_upserts(
         try:
             id_to_vector = await embed_chunks(batch_enriched, existing_ids)
         except Exception as exc:
-            log.error("pipeline.embed_error", batch=batch_num, error=sanitize_log(exc))
+            log.error("pipeline.embed_error", batch=batch_num, error=str(exc))
             stats["errors"] += 1
             continue
 
@@ -336,10 +336,10 @@ async def _handle_upserts(
 
                 # Update merkle hash
                 await upsert_merkle_node(path, owner, repo, blob_sha)
-                log.debug("pipeline.file_done", path=sanitize_log(path), chunks=len(chunk_rows))
+                log.debug("pipeline.file_done", path=path, chunks=len(chunk_rows))
 
             except Exception as exc:
-                log.error("pipeline.store_error", path=sanitize_log(path), error=sanitize_log(exc))
+                log.error("pipeline.store_error", path=path, error=str(exc))
                 stats["errors"] += 1
 
         log.info(

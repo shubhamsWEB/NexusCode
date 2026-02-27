@@ -31,8 +31,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from src.pipeline.chunker import RawChunk
+from src.utils.logging import get_secure_logger
 
-logger = logging.getLogger(__name__)
+logger = get_secure_logger(__name__)
 
 # How many path segments to include in the enriched header (last N segments)
 _PATH_SEGMENTS = 3

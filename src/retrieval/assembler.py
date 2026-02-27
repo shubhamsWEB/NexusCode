@@ -25,7 +25,8 @@ from src.pipeline.chunker import count_tokens
 if TYPE_CHECKING:
     from src.retrieval.searcher import SearchResult
 
-logger = logging.getLogger(__name__)
+from src.utils.logging import get_secure_logger
+logger = get_secure_logger(__name__)
 
 _PATH_SEGMENTS = 3
 

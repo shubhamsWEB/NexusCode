@@ -25,7 +25,8 @@ from src.storage.models import (
     WebhookEvent,
 )
 
-logger = logging.getLogger(__name__)
+from src.utils.logging import get_secure_logger
+logger = get_secure_logger(__name__)
 
 # ── Engine ───────────────────────────────────────────────────────────────────
 

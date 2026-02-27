@@ -16,8 +16,9 @@ import logging
 import voyageai
 
 from src.config import settings
+from src.utils.logging import get_secure_logger
 
-logger = logging.getLogger(__name__)
+logger = get_secure_logger(__name__)
 
 # voyage-code-2 limits (full account)
 _MAX_BATCH_SIZE = 128

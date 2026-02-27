@@ -11,11 +11,12 @@ import logging
 from typing import TYPE_CHECKING
 
 from src.config import settings
+from src.utils.logging import get_secure_logger
 
 if TYPE_CHECKING:
     from src.llm.base import LLMProvider
 
-logger = logging.getLogger(__name__)
+logger = get_secure_logger(__name__)
 
 # ── Model → provider name mapping ────────────────────────────────────────────
 
