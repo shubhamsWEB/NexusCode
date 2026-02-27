@@ -77,8 +77,8 @@ async def _sync_plan(req: PlanRequest) -> JSONResponse:
     try:
         from src.planning.claude_planner import generate_plan
         from src.planning.retriever import retrieve_planning_context
-    except ImportError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=503)
+    except ImportError:
+        return JSONResponse({"error": "Service unavailable. Required modules not loaded."}, status_code=503)
 
     try:
         ctx = await retrieve_planning_context(
@@ -90,7 +90,7 @@ async def _sync_plan(req: PlanRequest) -> JSONResponse:
         )
     except Exception as exc:
         logger.exception("planning retriever failed")
-        return JSONResponse({"error": f"Retrieval failed: {exc}"}, status_code=500)
+        return JSONResponse({"error": "Retrieval failed. Please try again."}, status_code=500)
 
     try:
         plan = await generate_plan(
@@ -105,15 +105,15 @@ async def _sync_plan(req: PlanRequest) -> JSONResponse:
         status = getattr(exc, "status_code", None)
         if status == 429:
             return JSONResponse(
-                {"error": str(exc)},
+                {"error": "Rate limit reached. Please try again in 60 seconds."},
                 status_code=429,
                 headers={"Retry-After": "60"},
             )
         # anthropic not installed / no API key / overload
-        return JSONResponse({"error": str(exc)}, status_code=503)
+        return JSONResponse({"error": "Service unavailable. Please try again."}, status_code=503)
     except Exception as exc:
         logger.exception("plan generation failed")
-        return JSONResponse({"error": f"Plan generation failed: {exc}"}, status_code=500)
+        return JSONResponse({"error": "Plan generation failed. Please try again."}, status_code=500)
 
     task = asyncio.create_task(_save_plan(plan, req.repo_owner, req.repo_name))
     _background_tasks.add(task)
@@ -145,8 +145,8 @@ async def _sse_generator(req: PlanRequest):
     try:
         from src.planning.claude_planner import stream_generate_plan
         from src.planning.retriever import retrieve_planning_context
-    except ImportError as exc:
-        yield _event({"type": "error", "message": str(exc)})
+    except ImportError:
+        yield _event({"type": "error", "message": "Service unavailable. Required modules not loaded."})
         return
 
     # ── Phase: retrieval ──────────────────────────────────────────────────────
@@ -169,7 +169,7 @@ async def _sse_generator(req: PlanRequest):
         )
     except Exception as exc:
         logger.exception("planning retriever failed (SSE)")
-        yield _event({"type": "error", "message": f"Retrieval failed: {exc}"})
+        yield _event({"type": "error", "message": "Retrieval failed. Please try again."})
         return
 
     # ── Phase: generation (real token streaming via input_json_delta) ─────────
@@ -200,11 +200,11 @@ async def _sse_generator(req: PlanRequest):
         if status == 429:
             yield _event({
                 "type": "error",
-                "message": str(exc),
+                "message": "Rate limit reached. Please try again in 60 seconds.",
                 "retry_after": 60,
             })
         else:
-            yield _event({"type": "error", "message": str(exc)})
+            yield _event({"type": "error", "message": "Service unavailable. Please try again."})
     except Exception as exc:
         logger.exception("plan streaming failed (SSE)")
-        yield _event({"type": "error", "message": f"Plan generation failed: {exc}"})
+        yield _event({"type": "error", "message": "Plan generation failed. Please try again."})

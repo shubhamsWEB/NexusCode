@@ -56,10 +56,10 @@ def verify_token(token: str) -> dict[str, Any]:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired"
         ) from None
-    except jwt.InvalidTokenError as exc:
+    except jwt.InvalidTokenError:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Invalid token: {exc}"
-        ) from exc
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token."
+        ) from None
 
 
 # ── FastAPI dependency ────────────────────────────────────────────────────────

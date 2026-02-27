@@ -81,8 +81,8 @@ async def _sync_ask(req: AskRequest) -> JSONResponse:
     try:
         from src.ask.ask_agent import generate_answer
         from src.planning.retriever import retrieve_planning_context
-    except ImportError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=503)
+    except ImportError:
+        return JSONResponse({"error": "Service unavailable. Required modules not loaded."}, status_code=503)
 
     try:
         ctx = await retrieve_planning_context(
@@ -94,7 +94,7 @@ async def _sync_ask(req: AskRequest) -> JSONResponse:
         )
     except Exception as exc:
         logger.exception("ask retriever failed")
-        return JSONResponse({"error": f"Retrieval failed: {exc}"}, status_code=500)
+        return JSONResponse({"error": "Retrieval failed. Please try again."}, status_code=500)
 
     try:
         result = await generate_answer(
@@ -108,14 +108,14 @@ async def _sync_ask(req: AskRequest) -> JSONResponse:
         status = getattr(exc, "status_code", None)
         if status == 429:
             return JSONResponse(
-                {"error": str(exc)},
+                {"error": "Rate limit reached. Please try again in 60 seconds."},
                 status_code=429,
                 headers={"Retry-After": "60"},
             )
-        return JSONResponse({"error": str(exc)}, status_code=503)
+        return JSONResponse({"error": "Service unavailable. Please try again."}, status_code=503)
     except Exception as exc:
         logger.exception("ask generation failed")
-        return JSONResponse({"error": f"Answer generation failed: {exc}"}, status_code=500)
+        return JSONResponse({"error": "Answer generation failed. Please try again."}, status_code=500)
 
     task = asyncio.create_task(_save_ask_turn(
         effective_session_id, req.query, result, ctx, req.repo_owner, req.repo_name
@@ -166,8 +166,8 @@ async def _sse_generator(req: AskRequest):
     try:
         from src.ask.ask_agent import stream_generate_answer
         from src.planning.retriever import retrieve_planning_context
-    except ImportError as exc:
-        yield _event({"type": "error", "message": str(exc)})
+    except ImportError:
+        yield _event({"type": "error", "message": "Service unavailable. Required modules not loaded."})
         return
 
     # ── Phase: retrieval ───────────────────────────────────────────────────────
@@ -189,7 +189,7 @@ async def _sse_generator(req: AskRequest):
         )
     except Exception as exc:
         logger.exception("ask retriever failed (SSE)")
-        yield _event({"type": "error", "message": f"Retrieval failed: {exc}"})
+        yield _event({"type": "error", "message": "Retrieval failed. Please try again."})
         return
 
     # ── Phase: answer generation ───────────────────────────────────────────────
@@ -232,12 +232,12 @@ async def _sse_generator(req: AskRequest):
             yield _event(
                 {
                     "type": "error",
-                    "message": str(exc),
+                    "message": "Rate limit reached. Please try again in 60 seconds.",
                     "retry_after": 60,
                 }
             )
         else:
-            yield _event({"type": "error", "message": str(exc)})
+            yield _event({"type": "error", "message": "Service unavailable. Please try again."})
     except Exception as exc:
         logger.exception("ask streaming failed (SSE)")
-        yield _event({"type": "error", "message": f"Answer generation failed: {exc}"})
+        yield _event({"type": "error", "message": "Answer generation failed. Please try again."})

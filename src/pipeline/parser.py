@@ -605,6 +605,6 @@ def parse_file(file_path: str, source: str) -> ParsedFile | None:
         return ParsedFile(file_path=file_path, language=language, source=source)
 
     except Exception as exc:
-        logger.warning("parse_file: error parsing %s: %s", sanitize_log(file_path), sanitize_log(exc), exc_info=True)
+        logger.warning("parse_file: error parsing %s: %s", sanitize_log(file_path), sanitize_log(exc), exc_info=exc)
         # Return a minimal ParsedFile so the file still gets chunked by content
         return ParsedFile(file_path=file_path, language=language or "unknown", source=source)

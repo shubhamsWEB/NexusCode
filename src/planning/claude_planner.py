@@ -452,9 +452,6 @@ def _parse_response(
 
 
 # ── Re-export for backward compatibility ──────────────────────────────────────
-# ask_agent.py imports these; keep them accessible.
-
-from src.llm.anthropic_provider import RateLimitOrOverloadError  # noqa: E402, F401
 
 _MAX_RETRIES = 5
 _RETRYABLE_STATUS_CODES = {429, 529}

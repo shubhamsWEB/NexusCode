@@ -33,7 +33,7 @@ async def list_ask_sessions(
         return JSONResponse(sessions)
     except Exception as exc:
         logger.exception("list_chat_sessions failed")
-        return JSONResponse({"error": str(exc)}, status_code=500)
+        return JSONResponse({"error": "An internal error occurred."}, status_code=500)
 
 
 @router.get("/ask/{session_id}")
@@ -47,7 +47,7 @@ async def get_ask_session(session_id: str) -> JSONResponse:
         return JSONResponse(result)
     except Exception as exc:
         logger.exception("get_chat_session_with_turns failed")
-        return JSONResponse({"error": str(exc)}, status_code=500)
+        return JSONResponse({"error": "An internal error occurred."}, status_code=500)
 
 
 @router.get("/plan")
@@ -71,7 +71,7 @@ async def list_plan_entries(
         return JSONResponse(entries)
     except Exception as exc:
         logger.exception("list_plan_history failed")
-        return JSONResponse({"error": str(exc)}, status_code=500)
+        return JSONResponse({"error": "An internal error occurred."}, status_code=500)
 
 
 @router.get("/plan/{plan_id}")
@@ -85,4 +85,4 @@ async def get_plan_entry(plan_id: str) -> JSONResponse:
         return JSONResponse(result)
     except Exception as exc:
         logger.exception("get_plan_history_entry failed")
-        return JSONResponse({"error": str(exc)}, status_code=500)
+        return JSONResponse({"error": "An internal error occurred."}, status_code=500)

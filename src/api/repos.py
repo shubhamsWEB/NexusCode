@@ -183,7 +183,7 @@ async def _try_auto_register_webhook(owner: str, name: str) -> dict:
         return {
             "success": False,
             "hook_id": None,
-            "message": str(exc),
+            "message": "Webhook registration failed. Check logs or set up manually.",
             "manual_instructions": _manual_webhook_instructions(owner, name)
             if exc.manual_instructions
             else None,
@@ -193,7 +193,7 @@ async def _try_auto_register_webhook(owner: str, name: str) -> dict:
         return {
             "success": False,
             "hook_id": None,
-            "message": f"Unexpected error: {exc}",
+            "message": "An unexpected error occurred. Check server logs.",
             "manual_instructions": _manual_webhook_instructions(owner, name),
         }
 
