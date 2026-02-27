@@ -32,6 +32,7 @@ import re
 from dataclasses import dataclass
 
 from src.config import settings
+from src.utils.sanitize import sanitize_log
 
 logger = logging.getLogger(__name__)
 
@@ -339,7 +340,7 @@ async def retrieve_planning_context(
             for sq, vec in zip(distinct_sub_queries, batch_vectors):
                 sub_query_vectors[sq] = vec
         except Exception as exc:
-            logger.warning("sub-query batch embedding failed: %s", exc)
+            logger.warning("sub-query batch embedding failed: %s", sanitize_log(exc))
 
     # ── Phase 2: hybrid search (adaptive candidates) ────────────────────
     num_candidates = candidate_config["candidates"]
@@ -369,7 +370,7 @@ async def retrieve_planning_context(
         seen_ids = {r.chunk_id for r in candidates}
         for result in sub_search_results:
             if isinstance(result, Exception):
-                logger.warning("sub-query search failed: %s", result)
+                logger.warning("sub-query search failed: %s", sanitize_log(result))
                 continue
             for r in result:
                 if r.chunk_id not in seen_ids:
@@ -447,7 +448,7 @@ async def retrieve_planning_context(
         expansion_task_results = await asyncio.gather(*expansion_tasks, return_exceptions=True)
         for i, result in enumerate(expansion_task_results):
             if isinstance(result, Exception):
-                logger.warning("expansion search failed for symbol %r: %s", expand_symbols[i], result)
+                logger.warning("expansion search failed for symbol %r: %s", sanitize_log(expand_symbols[i]), sanitize_log(result))
                 continue
             for r in result:
                 if r.chunk_id not in seen_ids:
@@ -490,7 +491,7 @@ async def retrieve_planning_context(
                     len(web_research_notes),
                 )
         except Exception as exc:
-            logger.warning("planning retriever: web research task failed: %s", exc)
+            logger.warning("planning retriever: web research task failed: %s", sanitize_log(exc))
 
     # ── Phase 7: grounding validation ───────────────────────────────────
     grounding_warnings = _validate_grounding(
@@ -584,7 +585,7 @@ async def _get_codebase_size(
             result = (await session.execute(sql, params)).scalar()
             return result or 0
     except Exception as exc:
-        logger.warning("codebase size query failed: %s", exc)
+        logger.warning("codebase size query failed: %s", sanitize_log(exc))
         return 0
 
 
@@ -680,7 +681,7 @@ async def _boost_mentioned_paths(
             return candidates[:3] + boosted + candidates[3:]
 
     except Exception as exc:
-        logger.warning("mentioned-path boost failed: %s", exc)
+        logger.warning("mentioned-path boost failed: %s", sanitize_log(exc))
 
     return candidates
 
@@ -797,7 +798,7 @@ async def _boost_mentioned_symbols(
             return candidates[:3] + boosted + candidates[3:]
 
     except Exception as exc:
-        logger.warning("mentioned-symbol boost failed: %s", exc)
+        logger.warning("mentioned-symbol boost failed: %s", sanitize_log(exc))
 
     return candidates
 
@@ -856,7 +857,7 @@ async def _follow_import_chains(
         async with AsyncSessionLocal() as session:
             import_rows = (await session.execute(import_sql, params)).mappings().all()
     except Exception as exc:
-        logger.warning("import chain: failed to fetch imports: %s", exc)
+        logger.warning("import chain: failed to fetch imports: %s", sanitize_log(exc))
         return ""
 
     if not import_rows:
@@ -910,7 +911,7 @@ async def _follow_import_chains(
         async with AsyncSessionLocal() as session:
             sym_rows = (await session.execute(sym_sql, dep_params)).mappings().all()
     except Exception as exc:
-        logger.warning("import chain: symbol query failed: %s", exc)
+        logger.warning("import chain: symbol query failed: %s", sanitize_log(exc))
         return ""
 
     if not sym_rows:
@@ -1125,7 +1126,7 @@ async def _fetch_component_context(
         async with AsyncSessionLocal() as session:
             rows = (await session.execute(sql, params)).mappings().all()
     except Exception as exc:
-        logger.warning("component context: DB query failed: %s", exc)
+        logger.warning("component context: DB query failed: %s", sanitize_log(exc))
         return ""
 
     if not rows:
@@ -1263,7 +1264,7 @@ async def _extract_stack_fingerprint(
             import_rows = (await session.execute(import_sql, params)).mappings().all()
             lang_rows = (await session.execute(lang_sql, params)).mappings().all()
     except Exception as exc:
-        logger.warning("stack fingerprint: DB query failed: %s", exc)
+        logger.warning("stack fingerprint: DB query failed: %s", sanitize_log(exc))
         return ""
 
     if lang_rows:
@@ -1358,7 +1359,7 @@ async def _get_file_structure_maps(
                     lines.append(sig)
                 sections.append("\n".join(lines))
         except Exception as exc:
-            logger.warning("file map failed for %r: %s", fpath, exc)
+            logger.warning("file map failed for %r: %s", sanitize_log(fpath), sanitize_log(exc))
 
     return "\n\n".join(sections)
 
@@ -1416,7 +1417,7 @@ async def _get_caller_contexts(
                 tokens_used += block_tokens
 
         except Exception as exc:
-            logger.warning("caller context failed for symbol %r: %s", sym, exc)
+            logger.warning("caller context failed for symbol %r: %s", sanitize_log(sym), sanitize_log(exc))
 
     return "\n".join(all_sections)
 

@@ -24,6 +24,7 @@ import importlib.util
 import logging
 
 from src.config import settings
+from src.utils.sanitize import sanitize_log
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +100,7 @@ async def research_implementation(query: str, stack_context: str = "", model: st
         except ValueError:
             provider_name = "unknown"
         if provider_name != "anthropic":
-            logger.debug("web_researcher: skipping (model=%s is not Anthropic, web search unavailable)", model)
+            logger.debug("web_researcher: skipping (model=%s is not Anthropic, web search unavailable)", sanitize_log(model))
             return ""
 
     if not settings.anthropic_api_key:
@@ -168,7 +169,7 @@ async def research_implementation(query: str, stack_context: str = "", model: st
         return notes
     except Exception as exc:
         # Graceful degradation — web search is enrichment, not required
-        logger.warning("web_researcher: search failed (planning continues without it): %s", exc)
+        logger.warning("web_researcher: search failed (planning continues without it): %s", sanitize_log(exc))
         return ""
 
 

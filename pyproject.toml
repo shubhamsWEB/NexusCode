@@ -64,7 +64,7 @@ known-first-party = ["src"]
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101"]           # assert is fine in tests
 "scripts/*" = ["T201", "E402"] # print is fine; sys.path manipulation requires late imports
-"src/ui/*" = ["RUF001", "RUF002"]  # UI emoji/special chars are intentional
+"src/ui/*" = ["RUF001", "RUF002", "E402"]  # UI emoji/special chars are intentional; sys.path manipulation
 
 [tool.ruff.format]
 quote-style = "double"

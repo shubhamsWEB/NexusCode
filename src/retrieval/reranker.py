@@ -15,6 +15,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from src.config import settings
+from src.utils.sanitize import sanitize_log
 
 if TYPE_CHECKING:
     from src.retrieval.searcher import SearchResult
@@ -73,7 +74,7 @@ def rerank(
     try:
         scores = model.predict(pairs, show_progress_bar=False)
     except Exception as exc:
-        logger.warning("Reranker failed, returning original order: %s", exc)
+        logger.warning("Reranker failed, returning original order: %s", sanitize_log(exc))
         return results[:top_n] if top_n else results
 
     for result, score in zip(results, scores):

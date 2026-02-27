@@ -33,6 +33,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ask", tags=["ask"])
 
+_background_tasks: set[asyncio.Task] = set()
+
 
 # ── Persistence helper ─────────────────────────────────────────────────────────
 
@@ -115,9 +117,11 @@ async def _sync_ask(req: AskRequest) -> JSONResponse:
         logger.exception("ask generation failed")
         return JSONResponse({"error": f"Answer generation failed: {exc}"}, status_code=500)
 
-    _background_task = asyncio.create_task(_save_ask_turn(
+    task = asyncio.create_task(_save_ask_turn(
         effective_session_id, req.query, result, ctx, req.repo_owner, req.repo_name
-    ))  # noqa: F841
+    ))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
     return JSONResponse(
         {

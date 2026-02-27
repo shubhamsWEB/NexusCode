@@ -17,6 +17,7 @@ from sqlalchemy import text
 
 from src.config import settings
 from src.storage.db import AsyncSessionLocal
+from src.utils.sanitize import sanitize_log
 
 logger = logging.getLogger(__name__)
 
@@ -295,6 +296,6 @@ async def embed_queries_batch(queries: list[str]) -> list[list[float]]:
         logger.warning(
             "embed_queries_batch: batch of %d failed (%s), falling back to sequential",
             len(queries),
-            exc,
+            sanitize_log(exc),
         )
         return [await embed_query(q) for q in queries]

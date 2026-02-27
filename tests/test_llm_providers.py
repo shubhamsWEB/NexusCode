@@ -12,8 +12,6 @@ Tests cover:
 All tests are unit tests — no network calls, no API keys required.
 """
 
-from __future__ import annotations
-
 import pytest
 
 

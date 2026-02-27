@@ -24,6 +24,7 @@ from mcp.server.fastmcp import FastMCP
 from sqlalchemy import text
 
 from src.storage.db import AsyncSessionLocal
+from src.utils.sanitize import sanitize_log
 
 logger = logging.getLogger(__name__)
 
@@ -280,7 +281,7 @@ async def find_callers(
                     language=None,
                 )
             except Exception as exc:
-                logger.warning("find_callers: keyword search failed for %r: %s", target_sym, exc)
+                logger.warning("find_callers: keyword search failed for %r: %s", sanitize_log(target_sym), sanitize_log(exc))
                 continue
 
             call_entries = _extract_call_sites(results, target_sym)

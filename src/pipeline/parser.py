@@ -12,6 +12,8 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from src.utils.sanitize import sanitize_log
+
 logger = logging.getLogger(__name__)
 
 # ── Extension → language name ─────────────────────────────────────────────────
@@ -585,7 +587,7 @@ def parse_file(file_path: str, source: str) -> ParsedFile | None:
     """
     language = detect_language(file_path)
     if not language:
-        logger.debug("parse_file: unsupported extension for %s", file_path)
+        logger.debug("parse_file: unsupported extension for %s", sanitize_log(file_path))
         return None
 
     try:
@@ -603,6 +605,6 @@ def parse_file(file_path: str, source: str) -> ParsedFile | None:
         return ParsedFile(file_path=file_path, language=language, source=source)
 
     except Exception as exc:
-        logger.warning("parse_file: error parsing %s: %s", file_path, exc, exc_info=True)
+        logger.warning("parse_file: error parsing %s: %s", sanitize_log(file_path), sanitize_log(exc), exc_info=True)
         # Return a minimal ParsedFile so the file still gets chunked by content
         return ParsedFile(file_path=file_path, language=language or "unknown", source=source)
