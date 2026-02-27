@@ -8,12 +8,10 @@ streaming event normalization into the unified LLMProvider interface.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from collections.abc import AsyncIterator
 
 from src.config import settings
-from src.llm.base import LLMProvider
 from src.llm.tool_converter import to_anthropic_format
 from src.llm.types import LLMResponse, LLMStreamEvent, LLMToolCall, LLMToolSchema
 

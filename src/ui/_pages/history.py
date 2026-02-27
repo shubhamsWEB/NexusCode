@@ -9,7 +9,6 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")))
 
-import httpx
 import streamlit as st
 
 from src.ui.helpers import api_get
@@ -229,7 +228,7 @@ def _render_plan_history():
 
             # Re-use planning page renderers
             try:
-                from src.ui._pages.planning import _render_answer, _render_analysis, _render_plan
+                from src.ui._pages.planning import _render_analysis, _render_answer, _render_plan
                 response_type = plan_data.get("response_type", rtype)
                 elapsed_sec = round((elapsed_full or 0) / 1000, 1)
                 if response_type == "answer":

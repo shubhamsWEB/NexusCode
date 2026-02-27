@@ -106,8 +106,8 @@ class TestToolConverter:
         assert result["input_schema"] == {"type": "object", "properties": {}}
 
     def test_to_openai_format(self):
-        from src.llm.types import LLMToolSchema
         from src.llm.tool_converter import to_openai_format
+        from src.llm.types import LLMToolSchema
 
         tool = LLMToolSchema(
             name="my_func",

@@ -557,9 +557,7 @@ async def stream_generate_plan(
         if isinstance(event, LLMStreamEvent):
             if event.type == "thinking":
                 yield {"type": "thinking", "text": event.text}
-            elif event.type == "text":
-                yield {"type": "token", "text": event.text}
-            elif event.type == "input_json":
+            elif event.type in ("text", "input_json"):
                 yield {"type": "token", "text": event.text}
         elif isinstance(event, LLMResponse):
             # Final response

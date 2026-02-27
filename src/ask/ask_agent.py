@@ -124,7 +124,7 @@ _TOOLS = [from_anthropic_schema(_ASK_ANSWER_TOOL_DICT)]
 class AskResult:
     """Parsed result from the ask agent."""
 
-    __slots__ = ("answer", "cited_files", "follow_up_hints", "elapsed_ms")
+    __slots__ = ("answer", "cited_files", "elapsed_ms", "follow_up_hints")
 
     def __init__(
         self,

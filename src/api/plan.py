@@ -113,7 +113,7 @@ async def _sync_plan(req: PlanRequest) -> JSONResponse:
         logger.exception("plan generation failed")
         return JSONResponse({"error": f"Plan generation failed: {exc}"}, status_code=500)
 
-    asyncio.create_task(_save_plan(plan, req.repo_owner, req.repo_name))
+    _background_task = asyncio.create_task(_save_plan(plan, req.repo_owner, req.repo_name))  # noqa: F841
     return JSONResponse(plan.model_dump())
 
 

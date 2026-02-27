@@ -37,10 +37,10 @@ MODEL_REGISTRY: dict[str, str] = {
 
 # ── Provider singletons ──────────────────────────────────────────────────────
 
-_providers: dict[str, "LLMProvider"] = {}
+_providers: dict[str, LLMProvider] = {}
 
 
-def _create_provider(provider_name: str) -> "LLMProvider":
+def _create_provider(provider_name: str) -> LLMProvider:
     """Lazy-create a provider instance."""
     if provider_name == "anthropic":
         from src.llm.anthropic_provider import AnthropicProvider
@@ -78,7 +78,7 @@ def resolve_provider(model: str) -> str:
     )
 
 
-def get_provider(model: str | None = None) -> "LLMProvider":
+def get_provider(model: str | None = None) -> LLMProvider:
     """
     Get a provider instance for the given model.
 

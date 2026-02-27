@@ -14,8 +14,16 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from src.config import settings
-from src.storage.models import (Chunk, MerkleNode, Repo, Symbol, WebhookEvent,
-                                ChatSession, ChatTurn, PlanHistoryEntry)
+from src.storage.models import (
+    ChatSession,
+    ChatTurn,
+    Chunk,
+    MerkleNode,
+    PlanHistoryEntry,
+    Repo,
+    Symbol,
+    WebhookEvent,
+)
 
 logger = logging.getLogger(__name__)
 
