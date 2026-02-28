@@ -72,7 +72,16 @@ async def main() -> None:
         tables = [row[0] for row in result]
         print(f"\n✓ Tables found: {tables}")
 
-        expected = {"chunks", "symbols", "merkle_nodes", "repos", "webhook_events"}
+        expected = {
+            "chunks",
+            "symbols",
+            "merkle_nodes",
+            "repos",
+            "webhook_events",
+            "chat_sessions",
+            "chat_turns",
+            "plan_history",
+        }
         missing = expected - set(tables)
         if missing:
             print(f"✗ Missing tables: {missing}")
@@ -89,6 +98,19 @@ async def main() -> None:
             print("✓ repos.webhook_hook_id column present.")
         else:
             print("✗ repos.webhook_hook_id column missing — migration 002 may have failed.")
+            sys.exit(1)
+
+        # Check that chat history columns exist (from 003)
+        result = await conn.execute(
+            text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'chat_sessions' AND column_name = 'turn_count';"
+            )
+        )
+        if result.fetchone():
+            print("✓ chat_sessions.turn_count column present.")
+        else:
+            print("✗ chat_sessions.turn_count column missing — migration 003 may have failed.")
             sys.exit(1)
 
         print("✓ All required tables and columns present. DB init complete.")

@@ -12,8 +12,9 @@ Pages:
   📡 Activity Feed  — webhook events with status + timing
   🧩 Planning Mode  — generate implementation plans for bugs/features
   💬 Ask Mode       — chat with your codebase, get cited mentor answers
+  📜 History        — browse past Ask sessions and Planning plans
+  📚 Documentation  — full reference docs (all doc/*.md files)
 """
-
 
 from __future__ import annotations
 
@@ -56,6 +57,8 @@ PAGES = [
     "📡 Activity Feed",
     "🧩 Planning Mode",
     "💬 Ask Mode",
+    "📜 History",
+    "📚 Documentation",
 ]
 
 
@@ -502,3 +505,12 @@ elif page == "💬 Ask Mode":
 
     render()
 
+elif page == "📜 History":
+    from src.ui._pages.history import render
+
+    render()
+
+elif page == "📚 Documentation":
+    from src.ui._pages.docs import render
+
+    render()

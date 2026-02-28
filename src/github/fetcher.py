@@ -7,14 +7,14 @@ No local git clone — everything goes through the API.
 from __future__ import annotations
 
 import base64
-import logging
 from collections.abc import AsyncIterator
 
 import httpx
 
 from src.config import settings
+from src.utils.logging import get_secure_logger
 
-logger = logging.getLogger(__name__)
+logger = get_secure_logger(__name__)
 
 _GITHUB_API = "https://api.github.com"
 _DEFAULT_TIMEOUT = 30.0
@@ -77,11 +77,13 @@ async def fetch_file(
 
         if resp.status_code == 403 and "rate limit" in resp.text.lower():
             if attempt < _max_retries:
-                delay = _base_delay * (2 ** attempt)  # 60s, 120s, 240s
+                delay = _base_delay * (2**attempt)  # 60s, 120s, 240s
                 logger.warning(
-                    "Rate limit hit fetching %s (attempt %d/%d). "
-                    "Waiting %.0fs before retry...",
-                    path, attempt + 1, _max_retries, delay,
+                    "Rate limit hit fetching %s (attempt %d/%d). Waiting %.0fs before retry...",
+                    path,
+                    attempt + 1,
+                    _max_retries,
+                    delay,
                 )
                 await asyncio.sleep(delay)
                 continue
@@ -151,11 +153,15 @@ async def fetch_full_tree(
                 if reset_ts:
                     delay = max(int(reset_ts) - int(time.time()) + 5, 10)  # +5s buffer
                 else:
-                    delay = _base_delay * (2 ** attempt)
+                    delay = _base_delay * (2**attempt)
                 logger.warning(
                     "Rate limit hit fetching tree for %s/%s (attempt %d/%d). "
                     "Waiting %ds before retry...",
-                    owner, repo, attempt + 1, _max_retries, delay,
+                    owner,
+                    repo,
+                    attempt + 1,
+                    _max_retries,
+                    delay,
                 )
                 await asyncio.sleep(delay)
                 continue
@@ -169,13 +175,10 @@ async def fetch_full_tree(
     data = resp.json()
 
     if data.get("truncated"):
-        # Sanitise user-supplied values before logging to prevent log injection.
-        safe_owner = owner.replace("\n", "").replace("\r", "")
-        safe_repo = repo.replace("\n", "").replace("\r", "")
         logger.warning(
             "Tree response truncated for %s/%s — repo may be too large for single tree call",
-            safe_owner,
-            safe_repo,
+            owner,
+            repo,
         )
 
     return [

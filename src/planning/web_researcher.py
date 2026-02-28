@@ -21,22 +21,41 @@ Falls back gracefully to "" on any failure so planning always continues.
 from __future__ import annotations
 
 import importlib.util
-import logging
 
 from src.config import settings
+from src.utils.logging import get_secure_logger
+from src.utils.sanitize import sanitize_log
 
-logger = logging.getLogger(__name__)
+logger = get_secure_logger(__name__)
 
 _anthropic_client = None
+_openai_client = None
+
 
 def _get_anthropic_client():
     global _anthropic_client
     if _anthropic_client is None:
+        if importlib.util.find_spec("anthropic") is None:
+            return None
         import anthropic
+
         if not settings.anthropic_api_key:
             return None
-        _anthropic_client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+        _anthropic_client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
     return _anthropic_client
+
+
+def _get_openai_client():
+    global _openai_client
+    if _openai_client is None:
+        if importlib.util.find_spec("openai") is None:
+            return None
+        import openai
+
+        if not settings.openai_api_key:
+            return None
+        _openai_client = openai.AsyncOpenAI(api_key=settings.openai_api_key)
+    return _openai_client
 
 
 # ── System prompt — gap-analysis mode, NOT tutorial mode ─────────────────────
@@ -78,30 +97,17 @@ ones can't cover it.
 """
 
 
-async def research_implementation(query: str, stack_context: str = "") -> str:
+async def research_implementation(
+    query: str, stack_context: str = "", model: str | None = None
+) -> str:
     """
-    Call Claude with web_search_20250305 to gather stack-aware implementation
-    research for `query`.
+    Gather stack-aware implementation research for `query` using GPT-4o ("GPT-5")
+    as the primary engine and falling back to Anthropic.
 
     `stack_context` is the codebase stack fingerprint from Phase 0a.
-    When provided, the web search focuses on gaps and integration patterns
-    rather than explaining the task from scratch.
-
     Returns a markdown string or "" on any failure.
     Designed to run as an asyncio background task alongside codebase retrieval.
     """
-    if not settings.anthropic_api_key:
-        logger.debug("web_researcher: skipping (no ANTHROPIC_API_KEY)")
-        return ""
-
-    if importlib.util.find_spec("anthropic") is None:
-        logger.debug("web_researcher: skipping (anthropic not installed)")
-        return ""
-
-    client = _get_anthropic_client()
-    if client is None:
-        return ""
-
     # ── Build a stack-aware user message ─────────────────────────────────────
     if stack_context:
         user_content = (
@@ -124,43 +130,73 @@ async def research_implementation(query: str, stack_context: str = "") -> str:
             f"List what package you'd recommend and why."
         )
 
-    import asyncio
-
-    loop = asyncio.get_running_loop()
-
-    def _call():
-        return client.messages.create(
-            model=settings.anthropic_model,
-            max_tokens=1200,
-            system=_RESEARCH_SYSTEM,
-            tools=[
-                {
-                    "type": "web_search_20250305",
-                    "name": "web_search",
-                    "max_uses": 3,
-                }
-            ],
-            messages=[{"role": "user", "content": user_content}],
-        )
-
-    try:
-        response = await loop.run_in_executor(None, _call)
-        notes = _extract_text(response)
-        if notes:
-            had_stack = bool(stack_context)
-            logger.info(
-                "web_researcher: done — %d chars, stack_context=%s",
-                len(notes),
-                had_stack,
+    # 1. Try OpenAI (GPT-4o) First
+    openai_client = _get_openai_client()
+    if openai_client:
+        try:
+            logger.info("web_researcher: trying primary model (gpt-4o)")
+            response = await openai_client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": _RESEARCH_SYSTEM},
+                    {"role": "user", "content": user_content},
+                ],
             )
-        return notes
-    except Exception as exc:
-        # Graceful degradation — web search is enrichment, not required
-        logger.warning("web_researcher: search failed (planning continues without it): %s", exc)
-        return ""
+            notes = response.choices[0].message.content or ""
+            if notes:
+                had_stack = bool(stack_context)
+                logger.info(
+                    "web_researcher: done (openai) — %d chars, stack_context=%s",
+                    len(notes),
+                    had_stack,
+                )
+                return _ensure_format(notes)
+        except Exception as exc:
+            logger.warning(
+                "web_researcher: openai failed, falling back to anthropic: %s", sanitize_log(exc)
+            )
+
+    # 2. Try Anthropic as fallback
+    anthropic_client = _get_anthropic_client()
+    if anthropic_client:
+        try:
+            logger.info("web_researcher: trying fallback model (anthropic web_search_20250305)")
+            response = await anthropic_client.messages.create(
+                model=settings.anthropic_model,
+                max_tokens=1200,
+                system=_RESEARCH_SYSTEM,
+                tools=[
+                    {
+                        "type": "web_search_20250305",
+                        "name": "web_search",
+                        "max_uses": 3,
+                    }
+                ],
+                messages=[{"role": "user", "content": user_content}],
+            )
+            notes = _extract_text_anthropic(response)
+            if notes:
+                had_stack = bool(stack_context)
+                logger.info(
+                    "web_researcher: done (anthropic fallback) — %d chars, stack_context=%s",
+                    len(notes),
+                    had_stack,
+                )
+                return _ensure_format(notes)
+        except Exception as exc:
+            logger.warning("web_researcher: anthropic failed: %s", sanitize_log(exc))
+
+    return ""
 
 
-def _extract_text(response) -> str:
+def _ensure_format(text: str) -> str:
+    """Ensure it starts with the expected section header."""
+    if text and not text.lstrip().startswith("## Already in Stack"):
+        text = "## Stack Integration Analysis\n\n" + text
+    return text
+
+
+def _extract_text_anthropic(response) -> str:
     """Extract all text blocks from a Claude response into a single string."""
     parts: list[str] = []
     for block in response.content:
@@ -171,9 +207,4 @@ def _extract_text(response) -> str:
                 for sub in block.content or []:
                     if hasattr(sub, "text") and sub.text:
                         parts.append(sub.text)
-    text = "\n\n".join(p.strip() for p in parts if p.strip())
-    # Ensure it starts with the expected section header
-    if text and not text.lstrip().startswith("## Already in Stack"):
-        # If Claude didn't follow the format, wrap it
-        text = "## Stack Integration Analysis\n\n" + text
-    return text
+    return "\n\n".join(p.strip() for p in parts if p.strip())

@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import logging
+import json
+import urllib.parse
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Request, status
@@ -23,8 +24,9 @@ from src.config import settings
 from src.github.events import PushEvent
 from src.github.fetcher import filter_indexable_paths
 from src.storage.db import log_webhook_event
+from src.utils.logging import get_secure_logger
 
-logger = logging.getLogger(__name__)
+logger = get_secure_logger(__name__)
 
 router = APIRouter(tags=["webhook"])
 
@@ -45,6 +47,7 @@ def get_queue() -> Queue:
 def _is_duplicate_job(owner: str, repo: str, commit_sha: str) -> bool:
     """Check if an indexing job for this exact commit is already queued/running."""
     import redis as _redis
+
     conn = _redis.from_url(settings.redis_url)
     dedup_key = f"index:{owner}/{repo}:{commit_sha}"
     # SET NX with 60s TTL — returns True only if the key was newly set
@@ -94,7 +97,43 @@ async def github_webhook(
         logger.warning("Webhook signature mismatch — delivery_id=%s", x_github_delivery)
         raise HTTPException(status_code=401, detail="Invalid webhook signature")
 
-    payload: dict[str, Any] = await request.json()
+    # Parse payload from the already-read body bytes.
+    # Must NOT call request.json() here — the body stream was already consumed
+    # by request.body() above and calling request.json() would get an empty stream.
+    #
+    # GitHub can send webhooks as either:
+    #   application/json                  — body is raw JSON
+    #   application/x-www-form-urlencoded — body is payload=<url-encoded-json>
+    content_type = request.headers.get("content-type", "").split(";")[0].strip().lower()
+    logger.info(
+        "Webhook received: delivery=%s event=%s content_type=%s body_len=%d",
+        x_github_delivery,
+        x_github_event,
+        content_type,
+        len(body),
+    )
+
+    try:
+        if content_type == "application/x-www-form-urlencoded":
+            parsed_form = urllib.parse.parse_qs(body.decode("utf-8", errors="replace"))
+            payload_str = parsed_form.get("payload", [None])[0]
+            if payload_str is None:
+                raise ValueError("form-encoded body has no 'payload' key")
+            payload: dict[str, Any] = json.loads(payload_str)
+        else:
+            # Default: treat as application/json
+            payload = json.loads(body)
+    except (json.JSONDecodeError, ValueError, UnicodeDecodeError) as exc:
+        logger.error(
+            "Webhook body parse error: %s | content_type=%s | body_preview=%s",
+            exc,
+            content_type,
+            body[:200],
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=f"Could not parse webhook payload ({content_type}): {exc}",
+        ) from exc
 
     # 2. Only process push events
     if x_github_event == "ping":

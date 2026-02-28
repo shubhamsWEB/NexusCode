@@ -49,9 +49,10 @@ cryptography>=43.0.1
 streamlit>=1.38.0
 plotly>=5.0.0
 
-# Anthropic LLM (planning mode)
+# LLM providers
 anthropic>=0.40.0
+openai>=1.30.0
 
 # Utilities
-python-multipart==0.0.20      # FastAPI form data
+python-multipart==0.0.22      # FastAPI form data
 structlog==24.4.0             # structured logging

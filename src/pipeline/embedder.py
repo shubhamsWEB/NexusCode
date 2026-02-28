@@ -11,13 +11,13 @@ Features:
 from __future__ import annotations
 
 import asyncio
-import logging
 
 import voyageai
 
 from src.config import settings
+from src.utils.logging import get_secure_logger
 
-logger = logging.getLogger(__name__)
+logger = get_secure_logger(__name__)
 
 # voyage-code-2 limits (full account)
 _MAX_BATCH_SIZE = 128
@@ -37,6 +37,7 @@ _is_free_tier: bool = False
 
 
 _voyage_client = None
+
 
 def _make_client() -> voyageai.Client:
     global _voyage_client

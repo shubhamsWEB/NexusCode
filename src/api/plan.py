@@ -18,17 +18,44 @@ SSE event types:
 
 from __future__ import annotations
 
+import asyncio
 import json
-import logging
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from src.planning.schemas import PlanRequest
+from src.utils.logging import get_secure_logger
 
-logger = logging.getLogger(__name__)
+logger = get_secure_logger(__name__)
 
 router = APIRouter(prefix="/plan", tags=["planning"])
+
+_background_tasks: set[asyncio.Task] = set()
+
+
+# ── Persistence helper ─────────────────────────────────────────────────────────
+
+
+async def _save_plan(plan, repo_owner, repo_name):
+    """Best-effort plan history persistence — never raises."""
+    try:
+        from src.storage.db import save_plan_history
+
+        metadata = plan.metadata
+        await save_plan_history(
+            plan_id=plan.plan_id,
+            query=plan.query,
+            response_type=plan.response_type,
+            plan_json_str=json.dumps(plan.model_dump()),
+            repo_owner=repo_owner,
+            repo_name=repo_name,
+            elapsed_ms=metadata.elapsed_ms if metadata else None,
+            context_tokens=metadata.context_tokens if metadata else None,
+            web_research_used=metadata.web_research_used if metadata else False,
+        )
+    except Exception:
+        logger.exception("plan history persistence failed (non-fatal)")
 
 
 # ── Sync endpoint ─────────────────────────────────────────────────────────────
@@ -51,8 +78,10 @@ async def _sync_plan(req: PlanRequest) -> JSONResponse:
     try:
         from src.planning.claude_planner import generate_plan
         from src.planning.retriever import retrieve_planning_context
-    except ImportError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=503)
+    except ImportError:
+        return JSONResponse(
+            {"error": "Service unavailable. Required modules not loaded."}, status_code=503
+        )
 
     try:
         ctx = await retrieve_planning_context(
@@ -60,10 +89,11 @@ async def _sync_plan(req: PlanRequest) -> JSONResponse:
             repo_owner=req.repo_owner,
             repo_name=req.repo_name,
             web_research=req.web_research,
+            model=req.model,
         )
-    except Exception as exc:
+    except Exception:
         logger.exception("planning retriever failed")
-        return JSONResponse({"error": f"Retrieval failed: {exc}"}, status_code=500)
+        return JSONResponse({"error": "Retrieval failed. Please try again."}, status_code=500)
 
     try:
         plan = await generate_plan(
@@ -71,22 +101,26 @@ async def _sync_plan(req: PlanRequest) -> JSONResponse:
             ctx=ctx,
             repo_owner=req.repo_owner,
             repo_name=req.repo_name,
+            model=req.model,
         )
     except RuntimeError as exc:
         # Check if it's a rate limit error (our custom RateLimitOrOverloadError)
         status = getattr(exc, "status_code", None)
         if status == 429:
             return JSONResponse(
-                {"error": str(exc)},
+                {"error": "Rate limit reached. Please try again in 60 seconds."},
                 status_code=429,
                 headers={"Retry-After": "60"},
             )
         # anthropic not installed / no API key / overload
-        return JSONResponse({"error": str(exc)}, status_code=503)
-    except Exception as exc:
+        return JSONResponse({"error": "Service unavailable. Please try again."}, status_code=503)
+    except Exception:
         logger.exception("plan generation failed")
-        return JSONResponse({"error": f"Plan generation failed: {exc}"}, status_code=500)
+        return JSONResponse({"error": "Plan generation failed. Please try again."}, status_code=500)
 
+    task = asyncio.create_task(_save_plan(plan, req.repo_owner, req.repo_name))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
     return JSONResponse(plan.model_dump())
 
 
@@ -114,8 +148,10 @@ async def _sse_generator(req: PlanRequest):
     try:
         from src.planning.claude_planner import stream_generate_plan
         from src.planning.retriever import retrieve_planning_context
-    except ImportError as exc:
-        yield _event({"type": "error", "message": str(exc)})
+    except ImportError:
+        yield _event(
+            {"type": "error", "message": "Service unavailable. Required modules not loaded."}
+        )
         return
 
     # ── Phase: retrieval ──────────────────────────────────────────────────────
@@ -125,6 +161,7 @@ async def _sse_generator(req: PlanRequest):
             repo_owner=req.repo_owner,
             repo_name=req.repo_name,
             web_research=req.web_research,
+            model=req.model,
         )
         yield _event(
             {
@@ -135,9 +172,9 @@ async def _sse_generator(req: PlanRequest):
                 "web_research_used": bool(ctx.web_research_notes),
             }
         )
-    except Exception as exc:
+    except Exception:
         logger.exception("planning retriever failed (SSE)")
-        yield _event({"type": "error", "message": f"Retrieval failed: {exc}"})
+        yield _event({"type": "error", "message": "Retrieval failed. Please try again."})
         return
 
     # ── Phase: generation (real token streaming via input_json_delta) ─────────
@@ -149,23 +186,34 @@ async def _sse_generator(req: PlanRequest):
             ctx=ctx,
             repo_owner=req.repo_owner,
             repo_name=req.repo_name,
+            model=req.model,
         ):
             if chunk["type"] == "thinking":
                 yield _event({"type": "thinking", "text": chunk["text"]})
             elif chunk["type"] == "token":
                 yield _event({"type": "plan_chunk", "text": chunk["text"]})
             elif chunk["type"] == "plan_complete":
-                yield _event({"type": "plan_complete", "plan": chunk["plan"].model_dump()})
+                plan = chunk["plan"]
+                await _save_plan(plan, req.repo_owner, req.repo_name)
+                yield _event(
+                    {
+                        "type": "plan_complete",
+                        "plan": plan.model_dump(),
+                        "plan_id": plan.plan_id,
+                    }
+                )
     except RuntimeError as exc:
         status = getattr(exc, "status_code", None)
         if status == 429:
-            yield _event({
-                "type": "error",
-                "message": str(exc),
-                "retry_after": 60,
-            })
+            yield _event(
+                {
+                    "type": "error",
+                    "message": "Rate limit reached. Please try again in 60 seconds.",
+                    "retry_after": 60,
+                }
+            )
         else:
-            yield _event({"type": "error", "message": str(exc)})
-    except Exception as exc:
+            yield _event({"type": "error", "message": "Service unavailable. Please try again."})
+    except Exception:
         logger.exception("plan streaming failed (SSE)")
-        yield _event({"type": "error", "message": f"Plan generation failed: {exc}"})
+        yield _event({"type": "error", "message": "Plan generation failed. Please try again."})

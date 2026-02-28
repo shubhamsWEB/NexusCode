@@ -76,7 +76,12 @@
       "Bash(cat:*)",
       "Bash(psql:*)",
       "Bash(echo Port 8000 cleared:*)",
-      "Bash(PYTHONPATH=. OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES .venv/bin/uvicorn src.api.app:app:*)"
+      "Bash(PYTHONPATH=. OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES .venv/bin/uvicorn src.api.app:app:*)",
+      "Bash(PYTHONPATH=. pytest:*)",
+      "Bash(/Users/shubhamagr/Documents/nexusCode_server/.venv/bin/pip install:*)",
+      "WebFetch(domain:docs.pinecone.io)",
+      "Bash(pip show:*)",
+      "Bash(.venv/bin/pip show:*)"
     ]
   }
 }

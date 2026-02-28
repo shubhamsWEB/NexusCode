@@ -1,12 +1,14 @@
 """
-MCP server — exposes 5 codebase intelligence tools via FastMCP.
+MCP server — exposes 7 codebase intelligence tools via FastMCP.
 
 Tools:
-  1. search_codebase   — hybrid semantic+keyword search + rerank
-  2. get_symbol        — fuzzy symbol lookup (like "Go to Definition")
-  3. find_callers      — who calls this function/method?
-  4. get_file_context  — structural map of a file (symbols + imports + imported_by)
-  5. get_agent_context — pre-assembled token-budget-aware context for a task
+  1. search_codebase      — hybrid semantic+keyword search + rerank
+  2. get_symbol           — fuzzy symbol lookup (like "Go to Definition")
+  3. find_callers         — who calls this function/method?
+  4. get_file_context     — structural map of a file (symbols + imports + imported_by)
+  5. get_agent_context    — pre-assembled token-budget-aware context for a task
+  6. plan_implementation  — web research + codebase context → structured implementation plan
+  7. ask_codebase         — answer a natural-language question about the codebase
 
 Mount the Starlette SSE app via:
     app.mount("/mcp", mcp_server.sse_app())
@@ -15,15 +17,16 @@ Mount the Starlette SSE app via:
 from __future__ import annotations
 
 import json
-import logging
 from typing import Annotated
 
 from mcp.server.fastmcp import FastMCP
 from sqlalchemy import text
 
 from src.storage.db import AsyncSessionLocal
+from src.utils.logging import get_secure_logger
+from src.utils.sanitize import sanitize_log
 
-logger = logging.getLogger(__name__)
+logger = get_secure_logger(__name__)
 
 
 def _escape_ilike(value: str) -> str:
@@ -40,7 +43,9 @@ mcp_server = FastMCP(
         "Use find_callers to trace usage of a symbol. "
         "Use get_file_context for a structural overview of a file. "
         "Use get_agent_context to get pre-assembled context before starting a task. "
-        "Use plan_implementation to generate a complete implementation plan for a bug/feature/refactor."
+        "Use plan_implementation to generate a complete implementation plan for a bug/feature/refactor. "
+        "Use ask_codebase to answer any natural-language question about the codebase in a mentor tone. "
+        "Use list_skills to discover available skills and their capabilities."
     ),
     warn_on_duplicate_tools=False,
 )
@@ -227,8 +232,16 @@ async def find_callers(
         repo_owner, repo_name = repo.split("/", 1)
 
     _DEFINITION_PREFIXES = (
-        "def ", "async def ", "class ", "function ", "const ", "export ",
-        "export default ", "export async ", "pub fn ", "fn ",
+        "def ",
+        "async def ",
+        "class ",
+        "function ",
+        "const ",
+        "export ",
+        "export default ",
+        "export async ",
+        "pub fn ",
+        "fn ",
     )
 
     def _extract_call_sites(results, target_sym: str) -> list[dict]:
@@ -239,8 +252,7 @@ async def find_callers(
             call_lines = [
                 {"line_no": r.start_line + i, "text": line.strip()}
                 for i, line in enumerate(lines)
-                if target_sym in line
-                and not line.strip().startswith(_DEFINITION_PREFIXES)
+                if target_sym in line and not line.strip().startswith(_DEFINITION_PREFIXES)
             ]
             if call_lines:
                 callers.append(
@@ -258,7 +270,7 @@ async def find_callers(
     # ── BFS multi-hop traversal ───────────────────────────────────────────────
     all_hops: list[dict] = []
     seen_symbols: set[str] = {symbol}  # avoid re-querying the same symbol
-    frontier: list[str] = [symbol]     # symbols to find callers for in this hop
+    frontier: list[str] = [symbol]  # symbols to find callers for in this hop
 
     for hop_num in range(1, depth + 1):
         if not frontier:
@@ -277,7 +289,11 @@ async def find_callers(
                     language=None,
                 )
             except Exception as exc:
-                logger.warning("find_callers: keyword search failed for %r: %s", target_sym, exc)
+                logger.warning(
+                    "find_callers: keyword search failed for %r: %s",
+                    sanitize_log(target_sym),
+                    sanitize_log(exc),
+                )
                 continue
 
             call_entries = _extract_call_sites(results, target_sym)
@@ -598,6 +614,10 @@ async def plan_implementation(
     web_research: Annotated[
         bool, "Search the web for best practices before generating the plan (default true)"
     ] = True,
+    model: Annotated[
+        str | None,
+        "LLM model to use (e.g. 'gpt-4o', 'claude-opus-4-6'). Defaults to server config.",
+    ] = None,
 ) -> str:
     """
     Generate a complete, grounded implementation plan for a coding task.
@@ -630,6 +650,7 @@ async def plan_implementation(
             repo_owner=repo_owner,
             repo_name=repo_name,
             web_research=web_research,
+            model=model,
         )
     except Exception as exc:
         return json.dumps({"error": f"Retrieval failed: {exc}"})
@@ -640,6 +661,7 @@ async def plan_implementation(
             ctx=ctx,
             repo_owner=repo_owner,
             repo_name=repo_name,
+            model=model,
         )
     except RuntimeError as exc:
         return json.dumps({"error": str(exc)})
@@ -649,6 +671,88 @@ async def plan_implementation(
 
     # Format as markdown for readability in Claude Desktop
     return _format_plan_markdown(plan)
+
+
+# ── Tool 7: ask_codebase ──────────────────────────────────────────────────────
+
+
+@mcp_server.tool()
+async def ask_codebase(
+    question: Annotated[str, "Natural-language question about the codebase (min 5 chars)"],
+    repo: Annotated[str | None, "Scope to 'owner/name' — defaults to all repos"] = None,
+    model: Annotated[
+        str | None,
+        "LLM model to use (e.g. 'gpt-4o', 'claude-opus-4-6'). Defaults to server config.",
+    ] = None,
+) -> str:
+    """
+    Answer a natural-language question about the codebase in a mentor tone.
+
+    Unlike plan_implementation (which outputs file changes and steps), this tool
+    answers questions conversationally — explaining how code works, tracing data
+    flows, clarifying architecture decisions, and pointing to real file locations.
+
+    Returns a markdown answer with:
+    - Inline file citations (e.g. `src/pipeline/pipeline.py` lines 42-80)
+    - Fenced code snippets for key examples
+    - 2-3 concrete follow-up questions grounded in the codebase
+
+    Use this for questions like:
+    - "How does the webhook processing pipeline work?"
+    - "Where is authentication handled?"
+    - "What does the reranker do and when is it called?"
+    - "Explain the chunking algorithm"
+    """
+    from src.ask.ask_agent import generate_answer
+    from src.planning.retriever import retrieve_planning_context
+
+    repo_owner = repo_name = None
+    if repo and "/" in repo:
+        repo_owner, repo_name = repo.split("/", 1)
+
+    try:
+        ctx = await retrieve_planning_context(
+            query=question,
+            repo_owner=repo_owner,
+            repo_name=repo_name,
+            web_research=False,
+            model=model,
+        )
+    except Exception as exc:
+        return json.dumps({"error": f"Retrieval failed: {exc}"})
+
+    try:
+        result = await generate_answer(
+            query=question,
+            ctx=ctx,
+            repo_owner=repo_owner,
+            repo_name=repo_name,
+            model=model,
+        )
+    except RuntimeError as exc:
+        return json.dumps({"error": str(exc)})
+    except Exception as exc:
+        logger.exception("ask_codebase MCP tool failed")
+        return json.dumps({"error": f"Answer generation failed: {exc}"})
+
+    lines = [result.answer]
+
+    if result.cited_files:
+        lines.append("\n**Referenced files:**")
+        for f in result.cited_files:
+            lines.append(f"- `{f}`")
+
+    if result.follow_up_hints:
+        lines.append("\n**Follow-up questions you might ask:**")
+        for hint in result.follow_up_hints:
+            lines.append(f"- {hint}")
+
+    lines.append(
+        f"\n---\n_Context: {ctx.tokens_used} tokens · "
+        f"{len(ctx.chunks_used)} chunks · {result.elapsed_ms:.0f}ms_"
+    )
+
+    return "\n".join(lines)
 
 
 def _format_plan_markdown(plan) -> str:
@@ -754,10 +858,11 @@ def _format_plan_markdown(plan) -> str:
     if plan.metadata:
         m = plan.metadata
         cq = f" · complexity: {m.query_complexity}" if m.query_complexity else ""
+        qs = f" · quality: {m.quality_score:.2f}" if m.quality_score else ""
         lines.append(
             f"---\n_Plan ID: `{plan.plan_id}` · Model: {m.model} · "
             f"Context: {m.context_tokens} tokens · {m.context_files} chunks · "
-            f"{m.elapsed_ms:.0f}ms{cq}_"
+            f"{m.elapsed_ms:.0f}ms{cq}{qs}_"
         )
         if m.grounding_warnings:
             lines.append("\n> **⚠ Retrieval warnings:**")
@@ -765,3 +870,28 @@ def _format_plan_markdown(plan) -> str:
                 lines.append(f"> - {w}")
 
     return "\n".join(lines)
+
+
+# ── Tool 8: list_skills ───────────────────────────────────────────────────────
+
+
+@mcp_server.tool()
+async def list_skills(
+    filter: Annotated[str | None, "Optional text to filter skills by name or description"] = None,
+) -> str:
+    """
+    List all available NexusCode skills. Skills describe capabilities,
+    workflows, and domain knowledge for AI agents using this server.
+
+    Returns JSON list of skills with name, description, and source.
+    Use filter to narrow results by keyword.
+    """
+    from src.skills.loader import load_all_skills
+
+    skills = load_all_skills()
+    if filter:
+        fl = filter.lower()
+        skills = [s for s in skills if fl in s.name.lower() or fl in s.description.lower()]
+
+    result = [{"name": s.name, "description": s.description, "source": s.source} for s in skills]
+    return json.dumps({"skills": result, "total": len(result)}, indent=2)

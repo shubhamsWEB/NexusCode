@@ -27,13 +27,14 @@ Supports:
 
 from __future__ import annotations
 
-import logging
 import re
 from dataclasses import dataclass
 
 from src.config import settings
+from src.utils.logging import get_secure_logger
+from src.utils.sanitize import sanitize_log
 
-logger = logging.getLogger(__name__)
+logger = get_secure_logger(__name__)
 
 
 def _escape_ilike(value: str) -> str:
@@ -61,6 +62,7 @@ class PlanningContext:
     tokens_used: int
     grounding_warnings: list[str]  # any gaps detected in context
     retrieval_log: str
+    quality_score: float = 0.0  # mean context quality from primary assembled context
 
 
 # ── Query complexity analysis ────────────────────────────────────────────────
@@ -69,45 +71,81 @@ class PlanningContext:
 @dataclass
 class QueryAnalysis:
     """Analysis of a planning query to determine retrieval strategy."""
+
     complexity: str  # "simple", "moderate", "complex"
     sub_queries: list[str]  # decomposed queries for multi-concern tasks
     is_improvement: bool
     is_cross_cutting: bool  # touches many modules (e.g. "add auth to all endpoints")
+    is_concept: (
+        bool  # likely a conceptual question ('how', 'architecture') without specific paths/symbols
+    )
     mentioned_paths: list[str]  # explicit file/dir paths mentioned in query
     mentioned_symbols: list[str]  # explicit function/class names in query
 
 
 # Patterns that suggest cross-cutting changes
 _CROSS_CUTTING_PATTERNS = (
-    "all endpoints", "every endpoint", "all routes", "every route",
-    "all files", "every file", "across the codebase", "everywhere",
-    "all services", "every service", "all handlers", "every handler",
-    "global", "system-wide", "application-wide", "codebase-wide",
+    "all endpoints",
+    "every endpoint",
+    "all routes",
+    "every route",
+    "all files",
+    "every file",
+    "across the codebase",
+    "everywhere",
+    "all services",
+    "every service",
+    "all handlers",
+    "every handler",
+    "global",
+    "system-wide",
+    "application-wide",
+    "codebase-wide",
 )
 
 _IMPROVEMENT_PATTERNS = (
-    "how can i", "how to improve", "how do i improve", "how to make",
-    "make it better", "make the", "make this", "make /",
-    "improve", "enhance", "optimize", "optimise", "review", "audit",
-    "refactor", "redesign", "rethink", "restructure",
-    "what's wrong", "whats wrong", "what are the issues",
-    "what are the weaknesses", "what are the problems",
-    "what could be better", "what can be improved",
-    "world class", "production ready", "better response",
-    "better quality", "response quality", "context aware",
-    "smarter", "more accurate",
+    "how can i",
+    "how to improve",
+    "how do i improve",
+    "how to make",
+    "make it better",
+    "make the",
+    "make this",
+    "make /",
+    "improve",
+    "enhance",
+    "optimize",
+    "optimise",
+    "review",
+    "audit",
+    "refactor",
+    "redesign",
+    "rethink",
+    "restructure",
+    "what's wrong",
+    "whats wrong",
+    "what are the issues",
+    "what are the weaknesses",
+    "what are the problems",
+    "what could be better",
+    "what can be improved",
+    "world class",
+    "production ready",
+    "better response",
+    "better quality",
+    "response quality",
+    "context aware",
+    "smarter",
+    "more accurate",
 )
 
 # Regex to detect explicit file paths in queries
 _PATH_PATTERN = re.compile(
-    r'(?:^|\s)(?:src/|lib/|app/|pkg/|internal/|cmd/)[\w/\-\.]+',
-    re.MULTILINE,
+    r"\b(?:src|lib|app|pkg|internal|cmd)/[a-zA-Z0-9_/\-.]+",
 )
 
 # Regex to detect symbol references (CamelCase or snake_case with parens)
-_SYMBOL_PATTERN = re.compile(
-    r'\b(?:[A-Z][a-zA-Z0-9]+(?:\.[a-z_]\w+)?|[a-z_]\w+(?:_[a-z]\w+)+)\b(?=\s*\()?'
-)
+_SYMBOL_PATTERN = re.compile(r"\b(?:[A-Z][a-zA-Z0-9_]*|[a-z0-9]+(?:_[a-z0-9]+)+)\b(?=\s*\()?")
 
 
 def _analyze_query(query: str) -> QueryAnalysis:
@@ -134,7 +172,7 @@ def _analyze_query(query: str) -> QueryAnalysis:
     concern_count = 1
     concern_count += q.count(" and ")
     concern_count += q.count(", ")
-    concern_count += len(re.findall(r'\d+\.\s', query))  # numbered items
+    concern_count += len(re.findall(r"\b\d+\.\s", query))  # numbered items
 
     # Determine complexity
     if is_cross_cutting or concern_count >= 4 or word_count > 80:
@@ -144,14 +182,32 @@ def _analyze_query(query: str) -> QueryAnalysis:
     else:
         complexity = "simple"
 
-    # Decompose complex queries into sub-queries
+    # Sub-queries
     sub_queries = _decompose_query(query, complexity)
+
+    # Determine if it's a concept query
+    concept_keywords = [
+        "how",
+        "where",
+        "what",
+        "why",
+        "architecture",
+        "logic",
+        "pattern",
+        "flow",
+        "handle",
+        "manage",
+    ]
+    is_concept = bool(
+        not mentioned_paths and not mentioned_symbols and any(w in q for w in concept_keywords)
+    )
 
     return QueryAnalysis(
         complexity=complexity,
         sub_queries=sub_queries,
         is_improvement=is_improvement,
         is_cross_cutting=is_cross_cutting,
+        is_concept=is_concept,
         mentioned_paths=mentioned_paths,
         mentioned_symbols=mentioned_symbols,
     )
@@ -171,14 +227,14 @@ def _decompose_query(query: str, complexity: str) -> list[str]:
     parts: list[str] = []
 
     # Split on explicit numbered items: "1. do X  2. do Y"
-    numbered = re.split(r'\d+\.\s+', query)
+    numbered = re.split(r"\b\d+\.\s+", query)
     if len(numbered) > 2:
         parts = [p.strip() for p in numbered if p.strip() and len(p.strip()) > 10]
         if parts:
             return parts
 
     # Split on " and " or ". " but only if segments are meaningful
-    segments = re.split(r'\s+and\s+|\.\s+', query)
+    segments = re.split(r" and |\.\s+", query)
     meaningful = [s.strip() for s in segments if len(s.strip()) > 15]
     if len(meaningful) >= 2:
         return meaningful
@@ -263,6 +319,7 @@ async def retrieve_planning_context(
     repo_owner: str | None = None,
     repo_name: str | None = None,
     web_research: bool = True,
+    model: str | None = None,
 ) -> PlanningContext:
     """
     Run the retrieval pipeline and return a PlanningContext ready to inject
@@ -310,17 +367,12 @@ async def retrieve_planning_context(
 
     # ── Phase 0b: web research (background) ─────────────────────────────
     web_research_task = None
-    effective_web_research = web_research and not analysis.is_improvement
-    if effective_web_research:
+    if web_research:
         from src.planning.web_researcher import research_implementation
 
         logger.info("planning retriever: starting stack-aware web research (background)")
         web_research_task = asyncio.create_task(
-            research_implementation(query, stack_context=stack_fingerprint)
-        )
-    elif analysis.is_improvement and web_research:
-        logger.info(
-            "planning retriever: skipping web research for improvement query"
+            research_implementation(query, stack_context=stack_fingerprint, model=model)
         )
 
     # ── Phase 1: embed query ────────────────────────────────────────────
@@ -338,7 +390,7 @@ async def retrieve_planning_context(
             for sq, vec in zip(distinct_sub_queries, batch_vectors):
                 sub_query_vectors[sq] = vec
         except Exception as exc:
-            logger.warning("sub-query batch embedding failed: %s", exc)
+            logger.warning("sub-query batch embedding failed: %s", sanitize_log(exc))
 
     # ── Phase 2: hybrid search (adaptive candidates) ────────────────────
     num_candidates = candidate_config["candidates"]
@@ -352,14 +404,21 @@ async def retrieve_planning_context(
         mode="hybrid",
         repo_owner=repo_owner,
         repo_name=repo_name,
+        hyde=analysis.is_concept,
     )
 
     # Sub-query searches (parallel) — merge results
     if sub_query_vectors:
+
         async def _sub_search(sq: str, sv: list[float]):
             return await search(
-                query=sq, query_vector=sv, top_k=num_candidates // 2,
-                mode="hybrid", repo_owner=repo_owner, repo_name=repo_name,
+                query=sq,
+                query_vector=sv,
+                top_k=num_candidates // 2,
+                mode="hybrid",
+                repo_owner=repo_owner,
+                repo_name=repo_name,
+                hyde=analysis.is_concept,
             )
 
         sub_search_tasks = [_sub_search(sq, sv) for sq, sv in sub_query_vectors.items()]
@@ -367,8 +426,8 @@ async def retrieve_planning_context(
 
         seen_ids = {r.chunk_id for r in candidates}
         for result in sub_search_results:
-            if isinstance(result, Exception):
-                logger.warning("sub-query search failed: %s", result)
+            if isinstance(result, BaseException):
+                logger.warning("sub-query search failed: %s", sanitize_log(result))
                 continue
             for r in result:
                 if r.chunk_id not in seen_ids:
@@ -380,6 +439,13 @@ async def retrieve_planning_context(
     if analysis.mentioned_paths:
         candidates = await _boost_mentioned_paths(
             candidates, analysis.mentioned_paths, repo_owner, repo_name
+        )
+
+    # ── Mentioned-symbol boosting ────────────────────────────────────────
+    # If the user explicitly mentioned symbols, ensure those chunks appear
+    if analysis.mentioned_symbols:
+        candidates = await _boost_mentioned_symbols(
+            candidates, analysis.mentioned_symbols, repo_owner, repo_name
         )
 
     # ── Phase 3: cross-encoder rerank → adaptive top-N ──────────────────
@@ -429,8 +495,12 @@ async def retrieve_planning_context(
     async def _expand_symbol(sym: str):
         sym_vector = await embed_query(sym)
         return await search(
-            query=sym, query_vector=sym_vector, top_k=5,
-            mode="hybrid", repo_owner=repo_owner, repo_name=repo_name,
+            query=sym,
+            query_vector=sym_vector,
+            top_k=5,
+            mode="hybrid",
+            repo_owner=repo_owner,
+            repo_name=repo_name,
         )
 
     expand_symbols = top_symbols[:3]  # more expansion for complex queries
@@ -438,8 +508,12 @@ async def retrieve_planning_context(
         expansion_tasks = [_expand_symbol(sym) for sym in expand_symbols]
         expansion_task_results = await asyncio.gather(*expansion_tasks, return_exceptions=True)
         for i, result in enumerate(expansion_task_results):
-            if isinstance(result, Exception):
-                logger.warning("expansion search failed for symbol %r: %s", expand_symbols[i], result)
+            if isinstance(result, BaseException):
+                logger.warning(
+                    "expansion search failed for symbol %r: %s",
+                    sanitize_log(expand_symbols[i]),
+                    sanitize_log(result),
+                )
                 continue
             for r in result:
                 if r.chunk_id not in seen_ids:
@@ -482,7 +556,7 @@ async def retrieve_planning_context(
                     len(web_research_notes),
                 )
         except Exception as exc:
-            logger.warning("planning retriever: web research task failed: %s", exc)
+            logger.warning("planning retriever: web research task failed: %s", sanitize_log(exc))
 
     # ── Phase 7: grounding validation ───────────────────────────────────
     grounding_warnings = _validate_grounding(
@@ -512,7 +586,7 @@ async def retrieve_planning_context(
         f"component_context: {'yes (' + str(len(component_context)) + ' chars)' if component_context else 'no'}\n"
         f"is_improvement_query: {analysis.is_improvement}\n"
         f"stack_fingerprint: {'yes' if stack_fingerprint else 'no'}\n"
-        f"web_research: {'yes' if web_research_notes else 'no (skipped for improvement query)' if analysis.is_improvement else 'no'}\n"
+        f"web_research: {'yes' if web_research_notes else 'no'}\n"
         f"grounding_warnings: {grounding_warnings or 'none'}"
     )
 
@@ -540,6 +614,7 @@ async def retrieve_planning_context(
         tokens_used=primary_ctx.tokens_used,
         grounding_warnings=grounding_warnings,
         retrieval_log=retrieval_log,
+        quality_score=primary_ctx.quality_score,
     )
 
 
@@ -576,7 +651,7 @@ async def _get_codebase_size(
             result = (await session.execute(sql, params)).scalar()
             return result or 0
     except Exception as exc:
-        logger.warning("codebase size query failed: %s", exc)
+        logger.warning("codebase size query failed: %s", sanitize_log(exc))
         return 0
 
 
@@ -648,31 +723,156 @@ async def _boost_mentioned_paths(
         for row in rows:
             if row["id"] not in seen_ids:
                 seen_ids.add(row["id"])
-                boosted.append(SearchResult(
-                    chunk_id=row["id"],
-                    file_path=row["file_path"],
-                    repo_owner=row["repo_owner"],
-                    repo_name=row["repo_name"],
-                    language=row["language"],
-                    symbol_name=row.get("symbol_name"),
-                    symbol_kind=row.get("symbol_kind"),
-                    scope_chain=row.get("scope_chain"),
-                    start_line=row["start_line"],
-                    end_line=row["end_line"],
-                    raw_content=row["raw_content"],
-                    enriched_content=row.get("enriched_content", ""),
-                    commit_sha=row.get("commit_sha", ""),
-                    commit_author=row.get("commit_author"),
-                    token_count=row.get("token_count", 0),
-                    score=0.5,
-                ))
+                boosted.append(
+                    SearchResult(
+                        chunk_id=row["id"],
+                        file_path=row["file_path"],
+                        repo_owner=row["repo_owner"],
+                        repo_name=row["repo_name"],
+                        language=row["language"],
+                        symbol_name=row.get("symbol_name"),
+                        symbol_kind=row.get("symbol_kind"),
+                        scope_chain=row.get("scope_chain"),
+                        start_line=row["start_line"],
+                        end_line=row["end_line"],
+                        raw_content=row["raw_content"],
+                        enriched_content=row.get("enriched_content", ""),
+                        commit_sha=row.get("commit_sha", ""),
+                        commit_author=row.get("commit_author"),
+                        token_count=row.get("token_count", 0),
+                        score=0.5,
+                    )
+                )
 
         # Insert boosted results near the top (after first 3 semantic results)
         if boosted:
             return candidates[:3] + boosted + candidates[3:]
 
     except Exception as exc:
-        logger.warning("mentioned-path boost failed: %s", exc)
+        logger.warning("mentioned-path boost failed: %s", sanitize_log(exc))
+
+    return candidates
+
+
+async def _boost_mentioned_symbols(
+    candidates: list,
+    mentioned_symbols: list[str],
+    repo_owner: str | None,
+    repo_name: str | None,
+) -> list:
+    """
+    Ensure chunks containing explicitly-mentioned symbols appear in results.
+
+    Mirrors _boost_mentioned_paths: if the user asks about 'get_agent_context',
+    we MUST include the chunk that defines it, even if semantic search didn't
+    rank it highly enough.
+
+    Strategy:
+      1. Check if each mentioned symbol already appears in candidate symbol_names
+         or raw_content.
+      2. For missing symbols, search the symbols table for matching names, then
+         pull their containing chunks.
+    """
+    from sqlalchemy import text
+
+    from src.storage.db import AsyncSessionLocal
+
+    # Determine which symbols are already in candidates
+    found_in_meta = {r.symbol_name for r in candidates if r.symbol_name}
+    found_in_content = set()
+    for sym in mentioned_symbols:
+        if any(sym in r.raw_content for r in candidates):
+            found_in_content.add(sym)
+
+    missing_symbols = [
+        sym
+        for sym in mentioned_symbols
+        if not any(sym.lower() in (fs or "").lower() for fs in found_in_meta)
+        and sym not in found_in_content
+    ]
+
+    if not missing_symbols:
+        return candidates
+
+    logger.info(
+        "mentioned-symbol boost: searching for %d symbols not in results: %s",
+        len(missing_symbols),
+        missing_symbols,
+    )
+
+    params: dict = {}
+    repo_filter = ""
+    if repo_owner:
+        repo_filter += " AND c.repo_owner = :repo_owner"
+        params["repo_owner"] = repo_owner
+    if repo_name:
+        repo_filter += " AND c.repo_name = :repo_name"
+        params["repo_name"] = repo_name
+
+    # Build symbol ILIKE conditions — match against both symbol_name in chunks
+    # and the symbols table (which has the qualified_name)
+    sym_conditions = []
+    for i, sym in enumerate(missing_symbols[:5]):
+        escaped = _escape_ilike(sym)
+        params[f"sym_{i}"] = f"%{escaped}%"
+        sym_conditions.append(f"c.symbol_name ILIKE :sym_{i}")
+        sym_conditions.append(f"c.raw_content ILIKE :sym_{i}")
+
+    where = " OR ".join(sym_conditions)
+    sql = text(f"""
+        SELECT DISTINCT ON (c.id)
+               c.id, c.file_path, c.repo_owner, c.repo_name, c.language,
+               c.symbol_name, c.symbol_kind, c.scope_chain,
+               c.start_line, c.end_line, c.raw_content, c.enriched_content,
+               c.commit_sha, c.commit_author, c.token_count,
+               0.6 AS score
+        FROM chunks c
+        WHERE NOT c.is_deleted
+          AND ({where})
+          {repo_filter}
+        ORDER BY c.id, c.start_line
+        LIMIT 15
+    """)
+
+    try:
+        async with AsyncSessionLocal() as session:
+            rows = (await session.execute(sql, params)).mappings().all()
+
+        from src.retrieval.searcher import SearchResult
+
+        seen_ids = {r.chunk_id for r in candidates}
+        boosted = []
+        for row in rows:
+            if row["id"] not in seen_ids:
+                seen_ids.add(row["id"])
+                boosted.append(
+                    SearchResult(
+                        chunk_id=row["id"],
+                        file_path=row["file_path"],
+                        repo_owner=row["repo_owner"],
+                        repo_name=row["repo_name"],
+                        language=row["language"],
+                        symbol_name=row.get("symbol_name"),
+                        symbol_kind=row.get("symbol_kind"),
+                        scope_chain=row.get("scope_chain"),
+                        start_line=row["start_line"],
+                        end_line=row["end_line"],
+                        raw_content=row["raw_content"],
+                        enriched_content=row.get("enriched_content", ""),
+                        commit_sha=row.get("commit_sha", ""),
+                        commit_author=row.get("commit_author"),
+                        token_count=row.get("token_count", 0),
+                        score=0.6,
+                    )
+                )
+
+        if boosted:
+            logger.info("mentioned-symbol boost: added %d chunks for missing symbols", len(boosted))
+            # Insert boosted results near the top (after first 3 semantic results)
+            return candidates[:3] + boosted + candidates[3:]
+
+    except Exception as exc:
+        logger.warning("mentioned-symbol boost failed: %s", sanitize_log(exc))
 
     return candidates
 
@@ -731,7 +931,7 @@ async def _follow_import_chains(
         async with AsyncSessionLocal() as session:
             import_rows = (await session.execute(import_sql, params)).mappings().all()
     except Exception as exc:
-        logger.warning("import chain: failed to fetch imports: %s", exc)
+        logger.warning("import chain: failed to fetch imports: %s", sanitize_log(exc))
         return ""
 
     if not import_rows:
@@ -785,7 +985,7 @@ async def _follow_import_chains(
         async with AsyncSessionLocal() as session:
             sym_rows = (await session.execute(sym_sql, dep_params)).mappings().all()
     except Exception as exc:
-        logger.warning("import chain: symbol query failed: %s", exc)
+        logger.warning("import chain: symbol query failed: %s", sanitize_log(exc))
         return ""
 
     if not sym_rows:
@@ -806,7 +1006,9 @@ async def _follow_import_chains(
             sections.append(header)
             tokens_used += header_tokens
 
-        sig_line = f"  {row['kind']:12s} {row['qualified_name']}  (L{row['start_line']}-{row['end_line']})"
+        sig_line = (
+            f"  {row['kind']:12s} {row['qualified_name']}  (L{row['start_line']}-{row['end_line']})"
+        )
         if row["signature"]:
             sig_line += f"\n             sig: {row['signature'][:120]}"
         if row["docstring"]:
@@ -825,8 +1027,7 @@ async def _follow_import_chains(
     dep_files = len({row["file_path"] for row in sym_rows})
     return (
         f"## Dependency Interfaces ({dep_files} imported files)\n"
-        "_Symbol signatures from files imported by the top relevant files._\n"
-        + "\n".join(sections)
+        "_Symbol signatures from files imported by the top relevant files._\n" + "\n".join(sections)
     )
 
 
@@ -843,7 +1044,7 @@ def _resolve_import_to_path(import_stmt: str) -> str | None:
     stmt = import_stmt.strip()
 
     # Python: from X.Y.Z import ... / import X.Y.Z
-    py_match = re.match(r'(?:from\s+)([\w\.]+)(?:\s+import)?', stmt)
+    py_match = re.match(r"(?:from\s+)([\w\.]+)(?:\s+import)?", stmt)
     if py_match:
         module = py_match.group(1)
         if module.startswith("."):
@@ -854,7 +1055,7 @@ def _resolve_import_to_path(import_stmt: str) -> str | None:
             return None  # likely stdlib
         return module.replace(".", "/")
 
-    py_import = re.match(r'import\s+([\w\.]+)', stmt)
+    py_import = re.match(r"import\s+([\w\.]+)", stmt)
     if py_import:
         module = py_import.group(1)
         parts = module.split(".")
@@ -1000,7 +1201,7 @@ async def _fetch_component_context(
         async with AsyncSessionLocal() as session:
             rows = (await session.execute(sql, params)).mappings().all()
     except Exception as exc:
-        logger.warning("component context: DB query failed: %s", exc)
+        logger.warning("component context: DB query failed: %s", sanitize_log(exc))
         return ""
 
     if not rows:
@@ -1008,6 +1209,7 @@ async def _fetch_component_context(
 
     # Pass 1: group chunks by file and calculate per-file token cost
     from collections import defaultdict
+
     file_chunks: dict[str, list] = defaultdict(list)
     file_tokens: dict[str, int] = defaultdict(int)
 
@@ -1050,7 +1252,8 @@ async def _fetch_component_context(
 
     logger.debug(
         "component context: %d complete files, %d tokens",
-        files_included, tokens_used,
+        files_included,
+        tokens_used,
     )
 
     if not sections:
@@ -1138,7 +1341,7 @@ async def _extract_stack_fingerprint(
             import_rows = (await session.execute(import_sql, params)).mappings().all()
             lang_rows = (await session.execute(lang_sql, params)).mappings().all()
     except Exception as exc:
-        logger.warning("stack fingerprint: DB query failed: %s", exc)
+        logger.warning("stack fingerprint: DB query failed: %s", sanitize_log(exc))
         return ""
 
     if lang_rows:
@@ -1175,8 +1378,7 @@ async def _extract_stack_fingerprint(
 
     return (
         "## Codebase Stack Fingerprint\n"
-        "_What is already installed and actively used in this codebase._\n\n"
-        + "\n\n".join(parts)
+        "_What is already installed and actively used in this codebase._\n\n" + "\n\n".join(parts)
     )
 
 
@@ -1233,7 +1435,7 @@ async def _get_file_structure_maps(
                     lines.append(sig)
                 sections.append("\n".join(lines))
         except Exception as exc:
-            logger.warning("file map failed for %r: %s", fpath, exc)
+            logger.warning("file map failed for %r: %s", sanitize_log(fpath), sanitize_log(exc))
 
     return "\n\n".join(sections)
 
@@ -1261,11 +1463,15 @@ async def _get_caller_contexts(
     for sym in symbols:
         try:
             results = await _keyword_search(
-                query=sym, limit=5,
-                repo_owner=repo_owner, repo_name=repo_name, language=None,
+                query=sym,
+                limit=5,
+                repo_owner=repo_owner,
+                repo_name=repo_name,
+                language=None,
             )
             callers = [
-                r for r in results
+                r
+                for r in results
                 if any(
                     sym in line
                     and not line.strip().startswith(
@@ -1279,8 +1485,7 @@ async def _get_caller_contexts(
                 block = f"## Callers of `{sym}`\n"
                 for r in callers:
                     block += (
-                        f"  {r.file_path}  L{r.start_line}-{r.end_line}\n"
-                        f"  {r.raw_content[:300]}\n"
+                        f"  {r.file_path}  L{r.start_line}-{r.end_line}\n  {r.raw_content[:300]}\n"
                     )
                 from src.pipeline.chunker import count_tokens
 
@@ -1291,7 +1496,9 @@ async def _get_caller_contexts(
                 tokens_used += block_tokens
 
         except Exception as exc:
-            logger.warning("caller context failed for symbol %r: %s", sym, exc)
+            logger.warning(
+                "caller context failed for symbol %r: %s", sanitize_log(sym), sanitize_log(exc)
+            )
 
     return "\n".join(all_sections)
 

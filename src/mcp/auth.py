@@ -9,7 +9,6 @@ In production: integrate with GitHub OAuth 2.1 + PKCE (future work).
 
 from __future__ import annotations
 
-import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -19,8 +18,9 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from src.config import settings
+from src.utils.logging import get_secure_logger
 
-logger = logging.getLogger(__name__)
+logger = get_secure_logger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -56,10 +56,10 @@ def verify_token(token: str) -> dict[str, Any]:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired"
         ) from None
-    except jwt.InvalidTokenError as exc:
+    except jwt.InvalidTokenError:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Invalid token: {exc}"
-        ) from exc
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token."
+        ) from None
 
 
 # ── FastAPI dependency ────────────────────────────────────────────────────────

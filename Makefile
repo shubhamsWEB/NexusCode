@@ -32,7 +32,7 @@ install-dev: install  ## Install runtime + dev dependencies + pre-commit hooks
 # ── Runtime ───────────────────────────────────────────────────────────────────
 
 dev:  ## Start API server with hot-reload (development)
-	PYTHONPATH=$(PYTHONPATH) $(UVICORN) src.api.app:app --reload --port 8000
+	PYTHONPATH=$(PYTHONPATH) $(UVICORN) src.api.app:app --reload --reload-dir src --port 8000
 
 server:  ## Start API server (production mode)
 	PYTHONPATH=$(PYTHONPATH) $(OBJC_FLAG) $(UVICORN) src.api.app:app --port 8000

@@ -41,8 +41,23 @@ class Settings(BaseSettings):
 
     # ── LLM / Planning ───────────────────────────────────────────────────────
     anthropic_api_key: str | None = Field(None)
-    anthropic_model: str = Field("claude-sonnet-4-6", description="Claude model for planning")
-    planning_context_budget: int = Field(10000, description="Base token budget for planning context")
+    openai_api_key: str | None = Field(None, description="OpenAI API key")
+    grok_api_key: str | None = Field(None, description="xAI API key for Grok models")
+    default_model: str = Field(
+        "claude-sonnet-4-6", description="Default LLM model for planning and ask"
+    )
+    enable_file_summaries: bool = Field(
+        False, description="Whether to extract and index LLM file summaries"
+    )
+    summary_model: str = Field(
+        "claude-haiku", description="Fast, cheap model for file summaries (default: claude-haiku)"
+    )
+    anthropic_model: str = Field(
+        "claude-sonnet-4-6", description="Deprecated: use default_model instead"
+    )
+    planning_context_budget: int = Field(
+        10000, description="Base token budget for planning context"
+    )
     planning_max_output_tokens: int = Field(
         16000, description="Max output tokens for plan generation"
     )
@@ -52,18 +67,12 @@ class Settings(BaseSettings):
     planning_max_context_budget: int = Field(
         30000, description="Max token budget (used for complex multi-file queries)"
     )
-    planning_candidate_base: int = Field(
-        15, description="Base candidate count for hybrid search"
-    )
+    planning_candidate_base: int = Field(15, description="Base candidate count for hybrid search")
     planning_candidate_max: int = Field(
         40, description="Max candidates for complex queries on large codebases"
     )
-    planning_rerank_base: int = Field(
-        10, description="Base rerank top-N"
-    )
-    planning_rerank_max: int = Field(
-        25, description="Max rerank top-N for complex queries"
-    )
+    planning_rerank_base: int = Field(10, description="Base rerank top-N")
+    planning_rerank_max: int = Field(25, description="Max rerank top-N for complex queries")
     planning_import_depth: int = Field(
         2, description="How many import hops to follow for dependency context"
     )
@@ -107,7 +116,32 @@ class Settings(BaseSettings):
     reranker_model: str = Field("cross-encoder/ms-marco-MiniLM-L-6-v2")
     reranker_top_n: int = Field(20, description="Candidates passed to reranker")
 
+    # ── Retrieval ────────────────────────────────────────────────────────────
+    retrieval_rrf_k: int = Field(60, description="RRF K constant")
+    retrieval_candidate_multiplier: int = Field(
+        4, description="Multiplier for candidates before RRF"
+    )
+    retrieval_keyword_tsvector_weight: float = Field(
+        0.7, description="Weight for full text match in keyword search"
+    )
+    retrieval_keyword_trgm_weight: float = Field(
+        0.3, description="Weight for trigram match in keyword search"
+    )
+    hnsw_ef_search: int = Field(
+        40,
+        description="HNSW ef_search parameter — higher = better recall, slower query (range: 10-200)",
+    )
+
+    # ── Custom Skills ─────────────────────────────────────────────────────────
+    custom_skills_dirs: str = Field(
+        "", description="Comma-separated paths to custom skill directories"
+    )
+
     # ── Derived helpers ──────────────────────────────────────────────────────
+    @property
+    def custom_skills_dirs_list(self) -> list[str]:
+        return [p.strip() for p in self.custom_skills_dirs.split(",") if p.strip()]
+
     @property
     def supported_extensions_set(self) -> set[str]:
         return {ext.strip() for ext in self.supported_extensions.split(",")}

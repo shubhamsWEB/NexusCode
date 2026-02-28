@@ -11,18 +11,23 @@ for free — no API calls, no latency dependency on external services.
 
 from __future__ import annotations
 
-import logging
+import math
+import threading
 from typing import TYPE_CHECKING
 
 from src.config import settings
+from src.utils.sanitize import sanitize_log
 
 if TYPE_CHECKING:
     from src.retrieval.searcher import SearchResult
 
-logger = logging.getLogger(__name__)
+from src.utils.logging import get_secure_logger
+
+logger = get_secure_logger(__name__)
 
 # Lazy-loaded — only downloaded on first use
 _model = None
+_model_lock = threading.Lock()
 
 
 def _truncate_to_line(text: str, max_chars: int) -> str:
@@ -39,12 +44,19 @@ def _truncate_to_line(text: str, max_chars: int) -> str:
 def _get_model():
     global _model
     if _model is None:
-        from sentence_transformers import CrossEncoder
+        with _model_lock:
+            if _model is None:  # double-check after acquiring lock
+                from sentence_transformers import CrossEncoder
 
-        logger.info("Loading cross-encoder model: %s", settings.reranker_model)
-        _model = CrossEncoder(settings.reranker_model, max_length=512)
-        logger.info("Cross-encoder model loaded")
+                logger.info("Loading cross-encoder model: %s", settings.reranker_model)
+                _model = CrossEncoder(settings.reranker_model, max_length=512)
+                logger.info("Cross-encoder model loaded")
     return _model
+
+
+def warmup():
+    """Pre-load the reranker model at startup so the first request isn't slow."""
+    _get_model()
 
 
 def rerank(
@@ -73,11 +85,13 @@ def rerank(
     try:
         scores = model.predict(pairs, show_progress_bar=False)
     except Exception as exc:
-        logger.warning("Reranker failed, returning original order: %s", exc)
+        logger.warning("Reranker failed, returning original order: %s", sanitize_log(exc))
         return results[:top_n] if top_n else results
 
     for result, score in zip(results, scores):
         result.rerank_score = float(score)
+        # Sigmoid normalization: maps raw logit to [0,1]
+        result.quality_score = 1.0 / (1.0 + math.exp(-result.rerank_score))
 
     reranked = sorted(results, key=lambda r: r.rerank_score, reverse=True)
 
