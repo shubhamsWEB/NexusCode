@@ -46,6 +46,12 @@ class Settings(BaseSettings):
     default_model: str = Field(
         "claude-sonnet-4-6", description="Default LLM model for planning and ask"
     )
+    enable_file_summaries: bool = Field(
+        False, description="Whether to extract and index LLM file summaries"
+    )
+    summary_model: str = Field(
+        "claude-haiku", description="Fast, cheap model for file summaries (default: claude-haiku)"
+    )
     anthropic_model: str = Field(
         "claude-sonnet-4-6", description="Deprecated: use default_model instead"
     )
@@ -110,7 +116,21 @@ class Settings(BaseSettings):
     reranker_model: str = Field("cross-encoder/ms-marco-MiniLM-L-6-v2")
     reranker_top_n: int = Field(20, description="Candidates passed to reranker")
 
+    # ── Retrieval ────────────────────────────────────────────────────────────
+    retrieval_rrf_k: int = Field(60, description="RRF K constant")
+    retrieval_candidate_multiplier: int = Field(4, description="Multiplier for candidates before RRF")
+    retrieval_keyword_tsvector_weight: float = Field(0.7, description="Weight for full text match in keyword search")
+    retrieval_keyword_trgm_weight: float = Field(0.3, description="Weight for trigram match in keyword search")
+    hnsw_ef_search: int = Field(40, description="HNSW ef_search parameter — higher = better recall, slower query (range: 10-200)")
+
+    # ── Custom Skills ─────────────────────────────────────────────────────────
+    custom_skills_dirs: str = Field("", description="Comma-separated paths to custom skill directories")
+
     # ── Derived helpers ──────────────────────────────────────────────────────
+    @property
+    def custom_skills_dirs_list(self) -> list[str]:
+        return [p.strip() for p in self.custom_skills_dirs.split(",") if p.strip()]
+
     @property
     def supported_extensions_set(self) -> set[str]:
         return {ext.strip() for ext in self.supported_extensions.split(",")}

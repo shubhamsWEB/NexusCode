@@ -159,11 +159,12 @@ async def _handle_upserts(
     from src.github.fetcher import fetch_file
     from src.pipeline.chunker import chunk_file
     from src.pipeline.embedder import embed_chunks, get_existing_chunk_ids
-    from src.pipeline.enricher import enrich_chunks
+    from src.pipeline.enricher import enrich_chunks, link_parent_chunks
     from src.pipeline.parser import parse_file
     from src.storage.db import (
         delete_symbols_for_file,
         get_merkle_hash,
+        restore_chunk_ids,
         soft_delete_chunks,
         upsert_chunks,
         upsert_merkle_node,
@@ -193,7 +194,14 @@ async def _handle_upserts(
                     return None
 
                 chunks = chunk_file(parsed)
+
+                from src.pipeline.summarizer import generate_file_summary
+                summary_chunk = await generate_file_summary(path, content)
+                if summary_chunk:
+                    chunks.insert(0, summary_chunk)
+
                 enriched = enrich_chunks(chunks)
+                enriched = link_parent_chunks(enriched)
 
                 if not enriched:
                     return None
@@ -275,12 +283,18 @@ async def _handle_upserts(
                 await soft_delete_chunks(path, owner, repo)
                 await delete_symbols_for_file(path, owner, repo)
 
-                # Build chunk rows
+                # Build chunk rows — separate new chunks from cache hits
                 chunk_rows = []
+                cache_hit_ids = []
                 for ec in enriched_for_file:
                     vector = id_to_vector.get(ec.chunk_id)
-                    if vector is None and ec.chunk_id not in existing_ids:
-                        # Embedding failed for this chunk — skip it
+                    if vector is None:
+                        if ec.chunk_id in existing_ids:
+                            # Cache hit: chunk already in DB with valid embedding.
+                            # The soft-delete above marked it deleted — restore it
+                            # WITHOUT overwriting the existing embedding.
+                            cache_hit_ids.append(ec.chunk_id)
+                        # else: embedding genuinely failed — skip
                         continue
                     chunk_rows.append(
                         {
@@ -301,6 +315,7 @@ async def _handle_upserts(
                             "enriched_content": ec.enriched_content,
                             "imports": ec.imports,
                             "token_count": ec.token_count,
+                            "parent_chunk_id": ec.parent_chunk_id,
                             "embedding": vector,
                             "is_deleted": False,
                         }
@@ -309,6 +324,11 @@ async def _handle_upserts(
                 if chunk_rows:
                     await upsert_chunks(chunk_rows)
                     stats["chunks_upserted"] += len(chunk_rows)
+
+                # Restore cache-hit chunks (un-delete without touching embedding)
+                if cache_hit_ids:
+                    await restore_chunk_ids(cache_hit_ids)
+                    stats["chunks_upserted"] += len(cache_hit_ids)
 
                 # Build symbol rows
                 symbol_rows = []

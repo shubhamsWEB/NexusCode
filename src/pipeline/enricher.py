@@ -58,6 +58,8 @@ class EnrichedChunk:
     # Enriched
     enriched_content: str  # what gets embedded
     chunk_id: str  # SHA-256(enriched_content) — used as DB primary key
+    parent_symbol_name: str | None = None
+    parent_chunk_id: str | None = None
 
 
 def enrich_chunk(chunk: RawChunk) -> EnrichedChunk:
@@ -84,11 +86,32 @@ def enrich_chunk(chunk: RawChunk) -> EnrichedChunk:
         token_count=chunk.token_count,
         enriched_content=enriched,
         chunk_id=chunk_id,
+        parent_symbol_name=getattr(chunk, "parent_symbol_name", None),
     )
 
 
 def enrich_chunks(chunks: list[RawChunk]) -> list[EnrichedChunk]:
     return [enrich_chunk(c) for c in chunks]
+
+def link_parent_chunks(chunks: list[EnrichedChunk]) -> list[EnrichedChunk]:
+    """
+    Establish parent/child relationships between chunks.
+    Builds a map of class symbol names to their chunk IDs, then assigns those
+    chunk IDs to method chunks that reference the class as their parent.
+    """
+    # 1. Find all potential parent chunks (usually class headers)
+    # We use symbol_name mapping for reliable lookup
+    parent_map: dict[str, str] = {}
+    for c in chunks:
+        if c.symbol_name and c.symbol_kind == "class":
+            parent_map[c.symbol_name] = c.chunk_id
+
+    # 2. Link children to found parents
+    for c in chunks:
+        if c.parent_symbol_name and c.parent_symbol_name in parent_map:
+            c.parent_chunk_id = parent_map[c.parent_symbol_name]
+
+    return chunks
 
 
 # ── Header builder ────────────────────────────────────────────────────────────

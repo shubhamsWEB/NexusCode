@@ -11,6 +11,8 @@ for free — no API calls, no latency dependency on external services.
 
 from __future__ import annotations
 
+import math
+import threading
 from typing import TYPE_CHECKING
 
 from src.config import settings
@@ -25,6 +27,7 @@ logger = get_secure_logger(__name__)
 
 # Lazy-loaded — only downloaded on first use
 _model = None
+_model_lock = threading.Lock()
 
 
 def _truncate_to_line(text: str, max_chars: int) -> str:
@@ -41,12 +44,19 @@ def _truncate_to_line(text: str, max_chars: int) -> str:
 def _get_model():
     global _model
     if _model is None:
-        from sentence_transformers import CrossEncoder
+        with _model_lock:
+            if _model is None:  # double-check after acquiring lock
+                from sentence_transformers import CrossEncoder
 
-        logger.info("Loading cross-encoder model: %s", settings.reranker_model)
-        _model = CrossEncoder(settings.reranker_model, max_length=512)
-        logger.info("Cross-encoder model loaded")
+                logger.info("Loading cross-encoder model: %s", settings.reranker_model)
+                _model = CrossEncoder(settings.reranker_model, max_length=512)
+                logger.info("Cross-encoder model loaded")
     return _model
+
+
+def warmup():
+    """Pre-load the reranker model at startup so the first request isn't slow."""
+    _get_model()
 
 
 def rerank(
@@ -80,6 +90,8 @@ def rerank(
 
     for result, score in zip(results, scores):
         result.rerank_score = float(score)
+        # Sigmoid normalization: maps raw logit to [0,1]
+        result.quality_score = 1.0 / (1.0 + math.exp(-result.rerank_score))
 
     reranked = sorted(results, key=lambda r: r.rerank_score, reverse=True)
 

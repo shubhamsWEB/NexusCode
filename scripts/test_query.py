@@ -22,10 +22,9 @@ import logging
 
 logging.basicConfig(level=logging.WARNING)
 
-from sqlalchemy import text
 
 from src.config import settings
-from src.storage.db import AsyncSessionLocal, get_index_stats
+from src.storage.db import get_index_stats
 
 
 async def embed_query(query: str) -> list[float]:
@@ -42,48 +41,27 @@ async def search(
     top_k: int = 5,
     repo: str | None = None,
     language: str | None = None,
+    hyde: bool = False,
 ) -> list[dict]:
-    """Run a vector similarity search and return top-k results."""
+    """Run a vector similarity search and return top-k results using the core searcher."""
+    from src.retrieval.searcher import embed_query
+    from src.retrieval.searcher import search as core_search
     vector = await embed_query(query)
-    vector_str = "[" + ",".join(str(v) for v in vector) + "]"
+    repo_owner, repo_name = None, None
+    if repo and "/" in repo:
+        repo_owner, repo_name = repo.split("/", 1)
 
-    filters = ["is_deleted = FALSE"]
-    if repo:
-        parts = repo.split("/", 1)
-        if len(parts) == 2:
-            filters.append(f"repo_owner = '{parts[0]}' AND repo_name = '{parts[1]}'")
-    if language:
-        filters.append(f"language = '{language}'")
-
-    where_clause = " AND ".join(filters)
-
-    sql = text(f"""
-        SELECT
-            id,
-            file_path,
-            repo_owner,
-            repo_name,
-            symbol_name,
-            symbol_kind,
-            scope_chain,
-            start_line,
-            end_line,
-            language,
-            raw_content,
-            commit_sha,
-            commit_author,
-            1 - (embedding <=> '{vector_str}'::vector) AS score
-        FROM chunks
-        WHERE {where_clause}
-          AND embedding IS NOT NULL
-        ORDER BY embedding <=> '{vector_str}'::vector
-        LIMIT {top_k}
-    """)
-
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(sql)
-        rows = result.mappings().all()
-        return [dict(r) for r in rows]
+    results = await core_search(
+        query=query,
+        query_vector=vector,
+        top_k=top_k,
+        mode="hybrid",
+        repo_owner=repo_owner,
+        repo_name=repo_name,
+        language=language,
+        hyde=hyde,
+    )
+    return [r.__dict__ for r in results]
 
 
 def _print_results(results: list[dict], query: str) -> None:
@@ -121,6 +99,7 @@ async def main() -> None:
     parser.add_argument("--top-k", type=int, default=5, help="Number of results (default 5)")
     parser.add_argument("--repo", help="Scope to a specific repo: owner/name")
     parser.add_argument("--language", help="Filter by language: python, typescript, etc.")
+    parser.add_argument("--hyde", action="store_true", help="Enable HyDE (Hypothetical Document Embeddings)")
     parser.add_argument("--stats", action="store_true", help="Print index stats and exit")
     args = parser.parse_args()
 
@@ -142,7 +121,7 @@ async def main() -> None:
         f"Index has {stats['chunks']} chunks across {stats['files']} files in {stats['repos']} repo(s)."
     )
 
-    results = await search(args.query, top_k=args.top_k, repo=args.repo, language=args.language)
+    results = await search(args.query, top_k=args.top_k, repo=args.repo, language=args.language, hyde=args.hyde)
 
     if not results:
         print("No results found.")

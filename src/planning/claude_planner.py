@@ -27,6 +27,7 @@ from src.planning.schemas import (
     PLAN_TOOL_SCHEMA,
     ImplementationPlan,
     PlanMetadata,
+    SPARCSummary,
 )
 from src.utils.logging import get_secure_logger
 
@@ -173,6 +174,16 @@ MULTIMODAL REASONING (when images are attached):
   • Treat the image as the authoritative visual specification only \
     when the text query explicitly defers to it
   • Never hallucinate UI details not visible in the image
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SPARC METHODOLOGY (populate sparc_summary for all implementation plans)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+The above reasoning protocol maps to SPARC phases. Capture each in sparc_summary:
+S - SPECIFICATION: What exactly needs to be built. 1-2 sentences. Requirements + acceptance criteria.
+P - PSEUDOCODE: Non-trivial algorithmic logic in pseudocode. Skip for simple changes.
+A - ARCHITECTURE: How the change flows through the existing system. Maps to `summary`.
+R - REFINEMENT: Edge cases, trade-offs, failure modes addressed. Maps to design_alternatives + failure_modes.
+C - COMPLETION: How to verify done. Specific tests and checks. Maps to test_plan.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 OUTPUT QUALITY BAR
@@ -399,6 +410,7 @@ def _build_metadata(
         query_complexity=ctx.query_complexity,
         sub_queries_count=len(ctx.sub_queries),
         grounding_warnings=ctx.grounding_warnings,
+        quality_score=ctx.quality_score,
     )
 
 
@@ -452,6 +464,12 @@ def _parse_response(
     plan_data["query"] = query
     plan = ImplementationPlan.model_validate(plan_data)
     plan.metadata = _build_metadata(ctx, elapsed_ms, model)
+
+    # Parse SPARC summary if provided
+    sparc_data = plan_data.get("sparc_summary")
+    if sparc_data:
+        plan.sparc = SPARCSummary.model_validate(sparc_data)
+
     return plan
 
 

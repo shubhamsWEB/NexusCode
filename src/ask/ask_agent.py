@@ -124,7 +124,7 @@ _TOOLS = [from_anthropic_schema(_ASK_ANSWER_TOOL_DICT)]
 class AskResult:
     """Parsed result from the ask agent."""
 
-    __slots__ = ("answer", "cited_files", "elapsed_ms", "follow_up_hints")
+    __slots__ = ("answer", "cited_files", "elapsed_ms", "follow_up_hints", "quality_score")
 
     def __init__(
         self,
@@ -132,11 +132,13 @@ class AskResult:
         cited_files: list[str],
         follow_up_hints: list[str],
         elapsed_ms: float,
+        quality_score: float = 0.0,
     ):
         self.answer = answer
         self.cited_files = cited_files
         self.follow_up_hints = follow_up_hints
         self.elapsed_ms = elapsed_ms
+        self.quality_score = quality_score
 
     def to_dict(self) -> dict:
         return {
@@ -144,6 +146,7 @@ class AskResult:
             "cited_files": self.cited_files,
             "follow_up_hints": self.follow_up_hints,
             "elapsed_ms": self.elapsed_ms,
+            "quality_score": self.quality_score,
         }
 
 
@@ -210,7 +213,11 @@ def _build_ask_user_message(
 # ── Parse response ─────────────────────────────────────────────────────────────
 
 
-def _parse_tool_response(response: LLMResponse, elapsed_ms: float) -> AskResult:
+def _parse_tool_response(
+    response: LLMResponse,
+    elapsed_ms: float,
+    quality_score: float = 0.0,
+) -> AskResult:
     if not response.tool_calls:
         # Fallback: LLM responded in text
         return AskResult(
@@ -218,6 +225,7 @@ def _parse_tool_response(response: LLMResponse, elapsed_ms: float) -> AskResult:
             cited_files=[],
             follow_up_hints=[],
             elapsed_ms=elapsed_ms,
+            quality_score=quality_score,
         )
 
     data = response.tool_calls[0].input
@@ -226,6 +234,7 @@ def _parse_tool_response(response: LLMResponse, elapsed_ms: float) -> AskResult:
         cited_files=data.get("cited_files", []),
         follow_up_hints=data.get("follow_up_hints", []),
         elapsed_ms=elapsed_ms,
+        quality_score=quality_score,
     )
 
 
@@ -261,7 +270,7 @@ async def generate_answer(
 
     elapsed_ms = (time.monotonic() - t0) * 1000
     logger.info("ask: %s responded in %.0fms", effective_model, elapsed_ms)
-    return _parse_tool_response(response, elapsed_ms)
+    return _parse_tool_response(response, elapsed_ms, quality_score=ctx.quality_score)
 
 
 # ── Public stream generator ────────────────────────────────────────────────────
@@ -302,5 +311,5 @@ async def stream_generate_answer(
         elif isinstance(event, LLMResponse):
             elapsed_ms = (time.monotonic() - t0) * 1000
             logger.info("ask: stream complete in %.0fms", elapsed_ms)
-            result = _parse_tool_response(event, elapsed_ms)
+            result = _parse_tool_response(event, elapsed_ms, quality_score=ctx.quality_score)
             yield {"type": "answer_complete", "result": result}

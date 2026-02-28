@@ -44,6 +44,7 @@ class Chunk(Base):
     scope_chain: Mapped[str | None] = mapped_column(Text)
     start_line: Mapped[int] = mapped_column(Integer, nullable=False)
     end_line: Mapped[int] = mapped_column(Integer, nullable=False)
+    parent_chunk_id: Mapped[str | None] = mapped_column(Text)
 
     # Content
     raw_content: Mapped[str] = mapped_column(Text, nullable=False)

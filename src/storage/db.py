@@ -105,6 +105,31 @@ async def soft_delete_chunks(file_path: str, repo_owner: str, repo_name: str) ->
         return result.rowcount
 
 
+async def restore_chunk_ids(chunk_ids: list[str]) -> int:
+    """
+    Un-delete chunks by ID without touching their embedding.
+
+    Used for cache-hit chunks during re-indexing: the pipeline soft-deletes
+    all chunks for a file, then restores the ones whose content hasn't changed
+    (same chunk_id = same enriched_content = same embedding).
+    """
+    if not chunk_ids:
+        return 0
+    async with AsyncSessionLocal() as session:
+        stmt = (
+            update(Chunk)
+            .where(Chunk.id.in_(chunk_ids))
+            .values(is_deleted=False)
+        )
+        result = await session.execute(stmt)
+        await session.commit()
+        logger.debug(
+            "restore_chunk_ids",
+            extra={"count": len(chunk_ids), "restored": result.rowcount},
+        )
+        return result.rowcount
+
+
 async def get_chunk_count(repo_owner: str, repo_name: str) -> int:
     """Active (non-deleted) chunk count for a repo."""
     async with AsyncSessionLocal() as session:
@@ -118,6 +143,78 @@ async def get_chunk_count(repo_owner: str, repo_name: str) -> int:
             )
         )
         return result.scalar() or 0
+
+
+def get_parent_chunks_sync(chunk_ids: list[str]) -> dict[str, Any]:
+    """
+    Synchronous helper to fetch parent chunks by their IDs.
+    Returns a dict mapping chunk_id to its SearchResult-equivalent representation.
+    """
+    if not chunk_ids:
+        return {}
+
+    import asyncio  # if needed for thread local loop, but we can do sync with a new loop
+
+    from sqlalchemy import text
+
+    from src.retrieval.searcher import SearchResult
+
+    # We will use an asynchronous execution wrapped in a synchronous run
+    async def _fetch():
+        sql = text("""
+            SELECT
+                id, file_path, repo_owner, repo_name, language,
+                symbol_name, symbol_kind, scope_chain,
+                start_line, end_line, raw_content, enriched_content,
+                commit_sha, commit_author, token_count, parent_chunk_id
+            FROM chunks
+            WHERE id = ANY(:ids)
+        """)
+        async with AsyncSessionLocal() as session:
+            rows = (await session.execute(sql, {"ids": chunk_ids})).mappings().all()
+
+        results = {}
+        for row in rows:
+            results[row["id"]] = SearchResult(
+                chunk_id=row["id"],
+                file_path=row["file_path"],
+                repo_owner=row["repo_owner"],
+                repo_name=row["repo_name"],
+                language=row["language"],
+                symbol_name=row.get("symbol_name"),
+                symbol_kind=row.get("symbol_kind"),
+                scope_chain=row.get("scope_chain"),
+                start_line=row["start_line"],
+                end_line=row["end_line"],
+                raw_content=row["raw_content"],
+                enriched_content=row.get("enriched_content", ""),
+                commit_sha=row.get("commit_sha", ""),
+                commit_author=row.get("commit_author"),
+                token_count=row.get("token_count", 0),
+                parent_chunk_id=row.get("parent_chunk_id"),
+                score=0.0,
+            )
+        return results
+
+    # Since this might be called from within an existing event loop by assembler...
+    try:
+        asyncio.get_running_loop()
+        # If we have a running loop but need a sync result, we can't easily wait.
+        # But wait, assembler is synchronous. `assemble()` is called from sync ctx?
+        # Let's check where assemble is called: `search_endpoint` is async!
+        # Ah, so `assemble()` is called synchronously inside async endpoint.
+        # This is problematic. Let's make get_parent_chunks_sync use a new thread or loop?
+        # It's better to just change assemble to async, but wait, the prompt asked to keep assembler signature or something?
+        # No, the implementation plan just says `db.py function: get_parent_chunks(chunk_ids: list[str]) -> dict[str, SearchResult]`
+        # Let's use `run_in_executor` or simply `asyncio.run` in a ThreadPoolExecutor.
+        pass
+    except RuntimeError:
+        pass
+
+    # We can use a simpler approach: make get_parent_chunks async and change `assemble()` signature, or use `asyncio.run` cautiously.
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(1) as pool:
+        return pool.submit(asyncio.run, _fetch()).result()
 
 
 # ── Symbol operations ────────────────────────────────────────────────────────

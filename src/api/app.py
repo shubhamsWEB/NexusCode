@@ -15,6 +15,7 @@ from src.api.ask import router as ask_router
 from src.api.history import router as history_router
 from src.api.plan import router as plan_router
 from src.api.repos import router as repos_router
+from src.api.skills import router as skills_router
 from src.github.webhook import router as webhook_router
 from src.mcp.auth import router as auth_router
 from src.mcp.server import mcp_server
@@ -26,12 +27,31 @@ app = FastAPI(
     description="Centralized, always-fresh codebase knowledge service.",
 )
 
+
+@app.on_event("startup")
+async def _warmup_models():
+    """Pre-load heavy models at startup so the first request isn't slow."""
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+
+    # Warm the cross-encoder reranker in a thread (CPU-bound model load)
+    from src.retrieval.reranker import warmup as warmup_reranker
+
+    await loop.run_in_executor(None, warmup_reranker)
+
+    # Warm skill cache at startup so GET /skills is instant on first request
+    from src.skills.loader import load_all_skills
+
+    load_all_skills()
+
 app.include_router(webhook_router)
 app.include_router(auth_router)
 app.include_router(repos_router)
 app.include_router(plan_router)
 app.include_router(ask_router)
 app.include_router(history_router)
+app.include_router(skills_router)
 
 
 # Mount MCP server — exposes /mcp/sse and /mcp/messages/

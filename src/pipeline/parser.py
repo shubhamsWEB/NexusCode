@@ -576,6 +576,136 @@ def _parse_java(source: str, file_path: str) -> ParsedFile:
     )
 
 
+# ── Rust parser ──────────────────────────────────────────────────────────────
+
+
+def _rust_function_signature(node, source_bytes: bytes) -> str:
+    """Extract function signature from a Rust function_item or associated function."""
+    name_node = node.child_by_field_name("name")
+    params_node = node.child_by_field_name("parameters")
+    return_type_node = node.child_by_field_name("return_type")
+
+    name = _node_text(name_node, source_bytes) if name_node else "?"
+    params = _node_text(params_node, source_bytes) if params_node else "()"
+    sig = f"fn {name}{params}"
+    if return_type_node:
+        sig += f" -> {_node_text(return_type_node, source_bytes)}"
+    return sig
+
+
+def _rust_is_pub(node) -> bool:
+    """Check if a Rust item has a visibility modifier (pub)."""
+    return any(child.type == "visibility_modifier" for child in node.children)
+
+
+def _rust_parse_function(
+    node, source_bytes: bytes, parent_name: str | None = None
+) -> ParsedSymbol:
+    name_node = node.child_by_field_name("name")
+    name = _node_text(name_node, source_bytes) if name_node else "<anonymous>"
+    qualified = f"{parent_name}.{name}" if parent_name else name
+    kind = "method" if parent_name else "function"
+    start, end = _node_lines(node)
+    return ParsedSymbol(
+        name=name,
+        qualified_name=qualified,
+        kind=kind,
+        start_line=start,
+        end_line=end,
+        source=_node_text(node, source_bytes),
+        signature=_rust_function_signature(node, source_bytes),
+        parent_name=parent_name,
+        is_exported=_rust_is_pub(node),
+    )
+
+
+def _rust_parse_type(node, source_bytes: bytes) -> ParsedSymbol:
+    """Parse struct_item, enum_item, or trait_item."""
+    name_node = node.child_by_field_name("name")
+    name = _node_text(name_node, source_bytes) if name_node else "<anonymous>"
+    start, end = _node_lines(node)
+    first_line = _node_text(node, source_bytes).splitlines()[0].rstrip("{").strip()
+    return ParsedSymbol(
+        name=name,
+        qualified_name=name,
+        kind="class",  # struct/enum/trait → "class" for consistency
+        start_line=start,
+        end_line=end,
+        source=_node_text(node, source_bytes),
+        signature=first_line,
+        is_exported=_rust_is_pub(node),
+    )
+
+
+def _rust_parse_impl(node, source_bytes: bytes) -> ParsedSymbol:
+    """Parse impl_item — extract the type name and associated functions."""
+    # impl Foo { ... } or impl Trait for Foo { ... }
+    type_node = node.child_by_field_name("type")
+    trait_node = node.child_by_field_name("trait")
+
+    type_name = _node_text(type_node, source_bytes) if type_node else "<anonymous>"
+    if trait_node:
+        trait_name = _node_text(trait_node, source_bytes)
+        qualified = f"{type_name}::{trait_name}"
+    else:
+        qualified = type_name
+
+    start, end = _node_lines(node)
+    first_line = _node_text(node, source_bytes).splitlines()[0].rstrip("{").strip()
+
+    sym = ParsedSymbol(
+        name=type_name,
+        qualified_name=qualified,
+        kind="class",
+        start_line=start,
+        end_line=end,
+        source=_node_text(node, source_bytes),
+        signature=first_line,
+        is_exported=_rust_is_pub(node),
+    )
+
+    # Extract methods from the impl body
+    body = node.child_by_field_name("body")
+    if body:
+        for child in body.named_children:
+            if child.type == "function_item":
+                method = _rust_parse_function(child, source_bytes, parent_name=type_name)
+                sym.children.append(method)
+
+    return sym
+
+
+def _parse_rust(source: str, file_path: str) -> ParsedFile:
+    parser = _make_parser("rust")
+    source_bytes = source.encode("utf-8")
+    tree = parser.parse(source_bytes)
+    root = tree.root_node
+
+    imports: list[str] = []
+    symbols: list[ParsedSymbol] = []
+
+    for child in root.named_children:
+        if child.type == "use_declaration":
+            imports.append(_node_text(child, source_bytes).strip())
+
+        elif child.type == "function_item":
+            symbols.append(_rust_parse_function(child, source_bytes))
+
+        elif child.type in ("struct_item", "enum_item", "trait_item"):
+            symbols.append(_rust_parse_type(child, source_bytes))
+
+        elif child.type == "impl_item":
+            symbols.append(_rust_parse_impl(child, source_bytes))
+
+    return ParsedFile(
+        file_path=file_path,
+        language="rust",
+        source=source,
+        imports=imports,
+        top_level_symbols=symbols,
+    )
+
+
 # ── Public entry point ────────────────────────────────────────────────────────
 
 
@@ -600,6 +730,8 @@ def parse_file(file_path: str, source: str) -> ParsedFile | None:
             return _parse_go(source, file_path)
         if language == "java":
             return _parse_java(source, file_path)
+        if language == "rust":
+            return _parse_rust(source, file_path)
         # Fallback: return a ParsedFile with no symbols (still gets chunked as plain text)
         return ParsedFile(file_path=file_path, language=language, source=source)
 

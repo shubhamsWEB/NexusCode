@@ -15,9 +15,6 @@ def _make_chunk(**kwargs) -> RawChunk:
     defaults = {
         "file_path": "src/auth/service.py",
         "language": "python",
-        "symbol_name": "AuthService.validate_token",
-        "symbol_kind": "method",
-        "scope_chain": "AuthService > validate_token",
         "start_line": 42,
         "end_line": 55,
         "raw_content": (
@@ -25,6 +22,9 @@ def _make_chunk(**kwargs) -> RawChunk:
             "    payload = jwt.decode(token, self.secret)\n"
             "    return payload.get('valid', False)\n"
         ),
+        "symbol_name": "AuthService.validate_token",
+        "symbol_kind": "method",
+        "scope_chain": "AuthService > validate_token",
         "imports": ["import jwt", "from .models import User", "import os"],
     }
     defaults.update(kwargs)

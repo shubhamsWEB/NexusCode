@@ -30,6 +30,16 @@ logger = get_secure_logger(__name__)
 
 _PATH_SEGMENTS = 3
 
+def _estimate_header_tokens(result: SearchResult) -> int:
+    """Dynamically estimate the token overhead for this chunk's headers."""
+    # We use a string template approximating the real header fields
+    from src.pipeline.chunker import count_tokens
+
+    file_hdr = f"File: {result.file_path} ({result.language})  last: {result.commit_author} @ {(result.commit_sha or '')[:7]}"
+    chunk_hdr = f"[lines {result.start_line}-{result.end_line}]  Scope: {result.scope_chain}  Score: 0.0000"
+    # Provide 15 extra tokens for formatting dividers like ──────
+    return count_tokens(file_hdr + "\n" + chunk_hdr) + 15
+
 
 @dataclass
 class AssembledContext:
@@ -37,12 +47,14 @@ class AssembledContext:
     chunks_used: list[dict]  # metadata for each included chunk
     tokens_used: int
     retrieval_log: str  # human-readable summary of what was retrieved
+    quality_score: float = 0.0  # mean sigmoid-normalized rerank_score of selected chunks (0.0-1.0)
 
 
 def assemble(
     results: list[SearchResult],
     token_budget: int = 8000,
     query: str | None = None,
+    expand_parents: bool = False,
 ) -> AssembledContext:
     """
     Greedily fill the token budget with the highest-ranked chunks,
@@ -75,7 +87,7 @@ def assemble(
         if result.chunk_id in seen_ids:
             continue
 
-        section_tokens = count_tokens(result.raw_content) + 80  # header overhead
+        section_tokens = count_tokens(result.raw_content) + _estimate_header_tokens(result)
         if tokens_used + section_tokens > token_budget:
             # Try to keep going — maybe a later chunk is shorter
             continue
@@ -93,6 +105,41 @@ def assemble(
             }
         )
 
+    # ── Phase 1.5: Expand parents ─────────────────────────────────────────────
+    if expand_parents and selected:
+        from src.storage.db import get_parent_chunks_sync
+
+        # Find which chunks want a parent we don't already have
+        parent_ids_needed = set()
+        for r in selected:
+            if getattr(r, "parent_chunk_id", None) and r.parent_chunk_id not in seen_ids:
+                parent_ids_needed.add(r.parent_chunk_id)
+
+        if parent_ids_needed:
+            # Note: get_parent_chunks_sync must be synchronous or we need to await here.
+            # We'll need a DB helper. Let's assume it returns dict[str, SearchResult]
+            parents_map = get_parent_chunks_sync(list(parent_ids_needed))
+
+            for pid, p_result in parents_map.items():
+                section_tokens = count_tokens(p_result.raw_content) + _estimate_header_tokens(p_result)
+                if tokens_used + section_tokens > token_budget:
+                    continue  # Stop if budget full
+
+                seen_ids.add(pid)
+                # Parent score inherited from highest scoring child? For rendering order,
+                # we don't care about score, the sorting step handles line numbers.
+                selected.append(p_result)
+                tokens_used += section_tokens
+                chunks_used.append(
+                    {
+                        "file": p_result.file_path,
+                        "lines": f"{p_result.start_line}-{p_result.end_line}",
+                        "symbol": p_result.symbol_name,
+                        "score": 0.0, # Indicates it was pulled via parent expansion
+                        "tokens": section_tokens,
+                    }
+                )
+
     # ── Phase 2: group selected chunks by file, sort by start_line ───────────
     file_order: list[str] = []  # preserve first-seen file order (by top score)
     file_chunks: dict[str, list[SearchResult]] = defaultdict(list)
@@ -102,9 +149,9 @@ def assemble(
             file_order.append(r.file_path)
         file_chunks[r.file_path].append(r)
 
-    # Sort each file's chunks by start_line for narrative reading order
+    # Sort each file's chunks by start_line for narrative reading order, with summaries first
     for fp in file_order:
-        file_chunks[fp].sort(key=lambda r: r.start_line)
+        file_chunks[fp].sort(key=lambda r: (r.symbol_kind != "file_summary", r.start_line))
 
     # ── Phase 3: render file-grouped output ───────────────────────────────────
     sections: list[str] = []
@@ -160,11 +207,18 @@ def assemble(
         tokens_used,
     )
 
+    # Aggregate quality score: mean of selected chunks' sigmoid-normalized scores
+    quality_score = (
+        sum(r.quality_score for r in selected) / len(selected)
+        if selected else 0.0
+    )
+
     return AssembledContext(
         context_text=context_text,
         chunks_used=chunks_used,
         tokens_used=tokens_used,
         retrieval_log=retrieval_log,
+        quality_score=quality_score,
     )
 
 

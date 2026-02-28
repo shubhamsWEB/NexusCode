@@ -35,12 +35,13 @@ def count_tokens(text: str) -> int:
 class RawChunk:
     file_path: str
     language: str
-    symbol_name: str | None  # "UserService.authenticate"
-    symbol_kind: str | None  # "function" | "class" | "method" | None
-    scope_chain: str | None  # "UserService > authenticate"
     start_line: int
     end_line: int
     raw_content: str
+    symbol_name: str | None = None  # "UserService.authenticate"
+    symbol_kind: str | None = None  # "function" | "class" | "method" | None
+    scope_chain: str | None = None  # "UserService > authenticate"
+    parent_symbol_name: str | None = None  # "UserService" for its methods
     imports: list[str] = field(default_factory=list)
     token_count: int = 0
 
@@ -129,7 +130,7 @@ def _process_symbols(
             for child in sym.children:
                 child_tok = count_tokens(child.source)
                 if child_tok <= target:
-                    chunks.append(_symbol_to_chunk(child, parsed))
+                    chunks.append(_symbol_to_chunk(child, parsed, parent_name=sym.qualified_name))
                 else:
                     # Method is itself too large — sliding window over it
                     chunks.extend(
@@ -143,6 +144,7 @@ def _process_symbols(
                             symbol_name=child.qualified_name,
                             symbol_kind=child.kind,
                             scope_chain=_scope_chain(child),
+                            parent_symbol_name=sym.qualified_name,
                             base_line=child.start_line - 1,
                         )
                     )
@@ -167,13 +169,14 @@ def _process_symbols(
     return chunks
 
 
-def _symbol_to_chunk(sym: ParsedSymbol, parsed: ParsedFile) -> RawChunk:
+def _symbol_to_chunk(sym: ParsedSymbol, parsed: ParsedFile, parent_name: str | None = None) -> RawChunk:
     return RawChunk(
         file_path=parsed.file_path,
         language=parsed.language,
         symbol_name=sym.qualified_name,
         symbol_kind=sym.kind,
         scope_chain=_scope_chain(sym),
+        parent_symbol_name=parent_name,
         start_line=sym.start_line,
         end_line=sym.end_line,
         raw_content=sym.source,
@@ -188,10 +191,27 @@ def _scope_chain(sym: ParsedSymbol) -> str:
 
 
 def _class_header(sym: ParsedSymbol, full_source: str) -> str:
-    """Extract the class signature + docstring (up to 10 lines)."""
-    lines = sym.source.splitlines()
-    header_lines = lines[: min(10, len(lines))]
-    return "\n".join(header_lines)
+    """Build a structural class header from AST data giving the LLM a complete picture."""
+    parts = []
+    if sym.signature:
+        parts.append(sym.signature)
+    if sym.docstring:
+        parts.append(f'    """{sym.docstring}"""')
+    added_children = 0
+    for child in sym.children:
+        if child.signature:
+            parts.append(f"    {child.signature} ...")
+            added_children += 1
+            if added_children >= 15:
+                parts.append("    # ... (more methods)")
+                break
+
+    if not parts:
+        # Fallback to first 10 lines if AST missing details
+        lines = sym.source.splitlines()
+        return "\n".join(lines[: min(10, len(lines))])
+
+    return "\n".join(parts)
 
 
 # ── Sliding window fallback ───────────────────────────────────────────────────
@@ -207,6 +227,7 @@ def _sliding_window(
     symbol_name: str | None = None,
     symbol_kind: str | None = None,
     scope_chain: str | None = None,
+    parent_symbol_name: str | None = None,
     base_line: int = 0,
 ) -> list[RawChunk]:
     """Split source text by token budget with overlap. Used as a last resort."""
@@ -231,6 +252,7 @@ def _sliding_window(
                 symbol_name=symbol_name,
                 symbol_kind=symbol_kind,
                 scope_chain=scope_chain,
+                parent_symbol_name=parent_symbol_name,
                 start_line=start_line,
                 end_line=end_line,
                 raw_content=window_text,
@@ -271,6 +293,7 @@ def _greedy_merge(chunks: list[RawChunk], target: int) -> list[RawChunk]:
                 symbol_name=buf.symbol_name or chunk.symbol_name,
                 symbol_kind=buf.symbol_kind or chunk.symbol_kind,
                 scope_chain=buf.scope_chain or chunk.scope_chain,
+                parent_symbol_name=buf.parent_symbol_name or chunk.parent_symbol_name,
                 start_line=buf.start_line,
                 end_line=chunk.end_line,
                 raw_content=buf.raw_content + "\n" + chunk.raw_content,

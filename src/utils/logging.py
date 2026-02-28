@@ -73,8 +73,19 @@ class SecureLogger:
 
     @staticmethod
     def _sanitize_args(args: tuple) -> tuple:
-        """Sanitize every positional format argument."""
-        return tuple(sanitize_log(a) for a in args)
+        """
+        Sanitize positional format arguments.
+        Preserves numeric and boolean primitives so that %d and %f
+        format specifiers don't throw TypeErrors.
+        """
+        sanitized = []
+        for a in args:
+            # Safe primitives that cannot contain \n or \r
+            if isinstance(a, (int, float, bool)) and not isinstance(a, str):
+                sanitized.append(a)
+            else:
+                sanitized.append(sanitize_log(a))
+        return tuple(sanitized)
 
     @staticmethod
     def _sanitize_msg(msg: object) -> str:

@@ -62,6 +62,7 @@ class PlanningContext:
     tokens_used: int
     grounding_warnings: list[str]  # any gaps detected in context
     retrieval_log: str
+    quality_score: float = 0.0  # mean context quality from primary assembled context
 
 
 # ── Query complexity analysis ────────────────────────────────────────────────
@@ -75,6 +76,7 @@ class QueryAnalysis:
     sub_queries: list[str]  # decomposed queries for multi-concern tasks
     is_improvement: bool
     is_cross_cutting: bool  # touches many modules (e.g. "add auth to all endpoints")
+    is_concept: bool  # likely a conceptual question ('how', 'architecture') without specific paths/symbols
     mentioned_paths: list[str]  # explicit file/dir paths mentioned in query
     mentioned_symbols: list[str]  # explicit function/class names in query
 
@@ -181,14 +183,23 @@ def _analyze_query(query: str) -> QueryAnalysis:
     else:
         complexity = "simple"
 
-    # Decompose complex queries into sub-queries
+    # Sub-queries
     sub_queries = _decompose_query(query, complexity)
+
+    # Determine if it's a concept query
+    concept_keywords = ["how", "where", "what", "why", "architecture", "logic", "pattern", "flow", "handle", "manage"]
+    is_concept = bool(
+        not mentioned_paths
+        and not mentioned_symbols
+        and any(w in q for w in concept_keywords)
+    )
 
     return QueryAnalysis(
         complexity=complexity,
         sub_queries=sub_queries,
         is_improvement=is_improvement,
         is_cross_cutting=is_cross_cutting,
+        is_concept=is_concept,
         mentioned_paths=mentioned_paths,
         mentioned_symbols=mentioned_symbols,
     )
@@ -348,16 +359,13 @@ async def retrieve_planning_context(
 
     # ── Phase 0b: web research (background) ─────────────────────────────
     web_research_task = None
-    effective_web_research = web_research and not analysis.is_improvement
-    if effective_web_research:
+    if web_research:
         from src.planning.web_researcher import research_implementation
 
         logger.info("planning retriever: starting stack-aware web research (background)")
         web_research_task = asyncio.create_task(
             research_implementation(query, stack_context=stack_fingerprint, model=model)
         )
-    elif analysis.is_improvement and web_research:
-        logger.info("planning retriever: skipping web research for improvement query")
 
     # ── Phase 1: embed query ────────────────────────────────────────────
     logger.info("planning retriever: embedding query")
@@ -388,6 +396,7 @@ async def retrieve_planning_context(
         mode="hybrid",
         repo_owner=repo_owner,
         repo_name=repo_name,
+        hyde=analysis.is_concept,
     )
 
     # Sub-query searches (parallel) — merge results
@@ -401,6 +410,7 @@ async def retrieve_planning_context(
                 mode="hybrid",
                 repo_owner=repo_owner,
                 repo_name=repo_name,
+                hyde=analysis.is_concept,
             )
 
         sub_search_tasks = [_sub_search(sq, sv) for sq, sv in sub_query_vectors.items()]
@@ -568,7 +578,7 @@ async def retrieve_planning_context(
         f"component_context: {'yes (' + str(len(component_context)) + ' chars)' if component_context else 'no'}\n"
         f"is_improvement_query: {analysis.is_improvement}\n"
         f"stack_fingerprint: {'yes' if stack_fingerprint else 'no'}\n"
-        f"web_research: {'yes' if web_research_notes else 'no (skipped for improvement query)' if analysis.is_improvement else 'no'}\n"
+        f"web_research: {'yes' if web_research_notes else 'no'}\n"
         f"grounding_warnings: {grounding_warnings or 'none'}"
     )
 
@@ -596,6 +606,7 @@ async def retrieve_planning_context(
         tokens_used=primary_ctx.tokens_used,
         grounding_warnings=grounding_warnings,
         retrieval_log=retrieval_log,
+        quality_score=primary_ctx.quality_score,
     )
 
 

@@ -54,5 +54,5 @@ anthropic>=0.40.0
 openai>=1.30.0
 
 # Utilities
-python-multipart==0.0.20      # FastAPI form data
+python-multipart==0.0.22      # FastAPI form data
 structlog==24.4.0             # structured logging

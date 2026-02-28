@@ -369,6 +369,7 @@ class TestWebhookEndpoint:
         with (
             patch("src.github.webhook.get_queue", return_value=mock_queue),
             patch("src.storage.db.log_webhook_event", new_callable=AsyncMock),
+            patch("src.github.webhook._is_duplicate_job", return_value=False),
         ):
             client = TestClient(app)
             resp = client.post(

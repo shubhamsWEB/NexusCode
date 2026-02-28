@@ -155,3 +155,22 @@ def mock_github_fetcher():
         ]
     )
     return fetcher
+
+# ── Eval Suite Configuration ──────────────────────────────────────────────────
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--run-eval", action="store_true", default=False, help="run evaluation tests"
+    )
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "eval: mark test as an evaluation test")
+
+def pytest_collection_modifyitems(config, items):
+    if config.getoption("--run-eval"):
+        # --run-eval given in cli: do not skip eval tests
+        return
+    skip_eval = pytest.mark.skip(reason="need --run-eval option to run")
+    for item in items:
+        if "eval" in item.keywords:
+            item.add_marker(skip_eval)

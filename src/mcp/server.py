@@ -44,7 +44,8 @@ mcp_server = FastMCP(
         "Use get_file_context for a structural overview of a file. "
         "Use get_agent_context to get pre-assembled context before starting a task. "
         "Use plan_implementation to generate a complete implementation plan for a bug/feature/refactor. "
-        "Use ask_codebase to answer any natural-language question about the codebase in a mentor tone."
+        "Use ask_codebase to answer any natural-language question about the codebase in a mentor tone. "
+        "Use list_skills to discover available skills and their capabilities."
     ),
     warn_on_duplicate_tools=False,
 )
@@ -857,10 +858,11 @@ def _format_plan_markdown(plan) -> str:
     if plan.metadata:
         m = plan.metadata
         cq = f" · complexity: {m.query_complexity}" if m.query_complexity else ""
+        qs = f" · quality: {m.quality_score:.2f}" if m.quality_score else ""
         lines.append(
             f"---\n_Plan ID: `{plan.plan_id}` · Model: {m.model} · "
             f"Context: {m.context_tokens} tokens · {m.context_files} chunks · "
-            f"{m.elapsed_ms:.0f}ms{cq}_"
+            f"{m.elapsed_ms:.0f}ms{cq}{qs}_"
         )
         if m.grounding_warnings:
             lines.append("\n> **⚠ Retrieval warnings:**")
@@ -868,3 +870,33 @@ def _format_plan_markdown(plan) -> str:
                 lines.append(f"> - {w}")
 
     return "\n".join(lines)
+
+
+# ── Tool 8: list_skills ───────────────────────────────────────────────────────
+
+
+@mcp_server.tool()
+async def list_skills(
+    filter: Annotated[
+        str | None, "Optional text to filter skills by name or description"
+    ] = None,
+) -> str:
+    """
+    List all available NexusCode skills. Skills describe capabilities,
+    workflows, and domain knowledge for AI agents using this server.
+
+    Returns JSON list of skills with name, description, and source.
+    Use filter to narrow results by keyword.
+    """
+    from src.skills.loader import load_all_skills
+
+    skills = load_all_skills()
+    if filter:
+        fl = filter.lower()
+        skills = [s for s in skills if fl in s.name.lower() or fl in s.description.lower()]
+
+    result = [
+        {"name": s.name, "description": s.description, "source": s.source}
+        for s in skills
+    ]
+    return json.dumps({"skills": result, "total": len(result)}, indent=2)

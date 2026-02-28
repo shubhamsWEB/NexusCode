@@ -79,6 +79,20 @@ class PlanMetadata(BaseModel):
     query_complexity: str = ""  # "simple" | "moderate" | "complex"
     sub_queries_count: int = 0  # number of decomposed sub-queries
     grounding_warnings: list[str] = Field(default_factory=list)  # post-retrieval gaps
+    quality_score: float = Field(0.0, description="Context retrieval confidence (0.0-1.0 scale)")
+
+
+# ── SPARC summary ─────────────────────────────────────────────────────────────
+
+
+class SPARCSummary(BaseModel):
+    """SPARC methodology summary — 1-3 sentences per phase."""
+
+    specification: str = Field("", description="S: What needs to be built and why (requirements + acceptance criteria)")
+    pseudocode: str = Field("", description="P: Key algorithmic logic in pseudocode (omit for trivial changes)")
+    architecture: str = Field("", description="A: How this flows through the existing system architecture")
+    refinement: str = Field("", description="R: Edge cases, trade-offs, and failure modes considered")
+    completion: str = Field("", description="C: How to verify the implementation is done (tests + checks)")
 
 
 # ── Top-level plan ────────────────────────────────────────────────────────────
@@ -161,6 +175,7 @@ class ImplementationPlan(BaseModel):
         description="Risks and mitigations",
     )
     test_plan: str = Field("", description="What to test and how after implementation")
+    sparc: SPARCSummary | None = Field(None, description="SPARC methodology summary (populated for response_type='plan')")
     metadata: PlanMetadata | None = None
 
 
@@ -219,7 +234,7 @@ PLAN_TOOL_SCHEMA: dict = {
     ),
     "input_schema": {
         "type": "object",
-        "required": ["query", "summary", "design_decisions", "files", "steps"],
+        "required": ["query", "summary", "design_decisions", "files", "steps", "sparc_summary"],
         "properties": {
             "query": {"type": "string"},
             "summary": {
@@ -380,6 +395,17 @@ PLAN_TOOL_SCHEMA: dict = {
             "test_plan": {
                 "type": "string",
                 "description": "Specific test commands or assertions. Not generic advice.",
+            },
+            "sparc_summary": {
+                "type": "object",
+                "description": "SPARC methodology walkthrough (1-3 sentences per phase). Required for implementation plans.",
+                "properties": {
+                    "specification": {"type": "string", "description": "S: What needs to be built — requirements and acceptance criteria"},
+                    "pseudocode": {"type": "string", "description": "P: High-level pseudocode for key non-trivial logic. Skip for simple field additions."},
+                    "architecture": {"type": "string", "description": "A: How the change flows through the system. Maps to the summary field."},
+                    "refinement": {"type": "string", "description": "R: Edge cases and trade-offs. Maps to design_alternatives + failure_modes."},
+                    "completion": {"type": "string", "description": "C: Verification approach. Maps to test_plan."},
+                },
             },
         },
     },

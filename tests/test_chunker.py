@@ -96,12 +96,10 @@ def _make_chunk(start: int, end: int, content: str, tok: int | None = None) -> R
     return RawChunk(
         file_path="f.py",
         language="python",
-        symbol_name=None,
-        symbol_kind=None,
-        scope_chain=None,
         start_line=start,
         end_line=end,
         raw_content=content,
+        parent_symbol_name=None,
         token_count=tok or count_tokens(content),
     )
 

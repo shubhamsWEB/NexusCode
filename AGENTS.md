@@ -20,7 +20,7 @@ push webhooks and exposes them through MCP tools and a REST API.
 
 ---
 
-## MCP Tools (7 total)
+## MCP Tools (8 total)
 
 ```
 search_codebase(query, repo?, language?, top_k?, mode?)     — hybrid semantic+keyword search
@@ -28,11 +28,14 @@ get_symbol(name, repo?)                                     — fuzzy symbol loo
 find_callers(symbol, repo?, depth?)                         — who calls this function?
 get_file_context(path, repo?, include_deps?)                — structural file map
 get_agent_context(task, focal_files?, token_budget?, repo?) — pre-assembled context for a task
-plan_implementation(query, repo?, web_research?)            — web research + codebase → implementation plan
-ask_codebase(question, repo?)                               — answer natural-language questions, mentor tone
+plan_implementation(query, repo?, web_research?, model?)    — web research + codebase → implementation plan
+ask_codebase(question, repo?, model?)                       — answer natural-language questions, mentor tone
+list_skills(filter?)                                        — discover available skills
 ```
 
 MCP endpoint: `http://localhost:8000/mcp` (SSE transport)
+
+Generate a token: `POST /auth/token` with `{"sub": "my-agent", "repos": []}` → use as `Authorization: Bearer <token>`
 
 ---
 
@@ -110,3 +113,20 @@ Full instructions for each capability live in `skills/`:
 - `skills/search-codebase/`     — search code, look up symbols, get context
 - `skills/manage-repos/`        — register, index, and manage repositories
 - `skills/ask-codebase/`        — answer natural-language questions about the codebase
+
+Custom skills: set `CUSTOM_SKILLS_DIRS=/path/to/your/skills` in `.env`. See `doc/custom-skills.md`.
+
+---
+
+## Documentation
+
+Full docs in `doc/`:
+
+- `doc/getting-started.md`    — installation, first run
+- `doc/connecting-github.md`  — PAT, GitHub App, webhooks
+- `doc/mcp-access.md`         — MCP tokens, Claude Desktop setup
+- `doc/search-and-ask.md`     — search modes, Ask Mode, Planning Mode
+- `doc/custom-skills.md`      — adding custom skills
+- `doc/api-reference.md`      — complete REST API reference
+- `doc/configuration.md`      — all environment variables
+- `doc/deployment.md`         — Docker, Railway, production

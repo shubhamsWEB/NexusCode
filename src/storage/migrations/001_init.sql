@@ -29,8 +29,8 @@ CREATE TABLE IF NOT EXISTS chunks (
     imports          TEXT[],
     token_count      INTEGER,
 
-    -- Vector (voyage-code-2 = 1024 dims)
-    embedding        vector(1536),           -- voyage-code-2 actual dimensions
+    -- Vector (voyage-code-2 = 1536 dims)
+    embedding        vector(1536),
 
     -- Lifecycle
     indexed_at       TIMESTAMP WITH TIME ZONE DEFAULT NOW(),

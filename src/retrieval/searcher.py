@@ -21,13 +21,6 @@ from src.utils.sanitize import sanitize_log
 
 logger = get_secure_logger(__name__)
 
-# RRF constant — higher = less penalty for low-ranked results
-_RRF_K = 60
-
-# How many candidates to pull from each sub-search before RRF
-_CANDIDATE_MULTIPLIER = 4
-
-
 @dataclass
 class SearchResult:
     chunk_id: str
@@ -46,7 +39,9 @@ class SearchResult:
     commit_author: str | None
     token_count: int
     score: float  # final score (cosine, BM25, or RRF)
-    rerank_score: float = 0.0  # set by reranker
+    parent_chunk_id: str | None = None
+    rerank_score: float = 0.0   # set by reranker
+    quality_score: float = 0.0  # sigmoid-normalized rerank_score (0.0-1.0)
 
 
 # ── Public entry point ────────────────────────────────────────────────────────
@@ -60,6 +55,7 @@ async def search(
     repo_owner: str | None = None,
     repo_name: str | None = None,
     language: str | None = None,
+    hyde: bool = False,
 ) -> list[SearchResult]:
     """
     Run a search and return top_k results.
@@ -67,7 +63,19 @@ async def search(
     query_vector must already be embedded by the caller (so the caller
     controls the embedding step and can cache it).
     """
-    candidates = top_k * _CANDIDATE_MULTIPLIER
+    if hyde:
+        from src.retrieval.hyde import hyde_search
+        return await hyde_search(
+            query=query,
+            query_vector=query_vector,
+            top_k=top_k,
+            mode=mode,
+            repo_owner=repo_owner,
+            repo_name=repo_name,
+            language=language,
+        )
+
+    candidates = top_k * settings.retrieval_candidate_multiplier
 
     if mode == "semantic":
         results = await _semantic_search(query_vector, candidates, repo_owner, repo_name, language)
@@ -103,7 +111,7 @@ async def _semantic_search(
             id, file_path, repo_owner, repo_name, language,
             symbol_name, symbol_kind, scope_chain,
             start_line, end_line, raw_content, enriched_content,
-            commit_sha, commit_author, token_count,
+            commit_sha, commit_author, token_count, parent_chunk_id,
             1 - (embedding <=> :vec ::vector) AS score
         FROM chunks
         WHERE {where}
@@ -112,7 +120,9 @@ async def _semantic_search(
         LIMIT :limit
     """)
 
-    return await _execute_search(sql, params)
+    # SET LOCAL hnsw.ef_search — no-op if ivfflat is still in use
+    pre_stmts = [text(f"SET LOCAL hnsw.ef_search = {settings.hnsw_ef_search}")]
+    return await _execute_search(sql, params, pre_statements=pre_stmts)
 
 
 # ── Keyword search ────────────────────────────────────────────────────────────
@@ -129,21 +139,24 @@ async def _keyword_search(
     params.update({"query": query, "limit": limit})
 
     # Combine tsvector full-text rank + trigram symbol name similarity
+    # Now searching enriched_content instead of raw_content
+    ts_weight = settings.retrieval_keyword_tsvector_weight
+    trgm_weight = settings.retrieval_keyword_trgm_weight
     sql = text(f"""
         SELECT
             id, file_path, repo_owner, repo_name, language,
             symbol_name, symbol_kind, scope_chain,
             start_line, end_line, raw_content, enriched_content,
-            commit_sha, commit_author, token_count,
+            commit_sha, commit_author, token_count, parent_chunk_id,
             (
-                ts_rank(to_tsvector('english', raw_content),
-                        plainto_tsquery('english', :query)) * 0.7
-                + COALESCE(similarity(symbol_name, :query), 0) * 0.3
+                ts_rank(to_tsvector('english', enriched_content),
+                        plainto_tsquery('english', :query)) * {ts_weight}
+                + COALESCE(similarity(symbol_name, :query), 0) * {trgm_weight}
             ) AS score
         FROM chunks
         WHERE {where}
           AND (
-            to_tsvector('english', raw_content) @@ plainto_tsquery('english', :query)
+            to_tsvector('english', enriched_content) @@ plainto_tsquery('english', :query)
             OR symbol_name % :query
           )
         ORDER BY score DESC
@@ -157,8 +170,7 @@ async def _keyword_search(
 
 
 def _reciprocal_rank_fusion(
-    semantic: list[SearchResult],
-    keyword: list[SearchResult],
+    *result_lists: list[SearchResult],
 ) -> list[SearchResult]:
     """
     Merge two ranked lists using Reciprocal Rank Fusion.
@@ -166,17 +178,16 @@ def _reciprocal_rank_fusion(
     """
     # Build lookup: chunk_id → SearchResult (semantic takes priority for metadata)
     by_id: dict[str, SearchResult] = {}
-    for r in semantic + keyword:
-        if r.chunk_id not in by_id:
-            by_id[r.chunk_id] = r
+    for lst in result_lists:
+        for r in lst:
+            if r.chunk_id not in by_id:
+                by_id[r.chunk_id] = r
 
     rrf_scores: dict[str, float] = {}
 
-    for rank, result in enumerate(semantic, 1):
-        rrf_scores[result.chunk_id] = rrf_scores.get(result.chunk_id, 0) + 1 / (_RRF_K + rank)
-
-    for rank, result in enumerate(keyword, 1):
-        rrf_scores[result.chunk_id] = rrf_scores.get(result.chunk_id, 0) + 1 / (_RRF_K + rank)
+    for lst in result_lists:
+        for rank, result in enumerate(lst, 1):
+            rrf_scores[result.chunk_id] = rrf_scores.get(result.chunk_id, 0) + 1 / (settings.retrieval_rrf_k + rank)
 
     sorted_ids = sorted(rrf_scores, key=rrf_scores.__getitem__, reverse=True)
 
@@ -213,8 +224,15 @@ def _build_where(
     return " AND ".join(clauses), params
 
 
-async def _execute_search(sql, params: dict) -> list[SearchResult]:
+async def _execute_search(
+    sql,
+    params: dict,
+    pre_statements: list | None = None,
+) -> list[SearchResult]:
     async with AsyncSessionLocal() as session:
+        if pre_statements:
+            for stmt in pre_statements:
+                await session.execute(stmt)
         rows = (await session.execute(sql, params)).mappings().all()
 
     results = []
@@ -236,6 +254,7 @@ async def _execute_search(sql, params: dict) -> list[SearchResult]:
                 commit_sha=row.get("commit_sha", ""),
                 commit_author=row.get("commit_author"),
                 token_count=row.get("token_count", 0),
+                parent_chunk_id=row.get("parent_chunk_id"),
                 score=float(row.get("score") or 0),
             )
         )
@@ -250,6 +269,11 @@ async def embed_query(query: str) -> list[float]:
     import asyncio
 
     from src.pipeline.embedder import _make_client
+    from src.retrieval.embed_cache import get_cached_embedding, set_cached_embedding
+
+    cached = await get_cached_embedding(query)
+    if cached:
+        return cached
 
     client = _make_client()
     loop = asyncio.get_running_loop()
@@ -257,7 +281,10 @@ async def embed_query(query: str) -> list[float]:
         None,
         lambda: client.embed([query], model=settings.embedding_model, input_type="query"),
     )
-    return result.embeddings[0]
+
+    vec = result.embeddings[0]
+    await set_cached_embedding(query, vec)
+    return vec
 
 
 async def embed_queries_batch(queries: list[str]) -> list[list[float]]:
@@ -282,15 +309,38 @@ async def embed_queries_batch(queries: list[str]) -> list[list[float]]:
     loop = asyncio.get_running_loop()
 
     try:
+        from src.retrieval.embed_cache import get_cached_embedding, set_cached_embedding
+
+        # Check cache first
+        cached_results = []
+        missing_indices = []
+        missing_queries = []
+
+        for i, q in enumerate(queries):
+            c = await get_cached_embedding(q)
+            cached_results.append(c)  # None if missing
+            if c is None:
+                missing_indices.append(i)
+                missing_queries.append(q)
+
+        if not missing_queries:
+            return cached_results
+
         result = await loop.run_in_executor(
             None,
             lambda: client.embed(
-                queries,
+                missing_queries,
                 model=settings.embedding_model,
                 input_type="query",
             ),
         )
-        return result.embeddings
+
+        # Merge back and cache
+        for idx, q, vec in zip(missing_indices, missing_queries, result.embeddings):
+            cached_results[idx] = vec
+            await set_cached_embedding(q, vec)
+
+        return cached_results
     except Exception as exc:
         # Batch failed — fall back to sequential per-query calls
         logger.warning(
