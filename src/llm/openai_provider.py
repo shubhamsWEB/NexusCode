@@ -37,7 +37,7 @@ class OpenAIProvider:
     def __init__(self, api_key: str | None = None, base_url: str | None = None):
         self._api_key = api_key
         self._base_url = base_url
-        self._client = None
+        self._client: Any | None = None
         self._semaphore = asyncio.Semaphore(1)
 
     def _get_client(self):

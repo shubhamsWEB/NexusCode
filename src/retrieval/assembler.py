@@ -30,13 +30,16 @@ logger = get_secure_logger(__name__)
 
 _PATH_SEGMENTS = 3
 
+
 def _estimate_header_tokens(result: SearchResult) -> int:
     """Dynamically estimate the token overhead for this chunk's headers."""
     # We use a string template approximating the real header fields
     from src.pipeline.chunker import count_tokens
 
     file_hdr = f"File: {result.file_path} ({result.language})  last: {result.commit_author} @ {(result.commit_sha or '')[:7]}"
-    chunk_hdr = f"[lines {result.start_line}-{result.end_line}]  Scope: {result.scope_chain}  Score: 0.0000"
+    chunk_hdr = (
+        f"[lines {result.start_line}-{result.end_line}]  Scope: {result.scope_chain}  Score: 0.0000"
+    )
     # Provide 15 extra tokens for formatting dividers like ──────
     return count_tokens(file_hdr + "\n" + chunk_hdr) + 15
 
@@ -110,10 +113,11 @@ def assemble(
         from src.storage.db import get_parent_chunks_sync
 
         # Find which chunks want a parent we don't already have
-        parent_ids_needed = set()
+        parent_ids_needed: set[str] = set()
         for r in selected:
-            if getattr(r, "parent_chunk_id", None) and r.parent_chunk_id not in seen_ids:
-                parent_ids_needed.add(r.parent_chunk_id)
+            pid = getattr(r, "parent_chunk_id", None)
+            if pid and pid not in seen_ids:
+                parent_ids_needed.add(pid)
 
         if parent_ids_needed:
             # Note: get_parent_chunks_sync must be synchronous or we need to await here.
@@ -121,7 +125,9 @@ def assemble(
             parents_map = get_parent_chunks_sync(list(parent_ids_needed))
 
             for pid, p_result in parents_map.items():
-                section_tokens = count_tokens(p_result.raw_content) + _estimate_header_tokens(p_result)
+                section_tokens = count_tokens(p_result.raw_content) + _estimate_header_tokens(
+                    p_result
+                )
                 if tokens_used + section_tokens > token_budget:
                     continue  # Stop if budget full
 
@@ -135,7 +141,7 @@ def assemble(
                         "file": p_result.file_path,
                         "lines": f"{p_result.start_line}-{p_result.end_line}",
                         "symbol": p_result.symbol_name,
-                        "score": 0.0, # Indicates it was pulled via parent expansion
+                        "score": 0.0,  # Indicates it was pulled via parent expansion
                         "tokens": section_tokens,
                     }
                 )
@@ -208,10 +214,7 @@ def assemble(
     )
 
     # Aggregate quality score: mean of selected chunks' sigmoid-normalized scores
-    quality_score = (
-        sum(r.quality_score for r in selected) / len(selected)
-        if selected else 0.0
-    )
+    quality_score = sum(r.quality_score for r in selected) / len(selected) if selected else 0.0
 
     return AssembledContext(
         context_text=context_text,

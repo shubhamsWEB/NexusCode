@@ -877,9 +877,7 @@ def _format_plan_markdown(plan) -> str:
 
 @mcp_server.tool()
 async def list_skills(
-    filter: Annotated[
-        str | None, "Optional text to filter skills by name or description"
-    ] = None,
+    filter: Annotated[str | None, "Optional text to filter skills by name or description"] = None,
 ) -> str:
     """
     List all available NexusCode skills. Skills describe capabilities,
@@ -895,8 +893,5 @@ async def list_skills(
         fl = filter.lower()
         skills = [s for s in skills if fl in s.name.lower() or fl in s.description.lower()]
 
-    result = [
-        {"name": s.name, "description": s.description, "source": s.source}
-        for s in skills
-    ]
+    result = [{"name": s.name, "description": s.description, "source": s.source} for s in skills]
     return json.dumps({"skills": result, "total": len(result)}, indent=2)

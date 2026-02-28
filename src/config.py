@@ -118,13 +118,24 @@ class Settings(BaseSettings):
 
     # ── Retrieval ────────────────────────────────────────────────────────────
     retrieval_rrf_k: int = Field(60, description="RRF K constant")
-    retrieval_candidate_multiplier: int = Field(4, description="Multiplier for candidates before RRF")
-    retrieval_keyword_tsvector_weight: float = Field(0.7, description="Weight for full text match in keyword search")
-    retrieval_keyword_trgm_weight: float = Field(0.3, description="Weight for trigram match in keyword search")
-    hnsw_ef_search: int = Field(40, description="HNSW ef_search parameter — higher = better recall, slower query (range: 10-200)")
+    retrieval_candidate_multiplier: int = Field(
+        4, description="Multiplier for candidates before RRF"
+    )
+    retrieval_keyword_tsvector_weight: float = Field(
+        0.7, description="Weight for full text match in keyword search"
+    )
+    retrieval_keyword_trgm_weight: float = Field(
+        0.3, description="Weight for trigram match in keyword search"
+    )
+    hnsw_ef_search: int = Field(
+        40,
+        description="HNSW ef_search parameter — higher = better recall, slower query (range: 10-200)",
+    )
 
     # ── Custom Skills ─────────────────────────────────────────────────────────
-    custom_skills_dirs: str = Field("", description="Comma-separated paths to custom skill directories")
+    custom_skills_dirs: str = Field(
+        "", description="Comma-separated paths to custom skill directories"
+    )
 
     # ── Derived helpers ──────────────────────────────────────────────────────
     @property

@@ -93,6 +93,7 @@ def enrich_chunk(chunk: RawChunk) -> EnrichedChunk:
 def enrich_chunks(chunks: list[RawChunk]) -> list[EnrichedChunk]:
     return [enrich_chunk(c) for c in chunks]
 
+
 def link_parent_chunks(chunks: list[EnrichedChunk]) -> list[EnrichedChunk]:
     """
     Establish parent/child relationships between chunks.

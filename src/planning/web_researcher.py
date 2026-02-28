@@ -38,10 +38,12 @@ def _get_anthropic_client():
         if importlib.util.find_spec("anthropic") is None:
             return None
         import anthropic
+
         if not settings.anthropic_api_key:
             return None
         _anthropic_client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
     return _anthropic_client
+
 
 def _get_openai_client():
     global _openai_client
@@ -49,6 +51,7 @@ def _get_openai_client():
         if importlib.util.find_spec("openai") is None:
             return None
         import openai
+
         if not settings.openai_api_key:
             return None
         _openai_client = openai.AsyncOpenAI(api_key=settings.openai_api_key)
@@ -136,8 +139,8 @@ async def research_implementation(
                 model="gpt-4o",
                 messages=[
                     {"role": "system", "content": _RESEARCH_SYSTEM},
-                    {"role": "user", "content": user_content}
-                ]
+                    {"role": "user", "content": user_content},
+                ],
             )
             notes = response.choices[0].message.content or ""
             if notes:
@@ -181,9 +184,7 @@ async def research_implementation(
                 )
                 return _ensure_format(notes)
         except Exception as exc:
-            logger.warning(
-                "web_researcher: anthropic failed: %s", sanitize_log(exc)
-            )
+            logger.warning("web_researcher: anthropic failed: %s", sanitize_log(exc))
 
     return ""
 

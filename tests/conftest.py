@@ -156,15 +156,17 @@ def mock_github_fetcher():
     )
     return fetcher
 
+
 # ── Eval Suite Configuration ──────────────────────────────────────────────────
 
+
 def pytest_addoption(parser):
-    parser.addoption(
-        "--run-eval", action="store_true", default=False, help="run evaluation tests"
-    )
+    parser.addoption("--run-eval", action="store_true", default=False, help="run evaluation tests")
+
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "eval: mark test as an evaluation test")
+
 
 def pytest_collection_modifyitems(config, items):
     if config.getoption("--run-eval"):

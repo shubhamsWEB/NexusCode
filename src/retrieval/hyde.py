@@ -4,17 +4,15 @@ HyDE (Hypothetical Document Embeddings) Query Expansion.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import structlog
 
 from src.config import settings
 from src.llm.registry import get_provider
-from src.retrieval.searcher import (
-    SearchResult,
-    _keyword_search,
-    _reciprocal_rank_fusion,
-    _semantic_search,
-    embed_query,
-)
+
+if TYPE_CHECKING:
+    from src.retrieval.searcher import SearchResult
 
 logger = structlog.get_logger(__name__)
 
@@ -68,7 +66,10 @@ async def hyde_search(
     if not hyde_doc:
         logger.info("HyDE document generation failed or empty, falling back to standard search")
         from src.retrieval.searcher import search
+
         return await search(query, query_vector, top_k, mode, repo_owner, repo_name, language)
+
+    from src.retrieval.searcher import embed_query
 
     hyde_vector = await embed_query(hyde_doc)
 
@@ -76,13 +77,23 @@ async def hyde_search(
     lists_to_merge = []
 
     if mode in ("semantic", "hybrid"):
-        semantic_orig = await _semantic_search(query_vector, candidates, repo_owner, repo_name, language)
-        semantic_hyde = await _semantic_search(hyde_vector, candidates, repo_owner, repo_name, language)
+        from src.retrieval.searcher import _semantic_search
+
+        semantic_orig = await _semantic_search(
+            query_vector, candidates, repo_owner, repo_name, language
+        )
+        semantic_hyde = await _semantic_search(
+            hyde_vector, candidates, repo_owner, repo_name, language
+        )
         lists_to_merge.extend([semantic_orig, semantic_hyde])
 
     if mode in ("keyword", "hybrid"):
+        from src.retrieval.searcher import _keyword_search
+
         keyword = await _keyword_search(query, candidates, repo_owner, repo_name, language)
         lists_to_merge.append(keyword)
+
+    from src.retrieval.searcher import _reciprocal_rank_fusion
 
     merged = _reciprocal_rank_fusion(*lists_to_merge)
     return merged[:top_k]

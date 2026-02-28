@@ -78,7 +78,7 @@ class SecureLogger:
         Preserves numeric and boolean primitives so that %d and %f
         format specifiers don't throw TypeErrors.
         """
-        sanitized = []
+        sanitized: list[Any] = []
         for a in args:
             # Safe primitives that cannot contain \n or \r
             if isinstance(a, (int, float, bool)) and not isinstance(a, str):

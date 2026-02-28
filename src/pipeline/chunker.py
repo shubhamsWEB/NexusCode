@@ -169,7 +169,9 @@ def _process_symbols(
     return chunks
 
 
-def _symbol_to_chunk(sym: ParsedSymbol, parsed: ParsedFile, parent_name: str | None = None) -> RawChunk:
+def _symbol_to_chunk(
+    sym: ParsedSymbol, parsed: ParsedFile, parent_name: str | None = None
+) -> RawChunk:
     return RawChunk(
         file_path=parsed.file_path,
         language=parsed.language,

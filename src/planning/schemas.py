@@ -88,11 +88,21 @@ class PlanMetadata(BaseModel):
 class SPARCSummary(BaseModel):
     """SPARC methodology summary — 1-3 sentences per phase."""
 
-    specification: str = Field("", description="S: What needs to be built and why (requirements + acceptance criteria)")
-    pseudocode: str = Field("", description="P: Key algorithmic logic in pseudocode (omit for trivial changes)")
-    architecture: str = Field("", description="A: How this flows through the existing system architecture")
-    refinement: str = Field("", description="R: Edge cases, trade-offs, and failure modes considered")
-    completion: str = Field("", description="C: How to verify the implementation is done (tests + checks)")
+    specification: str = Field(
+        "", description="S: What needs to be built and why (requirements + acceptance criteria)"
+    )
+    pseudocode: str = Field(
+        "", description="P: Key algorithmic logic in pseudocode (omit for trivial changes)"
+    )
+    architecture: str = Field(
+        "", description="A: How this flows through the existing system architecture"
+    )
+    refinement: str = Field(
+        "", description="R: Edge cases, trade-offs, and failure modes considered"
+    )
+    completion: str = Field(
+        "", description="C: How to verify the implementation is done (tests + checks)"
+    )
 
 
 # ── Top-level plan ────────────────────────────────────────────────────────────
@@ -175,7 +185,9 @@ class ImplementationPlan(BaseModel):
         description="Risks and mitigations",
     )
     test_plan: str = Field("", description="What to test and how after implementation")
-    sparc: SPARCSummary | None = Field(None, description="SPARC methodology summary (populated for response_type='plan')")
+    sparc: SPARCSummary | None = Field(
+        None, description="SPARC methodology summary (populated for response_type='plan')"
+    )
     metadata: PlanMetadata | None = None
 
 
@@ -400,11 +412,26 @@ PLAN_TOOL_SCHEMA: dict = {
                 "type": "object",
                 "description": "SPARC methodology walkthrough (1-3 sentences per phase). Required for implementation plans.",
                 "properties": {
-                    "specification": {"type": "string", "description": "S: What needs to be built — requirements and acceptance criteria"},
-                    "pseudocode": {"type": "string", "description": "P: High-level pseudocode for key non-trivial logic. Skip for simple field additions."},
-                    "architecture": {"type": "string", "description": "A: How the change flows through the system. Maps to the summary field."},
-                    "refinement": {"type": "string", "description": "R: Edge cases and trade-offs. Maps to design_alternatives + failure_modes."},
-                    "completion": {"type": "string", "description": "C: Verification approach. Maps to test_plan."},
+                    "specification": {
+                        "type": "string",
+                        "description": "S: What needs to be built — requirements and acceptance criteria",
+                    },
+                    "pseudocode": {
+                        "type": "string",
+                        "description": "P: High-level pseudocode for key non-trivial logic. Skip for simple field additions.",
+                    },
+                    "architecture": {
+                        "type": "string",
+                        "description": "A: How the change flows through the system. Maps to the summary field.",
+                    },
+                    "refinement": {
+                        "type": "string",
+                        "description": "R: Edge cases and trade-offs. Maps to design_alternatives + failure_modes.",
+                    },
+                    "completion": {
+                        "type": "string",
+                        "description": "C: Verification approach. Maps to test_plan.",
+                    },
                 },
             },
         },

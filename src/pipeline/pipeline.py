@@ -196,6 +196,7 @@ async def _handle_upserts(
                 chunks = chunk_file(parsed)
 
                 from src.pipeline.summarizer import generate_file_summary
+
                 summary_chunk = await generate_file_summary(path, content)
                 if summary_chunk:
                     chunks.insert(0, summary_chunk)

@@ -46,6 +46,7 @@ async def search(
     """Run a vector similarity search and return top-k results using the core searcher."""
     from src.retrieval.searcher import embed_query
     from src.retrieval.searcher import search as core_search
+
     vector = await embed_query(query)
     repo_owner, repo_name = None, None
     if repo and "/" in repo:
@@ -99,7 +100,9 @@ async def main() -> None:
     parser.add_argument("--top-k", type=int, default=5, help="Number of results (default 5)")
     parser.add_argument("--repo", help="Scope to a specific repo: owner/name")
     parser.add_argument("--language", help="Filter by language: python, typescript, etc.")
-    parser.add_argument("--hyde", action="store_true", help="Enable HyDE (Hypothetical Document Embeddings)")
+    parser.add_argument(
+        "--hyde", action="store_true", help="Enable HyDE (Hypothetical Document Embeddings)"
+    )
     parser.add_argument("--stats", action="store_true", help="Print index stats and exit")
     args = parser.parse_args()
 
@@ -121,7 +124,9 @@ async def main() -> None:
         f"Index has {stats['chunks']} chunks across {stats['files']} files in {stats['repos']} repo(s)."
     )
 
-    results = await search(args.query, top_k=args.top_k, repo=args.repo, language=args.language, hyde=args.hyde)
+    results = await search(
+        args.query, top_k=args.top_k, repo=args.repo, language=args.language, hyde=args.hyde
+    )
 
     if not results:
         print("No results found.")

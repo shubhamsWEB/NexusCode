@@ -45,6 +45,7 @@ async def _warmup_models():
 
     load_all_skills()
 
+
 app.include_router(webhook_router)
 app.include_router(auth_router)
 app.include_router(repos_router)

@@ -4,11 +4,7 @@ from src.pipeline.parser import parse_file
 
 
 def test_parse_rust_function():
-    source = (
-        'pub fn greet(name: &str) -> String {\n'
-        '    format!("Hello, {}!", name)\n'
-        '}\n'
-    )
+    source = 'pub fn greet(name: &str) -> String {\n    format!("Hello, {}!", name)\n}\n'
     result = parse_file("main.rs", source)
     assert result is not None
     assert result.language == "rust"
@@ -30,12 +26,7 @@ def test_parse_rust_private_function():
 
 
 def test_parse_rust_struct():
-    source = (
-        "pub struct Config {\n"
-        "    pub name: String,\n"
-        "    port: u16,\n"
-        "}\n"
-    )
+    source = "pub struct Config {\n    pub name: String,\n    port: u16,\n}\n"
     result = parse_file("config.rs", source)
     assert result is not None
     assert len(result.top_level_symbols) == 1
@@ -46,13 +37,7 @@ def test_parse_rust_struct():
 
 
 def test_parse_rust_enum():
-    source = (
-        "pub enum Status {\n"
-        "    Active,\n"
-        "    Inactive,\n"
-        "    Pending(String),\n"
-        "}\n"
-    )
+    source = "pub enum Status {\n    Active,\n    Inactive,\n    Pending(String),\n}\n"
     result = parse_file("status.rs", source)
     assert result is not None
     sym = result.top_level_symbols[0]
@@ -72,7 +57,7 @@ def test_parse_rust_impl_with_methods():
         "    }\n"
         "\n"
         "    pub fn start(&self) {\n"
-        "        println!(\"Starting on port {}\", self.port);\n"
+        '        println!("Starting on port {}", self.port);\n'
         "    }\n"
         "\n"
         "    fn validate(&self) -> bool {\n"
@@ -123,7 +108,7 @@ def test_parse_rust_use_declarations():
         "use crate::config::Settings;\n"
         "\n"
         "fn main() {\n"
-        "    println!(\"hello\");\n"
+        '    println!("hello");\n'
         "}\n"
     )
     result = parse_file("main.rs", source)

@@ -116,11 +116,7 @@ async def restore_chunk_ids(chunk_ids: list[str]) -> int:
     if not chunk_ids:
         return 0
     async with AsyncSessionLocal() as session:
-        stmt = (
-            update(Chunk)
-            .where(Chunk.id.in_(chunk_ids))
-            .values(is_deleted=False)
-        )
+        stmt = update(Chunk).where(Chunk.id.in_(chunk_ids)).values(is_deleted=False)
         result = await session.execute(stmt)
         await session.commit()
         logger.debug(
@@ -157,8 +153,6 @@ def get_parent_chunks_sync(chunk_ids: list[str]) -> dict[str, Any]:
 
     from sqlalchemy import text
 
-    from src.retrieval.searcher import SearchResult
-
     # We will use an asynchronous execution wrapped in a synchronous run
     async def _fetch():
         sql = text("""
@@ -175,29 +169,31 @@ def get_parent_chunks_sync(chunk_ids: list[str]) -> dict[str, Any]:
 
         results = {}
         for row in rows:
-            results[row["id"]] = SearchResult(
-                chunk_id=row["id"],
-                file_path=row["file_path"],
-                repo_owner=row["repo_owner"],
-                repo_name=row["repo_name"],
-                language=row["language"],
-                symbol_name=row.get("symbol_name"),
-                symbol_kind=row.get("symbol_kind"),
-                scope_chain=row.get("scope_chain"),
-                start_line=row["start_line"],
-                end_line=row["end_line"],
-                raw_content=row["raw_content"],
-                enriched_content=row.get("enriched_content", ""),
-                commit_sha=row.get("commit_sha", ""),
-                commit_author=row.get("commit_author"),
-                token_count=row.get("token_count", 0),
-                parent_chunk_id=row.get("parent_chunk_id"),
-                score=0.0,
-            )
+            results[row["id"]] = {
+                "chunk_id": row["id"],
+                "file_path": row["file_path"],
+                "repo_owner": row["repo_owner"],
+                "repo_name": row["repo_name"],
+                "language": row["language"],
+                "symbol_name": row.get("symbol_name"),
+                "symbol_kind": row.get("symbol_kind"),
+                "scope_chain": row.get("scope_chain"),
+                "start_line": row["start_line"],
+                "end_line": row["end_line"],
+                "raw_content": row["raw_content"],
+                "enriched_content": row.get("enriched_content", ""),
+                "commit_sha": row.get("commit_sha", ""),
+                "commit_author": row.get("commit_author"),
+                "token_count": row.get("token_count", 0),
+                "parent_chunk_id": row.get("parent_chunk_id"),
+                "score": 0.0,
+            }
         return results
 
     # Since this might be called from within an existing event loop by assembler...
-    try:
+    import contextlib
+
+    with contextlib.suppress(RuntimeError):
         asyncio.get_running_loop()
         # If we have a running loop but need a sync result, we can't easily wait.
         # But wait, assembler is synchronous. `assemble()` is called from sync ctx?
@@ -207,12 +203,10 @@ def get_parent_chunks_sync(chunk_ids: list[str]) -> dict[str, Any]:
         # It's better to just change assemble to async, but wait, the prompt asked to keep assembler signature or something?
         # No, the implementation plan just says `db.py function: get_parent_chunks(chunk_ids: list[str]) -> dict[str, SearchResult]`
         # Let's use `run_in_executor` or simply `asyncio.run` in a ThreadPoolExecutor.
-        pass
-    except RuntimeError:
-        pass
 
     # We can use a simpler approach: make get_parent_chunks async and change `assemble()` signature, or use `asyncio.run` cautiously.
     import concurrent.futures
+
     with concurrent.futures.ThreadPoolExecutor(1) as pool:
         return pool.submit(asyncio.run, _fetch()).result()
 

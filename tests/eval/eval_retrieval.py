@@ -3,6 +3,7 @@ Retrieval Quality Evaluation Suite.
 Run with: pytest tests/eval/ --run-eval
 Requires a populated local index.
 """
+
 import math
 from typing import TypedDict
 
@@ -61,6 +62,7 @@ async def test_retrieval_quality() -> None:
     """
     # Simple check if there are chunks in the DB, if not, skip test
     from src.storage.db import get_index_stats
+
     stats = await get_index_stats()
     if stats.get("chunks", 0) == 0:
         pytest.skip("Index is empty. Populate it using scripts/full_index.py before evaluating.")

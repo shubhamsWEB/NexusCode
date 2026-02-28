@@ -76,7 +76,9 @@ class QueryAnalysis:
     sub_queries: list[str]  # decomposed queries for multi-concern tasks
     is_improvement: bool
     is_cross_cutting: bool  # touches many modules (e.g. "add auth to all endpoints")
-    is_concept: bool  # likely a conceptual question ('how', 'architecture') without specific paths/symbols
+    is_concept: (
+        bool  # likely a conceptual question ('how', 'architecture') without specific paths/symbols
+    )
     mentioned_paths: list[str]  # explicit file/dir paths mentioned in query
     mentioned_symbols: list[str]  # explicit function/class names in query
 
@@ -139,14 +141,11 @@ _IMPROVEMENT_PATTERNS = (
 
 # Regex to detect explicit file paths in queries
 _PATH_PATTERN = re.compile(
-    r"(?:^|\s)(?:src/|lib/|app/|pkg/|internal/|cmd/)[\w/\-\.]+",
-    re.MULTILINE,
+    r"\b(?:src|lib|app|pkg|internal|cmd)/[a-zA-Z0-9_/\-.]+",
 )
 
 # Regex to detect symbol references (CamelCase or snake_case with parens)
-_SYMBOL_PATTERN = re.compile(
-    r"\b(?:[A-Z][a-zA-Z0-9]+(?:\.[a-z_]\w+)?|[a-z_]\w+(?:_[a-z]\w+)+)\b(?=\s*\()?"
-)
+_SYMBOL_PATTERN = re.compile(r"\b(?:[A-Z][a-zA-Z0-9_]*|[a-z0-9]+(?:_[a-z0-9]+)+)\b(?=\s*\()?")
 
 
 def _analyze_query(query: str) -> QueryAnalysis:
@@ -173,7 +172,7 @@ def _analyze_query(query: str) -> QueryAnalysis:
     concern_count = 1
     concern_count += q.count(" and ")
     concern_count += q.count(", ")
-    concern_count += len(re.findall(r"\d+\.\s", query))  # numbered items
+    concern_count += len(re.findall(r"\b\d+\.\s", query))  # numbered items
 
     # Determine complexity
     if is_cross_cutting or concern_count >= 4 or word_count > 80:
@@ -187,11 +186,20 @@ def _analyze_query(query: str) -> QueryAnalysis:
     sub_queries = _decompose_query(query, complexity)
 
     # Determine if it's a concept query
-    concept_keywords = ["how", "where", "what", "why", "architecture", "logic", "pattern", "flow", "handle", "manage"]
+    concept_keywords = [
+        "how",
+        "where",
+        "what",
+        "why",
+        "architecture",
+        "logic",
+        "pattern",
+        "flow",
+        "handle",
+        "manage",
+    ]
     is_concept = bool(
-        not mentioned_paths
-        and not mentioned_symbols
-        and any(w in q for w in concept_keywords)
+        not mentioned_paths and not mentioned_symbols and any(w in q for w in concept_keywords)
     )
 
     return QueryAnalysis(
@@ -219,14 +227,14 @@ def _decompose_query(query: str, complexity: str) -> list[str]:
     parts: list[str] = []
 
     # Split on explicit numbered items: "1. do X  2. do Y"
-    numbered = re.split(r"\d+\.\s+", query)
+    numbered = re.split(r"\b\d+\.\s+", query)
     if len(numbered) > 2:
         parts = [p.strip() for p in numbered if p.strip() and len(p.strip()) > 10]
         if parts:
             return parts
 
     # Split on " and " or ". " but only if segments are meaningful
-    segments = re.split(r"\s+and\s+|\.\s+", query)
+    segments = re.split(r" and |\.\s+", query)
     meaningful = [s.strip() for s in segments if len(s.strip()) > 15]
     if len(meaningful) >= 2:
         return meaningful

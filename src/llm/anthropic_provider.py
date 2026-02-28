@@ -30,7 +30,7 @@ def _get_retry_after(exc) -> float | None:
             if retry_after:
                 return float(retry_after)
     except (ValueError, AttributeError):
-        pass
+        pass  # No retry-after header found or missing attributes
     return None
 
 

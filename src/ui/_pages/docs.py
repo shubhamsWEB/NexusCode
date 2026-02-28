@@ -1,9 +1,9 @@
 """
 📚 Documentation — renders all doc/*.md files in the Streamlit dashboard.
 """
+
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import streamlit as st
@@ -37,9 +37,7 @@ def _read_doc(filename: str) -> str | None:
 
 def render() -> None:
     st.title("📚 Documentation")
-    st.caption(
-        "Full reference docs for NexusCode — select a section from the sidebar below."
-    )
+    st.caption("Full reference docs for NexusCode — select a section from the sidebar below.")
 
     # Build list of available docs (skip missing files gracefully)
     available: list[tuple[str, str, str]] = []  # (label, filename, content)
@@ -76,9 +74,7 @@ def render() -> None:
 
     with col_content:
         # Find selected content
-        content = next(
-            (c for lbl, _, c in available if lbl == selected_label), ""
-        )
+        content = next((c for lbl, _, c in available if lbl == selected_label), "")
 
         # Render the markdown content
         st.markdown(content, unsafe_allow_html=False)

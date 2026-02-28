@@ -598,9 +598,7 @@ def _rust_is_pub(node) -> bool:
     return any(child.type == "visibility_modifier" for child in node.children)
 
 
-def _rust_parse_function(
-    node, source_bytes: bytes, parent_name: str | None = None
-) -> ParsedSymbol:
+def _rust_parse_function(node, source_bytes: bytes, parent_name: str | None = None) -> ParsedSymbol:
     name_node = node.child_by_field_name("name")
     name = _node_text(name_node, source_bytes) if name_node else "<anonymous>"
     qualified = f"{parent_name}.{name}" if parent_name else name

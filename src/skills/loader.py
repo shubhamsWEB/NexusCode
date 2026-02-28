@@ -9,7 +9,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 from src.utils.logging import get_secure_logger
 
@@ -22,20 +21,19 @@ _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---", re.DOTALL)
 class SkillInfo:
     name: str
     description: str
-    content: str         # full SKILL.md text
-    source: str          # "builtin" | "custom"
-    source_label: str    # e.g. "skills/" or "/path/to/custom"
+    content: str  # full SKILL.md text
+    source: str  # "builtin" | "custom"
+    source_label: str  # e.g. "skills/" or "/path/to/custom"
     metadata: dict = field(default_factory=dict)
 
 
-_cache: list[SkillInfo] = []
-_loaded = False
+from typing import Any
+_STATE: dict[str, Any] = {"cache": [], "loaded": False}
 
 
 def load_all_skills(force_reload: bool = False) -> list[SkillInfo]:
-    global _cache, _loaded
-    if _loaded and not force_reload:
-        return _cache
+    if _STATE["loaded"] and not force_reload:
+        return _STATE["cache"]
 
     from src.config import settings
 
@@ -58,8 +56,8 @@ def load_all_skills(force_reload: bool = False) -> list[SkillInfo]:
         else:
             logger.warning("skills: custom dir not found: %s", dir_str)
 
-    _cache = skills
-    _loaded = True
+    _STATE["cache"] = skills
+    _STATE["loaded"] = True
     return skills
 
 
@@ -72,7 +70,7 @@ def _load_from_dir(base: Path, source: str, label: str) -> list[SkillInfo]:
     return results
 
 
-def _parse_skill(path: Path, source: str, label: str) -> Optional[SkillInfo]:
+def _parse_skill(path: Path, source: str, label: str) -> SkillInfo | None:
     try:
         content = path.read_text(encoding="utf-8")
         name, description, metadata = _extract_frontmatter(content)
@@ -94,7 +92,7 @@ def _parse_skill(path: Path, source: str, label: str) -> Optional[SkillInfo]:
 def _extract_frontmatter(content: str) -> tuple[str, str, dict]:
     """Extract the FIRST YAML frontmatter block from a SKILL.md."""
     try:
-        import yaml
+        import yaml  # type: ignore
     except ImportError:
         return "", "", {}
 

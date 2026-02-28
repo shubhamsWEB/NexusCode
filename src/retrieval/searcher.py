@@ -21,6 +21,7 @@ from src.utils.sanitize import sanitize_log
 
 logger = get_secure_logger(__name__)
 
+
 @dataclass
 class SearchResult:
     chunk_id: str
@@ -40,7 +41,7 @@ class SearchResult:
     token_count: int
     score: float  # final score (cosine, BM25, or RRF)
     parent_chunk_id: str | None = None
-    rerank_score: float = 0.0   # set by reranker
+    rerank_score: float = 0.0  # set by reranker
     quality_score: float = 0.0  # sigmoid-normalized rerank_score (0.0-1.0)
 
 
@@ -65,6 +66,7 @@ async def search(
     """
     if hyde:
         from src.retrieval.hyde import hyde_search
+
         return await hyde_search(
             query=query,
             query_vector=query_vector,
@@ -187,7 +189,9 @@ def _reciprocal_rank_fusion(
 
     for lst in result_lists:
         for rank, result in enumerate(lst, 1):
-            rrf_scores[result.chunk_id] = rrf_scores.get(result.chunk_id, 0) + 1 / (settings.retrieval_rrf_k + rank)
+            rrf_scores[result.chunk_id] = rrf_scores.get(result.chunk_id, 0) + 1 / (
+                settings.retrieval_rrf_k + rank
+            )
 
     sorted_ids = sorted(rrf_scores, key=rrf_scores.__getitem__, reverse=True)
 
