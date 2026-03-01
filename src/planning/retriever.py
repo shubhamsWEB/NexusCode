@@ -101,6 +101,19 @@ _CROSS_CUTTING_PATTERNS = (
     "system-wide",
     "application-wide",
     "codebase-wide",
+    # Infra-targeted additive changes — "add X to endpoints" touches many files
+    "to endpoints",
+    "to routes",
+    "to the api",
+    "to all api",
+    "on endpoints",
+    "on routes",
+    "for endpoints",
+    "for all routes",
+    "the endpoints",
+    "the routes",
+    "api endpoints",
+    "api routes",
 )
 
 _IMPROVEMENT_PATTERNS = (
@@ -137,6 +150,31 @@ _IMPROVEMENT_PATTERNS = (
     "context aware",
     "smarter",
     "more accurate",
+    # Additive feature requests that require understanding the existing codebase
+    # as much as "refactor" does — we need to see what's there before adding to it
+    "add ",
+    "add a ",
+    "implement ",
+    "integrate ",
+    "enable ",
+    "support ",
+    "introduce ",
+    "wire up",
+    "hook up",
+    "plug in",
+    "set up ",
+    "setup ",
+)
+
+# Verb + infra-target pairs that definitively make a query cross-cutting
+# e.g. "implement authentication for all endpoints", "add caching to routes"
+_ADDITIVE_VERBS = (
+    "add ", "implement ", "integrate ", "enable ", "introduce ",
+    "support ", "apply ", "enforce ", "attach ", "inject ",
+)
+_INFRA_TARGETS = (
+    " endpoint", " route", " handler", " controller",
+    " middleware", " api", " service", " router",
 )
 
 # Regex to detect explicit file paths in queries
@@ -164,6 +202,16 @@ def _analyze_query(query: str) -> QueryAnalysis:
     is_improvement = any(p in q for p in _IMPROVEMENT_PATTERNS)
     is_cross_cutting = any(p in q for p in _CROSS_CUTTING_PATTERNS)
 
+    # Detect "verb + infra-target" pairs: "add rate limiting to endpoints",
+    # "implement caching for routes", "integrate auth middleware".
+    # These are definitively cross-cutting additive changes — must see all target files.
+    is_additive_infra = any(v in q for v in _ADDITIVE_VERBS) and any(
+        t in q for t in _INFRA_TARGETS
+    )
+    if is_additive_infra:
+        is_cross_cutting = True
+        is_improvement = True  # needs full component context to see what's already there
+
     # Extract mentioned paths and symbols
     mentioned_paths = [m.strip() for m in _PATH_PATTERN.findall(query)]
     mentioned_symbols = [m for m in _SYMBOL_PATTERN.findall(query) if len(m) > 3]
@@ -177,13 +225,13 @@ def _analyze_query(query: str) -> QueryAnalysis:
     # Determine complexity
     if is_cross_cutting or concern_count >= 4 or word_count > 80:
         complexity = "complex"
-    elif concern_count >= 2 or word_count > 40 or len(mentioned_paths) >= 2:
+    elif is_additive_infra or concern_count >= 2 or word_count > 40 or len(mentioned_paths) >= 2:
         complexity = "moderate"
     else:
         complexity = "simple"
 
-    # Sub-queries
-    sub_queries = _decompose_query(query, complexity)
+    # Sub-queries — always generate structural expansions for additive+infra queries
+    sub_queries = _decompose_query(query, complexity, is_additive_infra=is_additive_infra)
 
     # Determine if it's a concept query
     concept_keywords = [
@@ -213,19 +261,49 @@ def _analyze_query(query: str) -> QueryAnalysis:
     )
 
 
-def _decompose_query(query: str, complexity: str) -> list[str]:
+def _decompose_query(
+    query: str, complexity: str, is_additive_infra: bool = False
+) -> list[str]:
     """
-    Break a complex query into focused sub-queries for better retrieval.
+    Break a query into focused sub-queries for better retrieval coverage.
 
-    For simple queries, returns [query] unchanged.
+    For additive+infra queries ("add X to endpoints"), generate structural
+    sub-queries that target both the feature and the infrastructure it touches —
+    so retrieval finds both the relevant route files AND any existing X patterns.
+
     For complex queries, splits on natural boundaries (and, commas, numbered items).
+    For simple queries, returns [query] unchanged.
     """
+    # ── Additive+infra: "add X to routes/endpoints/api" ─────────────────────
+    # Always expand regardless of word count — these queries look "simple" but
+    # require seeing multiple API/route files and any existing X infrastructure.
+    if is_additive_infra:
+        q = query.lower()
+
+        # Extract the feature part: text between the verb and the "to/for/on" preposition
+        _ADDITIVE_RE = re.compile(
+            r"(?:add|implement|integrate|enable|support|introduce|apply|enforce|attach|inject)\s+"
+            r"(.+?)\s+(?:to|for|into|on|in|across)\s+(.+)",
+            re.IGNORECASE,
+        )
+        m = _ADDITIVE_RE.search(query)
+        if m:
+            feature = m.group(1).strip()   # e.g. "rate limiting"
+            target = m.group(2).strip()    # e.g. "endpoints"
+            return [
+                query,                                          # original
+                f"existing {target} implementation",           # "existing endpoints implementation"
+                f"{feature} middleware implementation",        # "rate limiting middleware implementation"
+                f"FastAPI {target} router setup",              # "FastAPI endpoints router setup"
+            ]
+
+        # Fallback: no preposition found — still expand with the full query + structural angle
+        return [query, "API routes endpoint handlers setup", "existing middleware structure"]
+
     if complexity == "simple":
         return [query]
 
-    # Try splitting on "and also", "and then", numbered items
-    parts: list[str] = []
-
+    # ── Complex/moderate: split on natural boundaries ────────────────────────
     # Split on explicit numbered items: "1. do X  2. do Y"
     numbered = re.split(r"\b\d+\.\s+", query)
     if len(numbered) > 2:
@@ -396,7 +474,10 @@ async def retrieve_planning_context(
     num_candidates = candidate_config["candidates"]
     logger.info("planning retriever: hybrid search (%d candidates)", num_candidates)
 
-    # Primary search
+    # Primary search — enable HyDE for concept queries AND cross-cutting additive
+    # queries (e.g. "add rate limiting to endpoints") so the vector represents
+    # "what the modified file would look like" rather than just the query text.
+    use_hyde = analysis.is_concept or analysis.is_cross_cutting
     candidates = await search(
         query=query,
         query_vector=query_vector,
@@ -404,7 +485,7 @@ async def retrieve_planning_context(
         mode="hybrid",
         repo_owner=repo_owner,
         repo_name=repo_name,
-        hyde=analysis.is_concept,
+        hyde=use_hyde,
     )
 
     # Sub-query searches (parallel) — merge results
@@ -1097,8 +1178,10 @@ def _validate_grounding(
     # Check 1: Did we find any results at all?
     if not candidates:
         warnings.append(
-            "NO_RESULTS: No code context was found for this query. "
-            "The response should clearly state this limitation."
+            "NO_RESULTS: The index returned zero results for this query. "
+            "The repository is either not indexed or the query matches nothing. "
+            "DO NOT answer from pretraining knowledge. "
+            "Tell the user to check registered repos (GET /repos) and trigger indexing if needed."
         )
         return warnings
 
@@ -1108,8 +1191,11 @@ def _validate_grounding(
         for path in analysis.mentioned_paths:
             if not any(path in fp for fp in found_paths):
                 warnings.append(
-                    f"MISSING_PATH: The query mentions '{path}' but no matching "
-                    f"file was found in the index. Do not reference this file."
+                    f"MISSING_PATH: '{path}' was mentioned in the query but has NO chunks "
+                    f"in the index. This file is not indexed. "
+                    f"DO NOT reference this file or answer about it from pretraining knowledge. "
+                    f"Tell the user this specific file is not in the index and they need to "
+                    f"register and index the repository that contains it."
                 )
 
     # Check 3: Were explicitly mentioned symbols found?
@@ -1121,8 +1207,9 @@ def _validate_grounding(
                 in_content = any(sym in r.raw_content for r in candidates)
                 if not in_content:
                     warnings.append(
-                        f"MISSING_SYMBOL: The query mentions '{sym}' but it was not "
-                        f"found in the retrieved context. Do not invent details about it."
+                        f"MISSING_SYMBOL: '{sym}' was mentioned in the query but was not "
+                        f"found in any retrieved chunk. "
+                        f"DO NOT invent or guess details about this symbol from pretraining knowledge."
                     )
 
     # Check 4: For complex cross-cutting queries, did we cover enough files?

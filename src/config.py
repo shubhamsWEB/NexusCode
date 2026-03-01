@@ -105,8 +105,8 @@ class Settings(BaseSettings):
         ".json,.md,.yaml,.yml,.html,.css,.scss,.sh,.sql,.xml,.toml"
     )
     ignore_patterns: str = Field(
-        "node_modules,.git,__pycache__,.venv,dist,build,.next,*.min.js,"
-        "*.min.css,vendor/,fixtures/,__fixtures__,.yarn,.pnp,"
+        "node_modules,.git,__pycache__,.venv,dist,build,.next,.min.js,"
+        ".min.css,vendor/,fixtures/,__fixtures__,.yarn,.pnp,"
         ".cache,.turbo,.parcel-cache,"
         "__tests__,__mocks__,__snapshots__,.test.,_test.,.spec.,_spec.,"
         "test/,tests/,testing/,testdata/"

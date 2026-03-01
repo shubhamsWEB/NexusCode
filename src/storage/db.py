@@ -76,6 +76,7 @@ async def upsert_chunks(chunks: list[dict[str, Any]]) -> int:
                 "symbol_kind": stmt.excluded.symbol_kind,
                 "scope_chain": stmt.excluded.scope_chain,
                 "file_path": stmt.excluded.file_path,
+                "parent_chunk_id": stmt.excluded.parent_chunk_id,
             },
         )
         result = await session.execute(stmt)
@@ -101,6 +102,42 @@ async def soft_delete_chunks(file_path: str, repo_owner: str, repo_name: str) ->
         logger.debug(
             "soft_delete_chunks",
             extra={"file": file_path, "repo": f"{repo_owner}/{repo_name}", "rows": result.rowcount},
+        )
+        return result.rowcount
+
+
+async def soft_delete_stale_chunks(
+    file_path: str, repo_owner: str, repo_name: str, keep_ids: set[str]
+) -> int:
+    """
+    Soft-delete chunks for a file that are NOT in keep_ids.
+
+    Used after upserting new chunks so that only genuinely stale chunks
+    (old content no longer present) are removed.  New and cache-hit chunks
+    are never touched because their IDs are in keep_ids.
+    """
+    async with AsyncSessionLocal() as session:
+        stmt = (
+            update(Chunk)
+            .where(
+                Chunk.file_path == file_path,
+                Chunk.repo_owner == repo_owner,
+                Chunk.repo_name == repo_name,
+                Chunk.is_deleted.is_(False),
+                ~Chunk.id.in_(keep_ids) if keep_ids else text("TRUE"),
+            )
+            .values(is_deleted=True)
+        )
+        result = await session.execute(stmt)
+        await session.commit()
+        logger.debug(
+            "soft_delete_stale_chunks",
+            extra={
+                "file": file_path,
+                "repo": f"{repo_owner}/{repo_name}",
+                "kept": len(keep_ids),
+                "deleted": result.rowcount,
+            },
         )
         return result.rowcount
 
@@ -163,6 +200,7 @@ def get_parent_chunks_sync(chunk_ids: list[str]) -> dict[str, Any]:
                 commit_sha, commit_author, token_count, parent_chunk_id
             FROM chunks
             WHERE id = ANY(:ids)
+              AND is_deleted = FALSE
         """)
         async with AsyncSessionLocal() as session:
             rows = (await session.execute(sql, {"ids": chunk_ids})).mappings().all()
@@ -209,6 +247,64 @@ def get_parent_chunks_sync(chunk_ids: list[str]) -> dict[str, Any]:
 
     with concurrent.futures.ThreadPoolExecutor(1) as pool:
         return pool.submit(asyncio.run, _fetch()).result()
+
+
+async def get_importing_files(
+    file_path: str,
+    repo_owner: str | None = None,
+    repo_name: str | None = None,
+) -> list[dict[str, str]]:
+    """
+    Find all files that import the given file_path.
+
+    Uses the chunks.imports ARRAY column (parsed import lines stored at index time)
+    for accurate dependency-graph traversal — avoids the false-positive rate of
+    raw_content ILIKE searches on generic file stems like 'utils'.
+
+    Matches against:
+    - Path-style imports  e.g. 'src/auth/service' (TypeScript / JS relative)
+    - Module-style imports e.g. 'src.auth.service' (Python dotted)
+
+    Returns up to 50 distinct importing files as [{file_path, repo_owner, repo_name}].
+    """
+    path_no_ext = file_path.rsplit(".", 1)[0]  # e.g. "src/auth/service"
+    dotted_path = path_no_ext.replace("/", ".")  # e.g. "src.auth.service"
+
+    params: dict = {
+        "file_path": file_path,
+        "path_pattern": f"%{path_no_ext}%",
+        "dotted_pattern": f"%{dotted_path}%",
+    }
+    repo_filter = ""
+    if repo_owner:
+        repo_filter += " AND repo_owner = :repo_owner"
+        params["repo_owner"] = repo_owner
+    if repo_name:
+        repo_filter += " AND repo_name = :repo_name"
+        params["repo_name"] = repo_name
+
+    sql = text(f"""
+        SELECT DISTINCT file_path, repo_owner, repo_name
+        FROM chunks
+        WHERE file_path != :file_path
+          AND is_deleted = FALSE
+          AND EXISTS (
+              SELECT 1 FROM unnest(imports) AS imp
+              WHERE imp ILIKE :path_pattern
+                 OR imp ILIKE :dotted_pattern
+          )
+          {repo_filter}
+        ORDER BY file_path
+        LIMIT 50
+    """)
+
+    async with AsyncSessionLocal() as session:
+        rows = (await session.execute(sql, params)).mappings().all()
+
+    return [
+        {"file_path": r["file_path"], "repo_owner": r["repo_owner"], "repo_name": r["repo_name"]}
+        for r in rows
+    ]
 
 
 # ── Symbol operations ────────────────────────────────────────────────────────

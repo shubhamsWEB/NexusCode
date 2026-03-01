@@ -33,6 +33,7 @@ MODEL_REGISTRY: dict[str, str] = {
     # Grok / xAI
     "grok-3": "grok",
     "grok-3-mini": "grok",
+    "grok-4-1-fast-reasoning":"grok"
 }
 
 # ── Provider singletons ──────────────────────────────────────────────────────

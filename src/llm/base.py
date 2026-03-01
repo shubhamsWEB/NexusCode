@@ -30,6 +30,7 @@ class LLMProvider(Protocol):
         tool_choice: str | dict[str, str] | None = None,
         max_tokens: int = 4096,
         thinking_budget: int = 0,
+        temperature: float = 1.0,
     ) -> LLMResponse:
         """Non-streaming generation. Returns the full response."""
         ...
@@ -43,6 +44,7 @@ class LLMProvider(Protocol):
         tool_choice: str | dict[str, str] | None = None,
         max_tokens: int = 4096,
         thinking_budget: int = 0,
+        temperature: float = 1.0,
     ) -> AsyncIterator[LLMStreamEvent | LLMResponse]:
         """
         Streaming generation.

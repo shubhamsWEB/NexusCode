@@ -99,6 +99,7 @@ class AnthropicProvider:
         tool_choice,
         max_tokens: int,
         thinking_budget: int,
+        temperature: float = 1.0,
     ) -> dict:
         params = {
             "model": model,
@@ -112,7 +113,10 @@ class AnthropicProvider:
             if tc:
                 params["tool_choice"] = tc
         if thinking_budget > 0:
-            params["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
+            params["thinking"] = {"type": "adaptive", "budget_tokens": thinking_budget}
+            # Anthropic requires temperature=1 when extended thinking is enabled
+        else:
+            params["temperature"] = temperature
         return params
 
     def _parse_response(self, message) -> LLMResponse:
@@ -171,6 +175,7 @@ class AnthropicProvider:
         tool_choice=None,
         max_tokens: int = 4096,
         thinking_budget: int = 0,
+        temperature: float = 1.0,
     ) -> LLMResponse:
         client = self._get_client()
         params = self._build_call_params(
@@ -181,6 +186,7 @@ class AnthropicProvider:
             tool_choice,
             max_tokens,
             thinking_budget,
+            temperature,
         )
 
         async with self._semaphore:
@@ -235,6 +241,7 @@ class AnthropicProvider:
         tool_choice=None,
         max_tokens: int = 4096,
         thinking_budget: int = 0,
+        temperature: float = 1.0,
     ) -> AsyncIterator[LLMStreamEvent | LLMResponse]:
         import anthropic
 
@@ -247,6 +254,7 @@ class AnthropicProvider:
             tool_choice,
             max_tokens,
             thinking_budget,
+            temperature,
         )
 
         async with self._semaphore:

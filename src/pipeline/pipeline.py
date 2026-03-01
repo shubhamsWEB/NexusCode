@@ -165,7 +165,7 @@ async def _handle_upserts(
         delete_symbols_for_file,
         get_merkle_hash,
         restore_chunk_ids,
-        soft_delete_chunks,
+        soft_delete_stale_chunks,
         upsert_chunks,
         upsert_merkle_node,
         upsert_symbols,
@@ -280,10 +280,6 @@ async def _handle_upserts(
             symbols_for_file = meta["symbols"]
 
             try:
-                # Soft-delete old chunks for this file
-                await soft_delete_chunks(path, owner, repo)
-                await delete_symbols_for_file(path, owner, repo)
-
                 # Build chunk rows — separate new chunks from cache hits
                 chunk_rows = []
                 cache_hit_ids = []
@@ -292,8 +288,7 @@ async def _handle_upserts(
                     if vector is None:
                         if ec.chunk_id in existing_ids:
                             # Cache hit: chunk already in DB with valid embedding.
-                            # The soft-delete above marked it deleted — restore it
-                            # WITHOUT overwriting the existing embedding.
+                            # Keep it active by including in cache_hit_ids.
                             cache_hit_ids.append(ec.chunk_id)
                         # else: embedding genuinely failed — skip
                         continue
@@ -322,14 +317,23 @@ async def _handle_upserts(
                         }
                     )
 
+                # Step 1: upsert new chunks BEFORE deleting anything.
+                # If this fails, old chunks remain active (no data loss).
                 if chunk_rows:
                     await upsert_chunks(chunk_rows)
                     stats["chunks_upserted"] += len(chunk_rows)
 
-                # Restore cache-hit chunks (un-delete without touching embedding)
+                # Step 2: ensure cache-hit chunks are active (they may have
+                # been soft-deleted by a prior failed run).
                 if cache_hit_ids:
                     await restore_chunk_ids(cache_hit_ids)
                     stats["chunks_upserted"] += len(cache_hit_ids)
+
+                # Step 3: NOW remove stale chunks — only IDs not in the new set.
+                # This is safe because new/restored chunks are already active above.
+                active_ids = {row["id"] for row in chunk_rows} | set(cache_hit_ids)
+                await soft_delete_stale_chunks(path, owner, repo, keep_ids=active_ids)
+                await delete_symbols_for_file(path, owner, repo)
 
                 # Build symbol rows
                 symbol_rows = []
@@ -355,8 +359,11 @@ async def _handle_upserts(
                     await upsert_symbols(symbol_rows)
                     stats["symbols_upserted"] += len(symbol_rows)
 
-                # Update merkle hash
-                await upsert_merkle_node(path, owner, repo, blob_sha)
+                # Update merkle hash only when we actually stored content.
+                # Skipping this when active_ids is empty prevents the file
+                # from being permanently excluded by future merkle checks.
+                if active_ids:
+                    await upsert_merkle_node(path, owner, repo, blob_sha)
                 log.debug("pipeline.file_done", path=path, chunks=len(chunk_rows))
 
             except Exception as exc:
