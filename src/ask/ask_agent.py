@@ -56,10 +56,23 @@ GROUNDING RULES
 • Only reference files, functions, classes, and line ranges that appear
   in the provided codebase context. Never invent paths or symbols.
 • If you cite a symbol, spell it exactly as it appears in the context.
-• If the context is insufficient to fully answer, be honest about what
-  is missing and offer to help the user search for it.
 • Do NOT reproduce the grounding-warning text verbatim in your answer -
   just respect the constraints it describes.
+
+HARD CONSTRAINT — NEVER USE PRETRAINING KNOWLEDGE
+──────────────────────────────────────────────────
+If the ⚠ Grounding Warnings or 🚨 CRITICAL block in the user message
+contains MISSING_PATH, MISSING_SYMBOL, or NO_RESULTS warnings, you MUST:
+  1. Tell the user exactly which files or symbols are NOT in the index.
+  2. Explain that those files need to be indexed first.
+  3. DO NOT attempt to answer the question from your pretraining knowledge.
+     This includes phrases like "I can still walk you through…",
+     "Based on general knowledge…", or "Typically, this works by…".
+  4. Suggest the user check registered repos (GET /repos) and trigger
+     indexing for the missing repository.
+This is a hard constraint — not a suggestion. An answer that fills in
+missing context from pretraining is worse than no answer at all because
+it will be wrong about the specific codebase the user is asking about.
 
 OUTPUT FORMAT
 ─────────────
@@ -165,6 +178,19 @@ def _build_ask_user_message(
         f"## Scope\nRepository: {repo_scope}",
     ]
 
+    # Enumerate the exact file paths present in the retrieved context.
+    # This prevents the LLM from citing paths it invented (e.g. "doc.md" when
+    # the real paths are "doc/README.md") or files not in the index at all.
+    if ctx.chunks_used:
+        files_in_ctx = sorted({c["file"] for c in ctx.chunks_used})
+        file_list = "\n".join(f"- `{f}`" for f in files_in_ctx)
+        parts.append(
+            "## Files Available in Retrieved Context\n"
+            "You MUST cite ONLY the exact paths listed below. "
+            "Do NOT reference any other file path, even if you know it from training data:\n"
+            f"{file_list}"
+        )
+
     if ctx.sub_queries and len(ctx.sub_queries) > 1:
         meta = "## Query Decomposition\nThis question touches multiple concerns:\n"
         for i, sq in enumerate(ctx.sub_queries, 1):
@@ -172,11 +198,33 @@ def _build_ask_user_message(
         parts.append(meta)
 
     if ctx.grounding_warnings:
-        warning_block = "## ⚠ Grounding Warnings\n"
-        warning_block += "The retrieval system found these gaps - respect them:\n\n"
-        for w in ctx.grounding_warnings:
-            warning_block += f"- {w}\n"
-        parts.append(warning_block)
+        # Separate critical (missing indexed content) from advisory warnings
+        critical_types = ("MISSING_PATH:", "MISSING_SYMBOL:", "NO_RESULTS:")
+        critical_warnings = [w for w in ctx.grounding_warnings if w.startswith(critical_types)]
+        advisory_warnings = [w for w in ctx.grounding_warnings if not w.startswith(critical_types)]
+
+        if critical_warnings:
+            critical_block = "## 🚨 CRITICAL: REQUIRED CONTENT IS NOT INDEXED\n"
+            critical_block += (
+                "The following files/symbols were asked about but are NOT in the index. "
+                "You MUST NOT answer from pretraining knowledge. "
+                "Your entire response must be to explain what is missing and how to index it:\n\n"
+            )
+            for w in critical_warnings:
+                critical_block += f"- {w}\n"
+            critical_block += (
+                "\nRequired action: Tell the user which repo/files to index. "
+                "Do NOT provide any code walkthrough, explanation, or description "
+                "of how the missing code works."
+            )
+            parts.append(critical_block)
+
+        if advisory_warnings:
+            warning_block = "## ⚠ Grounding Warnings\n"
+            warning_block += "The retrieval system found these gaps - respect them:\n\n"
+            for w in advisory_warnings:
+                warning_block += f"- {w}\n"
+            parts.append(warning_block)
 
     if ctx.component_context:
         parts.append(ctx.component_context)
@@ -266,6 +314,7 @@ async def generate_answer(
         tool_choice={"name": "answer_question"},
         max_tokens=4096,
         thinking_budget=0,
+        temperature=0,
     )
 
     elapsed_ms = (time.monotonic() - t0) * 1000
@@ -304,6 +353,7 @@ async def stream_generate_answer(
         tool_choice={"name": "answer_question"},
         max_tokens=4096,
         thinking_budget=0,
+        temperature=0,
     ):
         if isinstance(event, LLMStreamEvent):
             if event.type in ("text", "input_json"):

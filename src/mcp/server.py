@@ -397,18 +397,26 @@ async def get_file_context(
         """)
         chunk_row = (await session.execute(chunk_sql, params)).mappings().first()
 
-        # 3. Files that import this file (imported_by)
-        if include_deps and sym_rows:
-            # Look for chunks where raw_content contains a reference to this file's name
-            file_stem = path.split("/")[-1].rsplit(".", 1)[0]
-            dep_params = {**params, "stem": f"%{file_stem}%"}
+        # 3. Files that import this file (imported_by) — use imports ARRAY for accuracy
+        if include_deps:
+            path_no_ext = path.rsplit(".", 1)[0]
+            dotted_path = path_no_ext.replace("/", ".")
+            dep_params = {
+                **params,
+                "path_pattern": f"%{path_no_ext}%",
+                "dotted_pattern": f"%{dotted_path}%",
+            }
             dep_sql = text(f"""
                 SELECT DISTINCT file_path, repo_owner, repo_name
                 FROM chunks
-                WHERE raw_content ILIKE :stem
-                  AND file_path NOT ILIKE :path_like
+                WHERE file_path NOT ILIKE :path_like
                   AND is_deleted = FALSE
-                  {repo_filter.replace("AND ", "AND ", 1)}
+                  AND EXISTS (
+                      SELECT 1 FROM unnest(imports) AS imp
+                      WHERE imp ILIKE :path_pattern
+                         OR imp ILIKE :dotted_pattern
+                  )
+                  {repo_filter}
                 LIMIT 20
             """)
             dep_rows = (await session.execute(dep_sql, dep_params)).mappings().all()

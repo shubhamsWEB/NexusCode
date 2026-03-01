@@ -258,7 +258,7 @@ class TestMerkleSkip:
                 new_callable=AsyncMock,
                 return_value={"cid1": [0.1] * 1536},
             ),
-            patch("src.storage.db.soft_delete_chunks", new_callable=AsyncMock),
+            patch("src.storage.db.soft_delete_stale_chunks", new_callable=AsyncMock),
             patch("src.storage.db.delete_symbols_for_file", new_callable=AsyncMock),
             patch("src.storage.db.upsert_chunks", new_callable=AsyncMock, return_value=1),
             patch("src.storage.db.upsert_symbols", new_callable=AsyncMock, return_value=0),

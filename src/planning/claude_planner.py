@@ -286,6 +286,18 @@ def _build_user_message(
         f"## Scope\nRepository: {repo_scope}",
     ]
 
+    # Enumerate the exact file paths present in the retrieved context.
+    # This prevents the LLM from citing invented paths or training-data knowledge.
+    if ctx.chunks_used:
+        files_in_ctx = sorted({c["file"] for c in ctx.chunks_used})
+        file_list = "\n".join(f"- `{f}`" for f in files_in_ctx)
+        parts.append(
+            "## Files Available in Retrieved Context\n"
+            "You MUST cite ONLY the exact paths listed below. "
+            "Do NOT reference any other file path, even if you know it from training data:\n"
+            f"{file_list}"
+        )
+
     # ── Query complexity metadata ─────────────────────────────────────────────
     if ctx.query_complexity != "simple" or ctx.sub_queries:
         meta = f"## Query Analysis\nComplexity: {ctx.query_complexity}"
@@ -297,11 +309,27 @@ def _build_user_message(
 
     # ── Grounding warnings (critical - placed early) ──────────────────────────
     if ctx.grounding_warnings:
-        warning_block = "## ⚠ GROUNDING WARNINGS\n"
-        warning_block += "_The retrieval system detected these gaps. Respect them._\n\n"
-        for w in ctx.grounding_warnings:
-            warning_block += f"- {w}\n"
-        parts.append(warning_block)
+        critical_types = ("MISSING_PATH:", "MISSING_SYMBOL:", "NO_RESULTS:")
+        critical_warnings = [w for w in ctx.grounding_warnings if w.startswith(critical_types)]
+        advisory_warnings = [w for w in ctx.grounding_warnings if not w.startswith(critical_types)]
+
+        if critical_warnings:
+            critical_block = "## 🚨 CRITICAL: REQUIRED CONTENT IS NOT INDEXED\n"
+            critical_block += (
+                "The following files/symbols are NOT in the index. "
+                "Do NOT reference them or fill in details from pretraining knowledge. "
+                "The plan must clearly state that these files need to be indexed first:\n\n"
+            )
+            for w in critical_warnings:
+                critical_block += f"- {w}\n"
+            parts.append(critical_block)
+
+        if advisory_warnings:
+            warning_block = "## ⚠ GROUNDING WARNINGS\n"
+            warning_block += "_The retrieval system detected these gaps. Respect them._\n\n"
+            for w in advisory_warnings:
+                warning_block += f"- {w}\n"
+            parts.append(warning_block)
 
     # ── Tier 1: Full component source (improvement queries only) ─────────────
     if ctx.component_context:
@@ -525,6 +553,7 @@ async def generate_plan(
         tool_choice="auto",
         max_tokens=settings.planning_max_output_tokens,
         thinking_budget=thinking_budget,
+        temperature=0 if thinking_budget == 0 else 1,
     )
 
     elapsed_ms = (time.monotonic() - t0) * 1000
@@ -575,6 +604,7 @@ async def stream_generate_plan(
         tool_choice="auto",
         max_tokens=settings.planning_max_output_tokens,
         thinking_budget=thinking_budget,
+        temperature=0 if thinking_budget == 0 else 1,
     ):
         if isinstance(event, LLMStreamEvent):
             if event.type == "thinking":

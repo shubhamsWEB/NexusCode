@@ -86,19 +86,21 @@ class OpenAIProvider:
         tool_choice,
         max_tokens: int,
         thinking_budget: int,
+        temperature: float = 1.0,
     ) -> dict:
         params: dict[str, Any] = {
             "model": model,
             "messages": self._build_messages(system, messages),
         }
 
-        # o-series models use max_completion_tokens, not max_tokens
+        # o-series models use max_completion_tokens, not max_tokens; no temperature
         if model in _O_SERIES_MODELS:
             params["max_completion_tokens"] = max_tokens
             if thinking_budget > 0:
                 params["reasoning_effort"] = "medium"
         else:
             params["max_tokens"] = max_tokens
+            params["temperature"] = temperature
 
         if tools:
             params["tools"] = [to_openai_format(t) for t in tools]
@@ -168,6 +170,7 @@ class OpenAIProvider:
         tool_choice=None,
         max_tokens: int = 4096,
         thinking_budget: int = 0,
+        temperature: float = 1.0,
     ) -> LLMResponse:
         client = self._get_client()
         params = self._build_call_params(
@@ -178,6 +181,7 @@ class OpenAIProvider:
             tool_choice,
             max_tokens,
             thinking_budget,
+            temperature,
         )
 
         async with self._semaphore:
@@ -195,6 +199,7 @@ class OpenAIProvider:
         tool_choice=None,
         max_tokens: int = 4096,
         thinking_budget: int = 0,
+        temperature: float = 1.0,
     ) -> AsyncIterator[LLMStreamEvent | LLMResponse]:
         from openai import APIStatusError
 
@@ -207,6 +212,7 @@ class OpenAIProvider:
             tool_choice,
             max_tokens,
             thinking_budget,
+            temperature,
         )
         params["stream"] = True
 
