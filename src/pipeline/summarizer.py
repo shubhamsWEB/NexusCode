@@ -7,7 +7,6 @@ from __future__ import annotations
 import structlog
 
 from src.config import settings
-from src.llm.registry import get_provider
 from src.pipeline.chunker import RawChunk
 
 logger = structlog.get_logger(__name__)
@@ -21,12 +20,11 @@ async def generate_file_summary(file_path: str, raw_content: str) -> RawChunk | 
     if not settings.enable_file_summaries:
         return None
 
-    model = settings.summary_model
-    try:
-        provider = get_provider(model)
-    except Exception as exc:
-        logger.warning("Failed to get summary provider", model=model, error=str(exc))
+    if not settings.anthropic_api_key:
+        logger.warning("File summaries enabled but ANTHROPIC_API_KEY is not set")
         return None
+
+    model = settings.default_model
 
     system = "You are an expert software engineer. Summarize the provided file for a semantic search engine."
 
@@ -49,17 +47,19 @@ Content:
 ```
 """
 
-    messages = [{"role": "user", "content": prompt}]
-
     try:
-        response = await provider.generate(
+        from src.llm.client import get_client
+
+        client = get_client()
+        resp = await client.messages.create(
             model=model,
             system=system,
-            messages=messages,
+            messages=[{"role": "user", "content": prompt}],
             max_tokens=256,
         )
+        text = resp.content[0].text if resp.content else None
 
-        if response and response.text_content:
+        if text:
             from src.pipeline.chunker import count_tokens
 
             lines = raw_content.count("\n") + 1
@@ -68,13 +68,13 @@ Content:
                 language="markdown",  # Treat summary chunks as markdown
                 start_line=1,
                 end_line=lines,
-                raw_content=response.text_content,
+                raw_content=text,
                 symbol_name="File Summary",
                 symbol_kind="file_summary",
                 scope_chain=None,
                 parent_symbol_name=None,
                 imports=[],
-                token_count=count_tokens(response.text_content),
+                token_count=count_tokens(text),
             )
     except Exception as exc:
         logger.warning("Failed to generate file summary", file_path=file_path, error=str(exc))

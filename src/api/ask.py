@@ -2,16 +2,17 @@
 POST /ask  — Codebase Q&A endpoint (Ask Mode).
 
 Returns a grounded, mentor-style answer with inline code citations.
-Unlike POST /plan, this endpoint never generates file changes — it
-only answers questions about the codebase.
+Claude searches the vector DB iteratively via tool calls, then answers.
 
 Two response modes:
-  stream=false (default)  →  JSON response  (AskResponse)
-  stream=true             →  SSE stream     (text/event-stream)
+  stream=false (default)  →  JSON response
+  stream=true             →  SSE stream (text/event-stream)
 
 SSE event types:
   {"type": "status",             "message": "..."}
-  {"type": "retrieval_complete", "log": "...", "chunks": N, "tokens": N}
+  {"type": "agent_tool_call",    "tool": "search_codebase", "input_summary": "..."}
+  {"type": "agent_tool_result",  "tool": "search_codebase", "tokens": N, "cumulative_tokens": N}
+  {"type": "thinking",           "text": "..."}
   {"type": "answer_chunk",       "text": "..."}
   {"type": "answer_complete",    "answer": "...", "cited_files": [...], "follow_up_hints": [...], "elapsed_ms": N}
   {"type": "error",              "message": "..."}
@@ -39,7 +40,7 @@ _background_tasks: set[asyncio.Task] = set()
 # ── Persistence helper ─────────────────────────────────────────────────────────
 
 
-async def _save_ask_turn(session_id: str, query: str, result, ctx, repo_owner, repo_name):
+async def _save_ask_turn(session_id: str, query: str, result, repo_owner, repo_name):
     """Best-effort DB persistence — never raises, never blocks the response."""
     try:
         from src.storage.db import append_chat_turn, ensure_chat_session
@@ -52,9 +53,9 @@ async def _save_ask_turn(session_id: str, query: str, result, ctx, repo_owner, r
             cited_files=result.cited_files,
             follow_up_hints=result.follow_up_hints,
             elapsed_ms=result.elapsed_ms,
-            context_tokens=ctx.tokens_used,
-            context_files=len(ctx.chunks_used),
-            query_complexity=getattr(ctx, "query_complexity", None),
+            context_tokens=result.context_tokens,
+            context_files=result.tool_calls_count,
+            query_complexity=None,
         )
     except Exception:
         logger.exception("ask turn persistence failed (non-fatal)")
@@ -67,9 +68,7 @@ async def _save_ask_turn(session_id: str, query: str, result, ctx, repo_owner, r
 async def ask_question(req: AskRequest):
     """
     Answer a natural-language question about the codebase.
-
-    Set `stream=true` to receive a server-sent-events stream instead of
-    waiting for the full response.
+    Set `stream=true` to receive a server-sent-events stream.
     """
     if req.stream:
         return _sse_response(req)
@@ -81,28 +80,14 @@ async def _sync_ask(req: AskRequest) -> JSONResponse:
 
     try:
         from src.ask.ask_agent import generate_answer
-        from src.planning.retriever import retrieve_planning_context
     except ImportError:
         return JSONResponse(
             {"error": "Service unavailable. Required modules not loaded."}, status_code=503
         )
 
     try:
-        ctx = await retrieve_planning_context(
-            query=req.query,
-            repo_owner=req.repo_owner,
-            repo_name=req.repo_name,
-            web_research=False,  # Ask Mode is fast — no web research by default
-            model=req.model,
-        )
-    except Exception:
-        logger.exception("ask retriever failed")
-        return JSONResponse({"error": "Retrieval failed. Please try again."}, status_code=500)
-
-    try:
         result = await generate_answer(
             query=req.query,
-            ctx=ctx,
             repo_owner=req.repo_owner,
             repo_name=req.repo_name,
             model=req.model,
@@ -123,7 +108,7 @@ async def _sync_ask(req: AskRequest) -> JSONResponse:
         )
 
     task = asyncio.create_task(
-        _save_ask_turn(effective_session_id, req.query, result, ctx, req.repo_owner, req.repo_name)
+        _save_ask_turn(effective_session_id, req.query, result, req.repo_owner, req.repo_name)
     )
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
@@ -137,10 +122,13 @@ async def _sync_ask(req: AskRequest) -> JSONResponse:
             "elapsed_ms": result.elapsed_ms,
             "session_id": effective_session_id,
             "metadata": {
-                "context_tokens": ctx.tokens_used,
-                "context_files": len(ctx.chunks_used),
-                "retrieval_log": ctx.retrieval_log,
-                "query_complexity": ctx.query_complexity,
+                "context_tokens": result.context_tokens,
+                "context_files": result.tool_calls_count,
+                "retrieval_log": (
+                    f"Agentic: {result.iterations} iterations, "
+                    f"{result.tool_calls_count} tool calls"
+                ),
+                "query_complexity": None,
             },
         }
     )
@@ -170,52 +158,50 @@ async def _sse_generator(req: AskRequest):
 
     try:
         from src.ask.ask_agent import stream_generate_answer
-        from src.planning.retriever import retrieve_planning_context
     except ImportError:
         yield _event(
             {"type": "error", "message": "Service unavailable. Required modules not loaded."}
         )
         return
 
-    # ── Phase: retrieval ───────────────────────────────────────────────────────
-    try:
-        ctx = await retrieve_planning_context(
-            query=req.query,
-            repo_owner=req.repo_owner,
-            repo_name=req.repo_name,
-            web_research=False,
-            model=req.model,
-        )
-        yield _event(
-            {
-                "type": "retrieval_complete",
-                "log": ctx.retrieval_log,
-                "chunks": len(ctx.chunks_used),
-                "tokens": ctx.tokens_used,
-            }
-        )
-    except Exception:
-        logger.exception("ask retriever failed (SSE)")
-        yield _event({"type": "error", "message": "Retrieval failed. Please try again."})
-        return
-
-    # ── Phase: answer generation ───────────────────────────────────────────────
-    yield _event({"type": "status", "message": "Generating answer…"})
-
     try:
         async for chunk in stream_generate_answer(
             query=req.query,
-            ctx=ctx,
             repo_owner=req.repo_owner,
             repo_name=req.repo_name,
             model=req.model,
         ):
-            if chunk["type"] == "token":
+            etype = chunk.get("type")
+
+            if etype == "agent_tool_call":
+                yield _event(
+                    {
+                        "type": "agent_tool_call",
+                        "tool": chunk["tool"],
+                        "input_summary": chunk.get("input_summary", ""),
+                    }
+                )
+
+            elif etype == "agent_tool_result":
+                yield _event(
+                    {
+                        "type": "agent_tool_result",
+                        "tool": chunk["tool"],
+                        "tokens": chunk.get("tokens", 0),
+                        "cumulative_tokens": chunk.get("cumulative_tokens", 0),
+                    }
+                )
+
+            elif etype == "thinking":
+                yield _event({"type": "thinking", "text": chunk["text"]})
+
+            elif etype == "token":
                 yield _event({"type": "answer_chunk", "text": chunk["text"]})
-            elif chunk["type"] == "answer_complete":
+
+            elif etype == "answer_complete":
                 result = chunk["result"]
                 await _save_ask_turn(
-                    effective_session_id, req.query, result, ctx, req.repo_owner, req.repo_name
+                    effective_session_id, req.query, result, req.repo_owner, req.repo_name
                 )
                 yield _event(
                     {
@@ -226,13 +212,17 @@ async def _sse_generator(req: AskRequest):
                         "elapsed_ms": result.elapsed_ms,
                         "session_id": effective_session_id,
                         "metadata": {
-                            "context_tokens": ctx.tokens_used,
-                            "context_files": len(ctx.chunks_used),
-                            "retrieval_log": ctx.retrieval_log,
-                            "query_complexity": ctx.query_complexity,
+                            "context_tokens": result.context_tokens,
+                            "context_files": result.tool_calls_count,
+                            "retrieval_log": (
+                                f"Agentic: {result.iterations} iterations, "
+                                f"{result.tool_calls_count} tool calls"
+                            ),
+                            "query_complexity": None,
                         },
                     }
                 )
+
     except RuntimeError as exc:
         status = getattr(exc, "status_code", None)
         if status == 429:

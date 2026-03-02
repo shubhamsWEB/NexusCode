@@ -330,8 +330,8 @@ def _compute_budgets(analysis: QueryAnalysis) -> dict:
 
     Simple queries get the base budget; complex queries scale up.
     """
-    base = settings.planning_context_budget
-    max_budget = settings.planning_max_context_budget
+    base = 10_000
+    max_budget = 30_000
 
     if analysis.complexity == "complex":
         total = max_budget
@@ -366,10 +366,10 @@ def _compute_candidates(analysis: QueryAnalysis, codebase_size: int) -> dict:
 
     codebase_size: approximate number of active chunks in the repo.
     """
-    base_candidates = settings.planning_candidate_base
-    max_candidates = settings.planning_candidate_max
-    base_rerank = settings.planning_rerank_base
-    max_rerank = settings.planning_rerank_max
+    base_candidates = 15
+    max_candidates = 40
+    base_rerank = 10
+    max_rerank = 25
 
     # Scale factor: 1.0 for small repos, up to 2.0 for large ones
     if codebase_size > 5000:
@@ -561,7 +561,7 @@ async def retrieve_planning_context(
             repo_owner=repo_owner,
             repo_name=repo_name,
             token_budget=budgets["dependency"],
-            max_depth=settings.planning_import_depth,
+            max_depth=2,
         )
         if dependency_context:
             logger.info(

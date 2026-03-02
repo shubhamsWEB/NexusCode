@@ -646,29 +646,17 @@ async def plan_implementation(
     Cursor-style planning overview grounded in your actual codebase.
     """
     from src.planning.claude_planner import generate_plan
-    from src.planning.retriever import retrieve_planning_context
 
     repo_owner = repo_name = None
     if repo and "/" in repo:
         repo_owner, repo_name = repo.split("/", 1)
 
     try:
-        ctx = await retrieve_planning_context(
+        plan = await generate_plan(
             query=query,
             repo_owner=repo_owner,
             repo_name=repo_name,
             web_research=web_research,
-            model=model,
-        )
-    except Exception as exc:
-        return json.dumps({"error": f"Retrieval failed: {exc}"})
-
-    try:
-        plan = await generate_plan(
-            query=query,
-            ctx=ctx,
-            repo_owner=repo_owner,
-            repo_name=repo_name,
             model=model,
         )
     except RuntimeError as exc:
@@ -712,27 +700,14 @@ async def ask_codebase(
     - "Explain the chunking algorithm"
     """
     from src.ask.ask_agent import generate_answer
-    from src.planning.retriever import retrieve_planning_context
 
     repo_owner = repo_name = None
     if repo and "/" in repo:
         repo_owner, repo_name = repo.split("/", 1)
 
     try:
-        ctx = await retrieve_planning_context(
-            query=question,
-            repo_owner=repo_owner,
-            repo_name=repo_name,
-            web_research=False,
-            model=model,
-        )
-    except Exception as exc:
-        return json.dumps({"error": f"Retrieval failed: {exc}"})
-
-    try:
         result = await generate_answer(
             query=question,
-            ctx=ctx,
             repo_owner=repo_owner,
             repo_name=repo_name,
             model=model,

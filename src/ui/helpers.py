@@ -41,6 +41,21 @@ def api_post(path: str, json=None, timeout: int = 30):
         return None, str(e)
 
 
+def api_patch(path: str, json=None, timeout: int = 15):
+    """PATCH request to the API server. Returns (data, error)."""
+    url = f"{st.session_state.get('api_url', 'http://localhost:8000')}{path}"
+    try:
+        resp = httpx.patch(url, json=json, timeout=timeout)
+        resp.raise_for_status()
+        return resp.json(), None
+    except httpx.TimeoutException:
+        return None, "Request timed out."
+    except httpx.HTTPStatusError as e:
+        return None, f"HTTP {e.response.status_code}: {e.response.text[:300]}"
+    except Exception as e:
+        return None, str(e)
+
+
 def api_delete(path: str, timeout: int = 15):
     """DELETE request to the API server. Returns (data, error)."""
     url = f"{st.session_state.get('api_url', 'http://localhost:8000')}{path}"

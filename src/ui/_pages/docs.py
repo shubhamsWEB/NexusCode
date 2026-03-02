@@ -17,6 +17,7 @@ _DOC_FILES: list[tuple[str, str]] = [
     ("MCP Server & Auth", "mcp-access.md"),
     ("Search, Ask & Planning", "search-and-ask.md"),
     ("Custom Skills", "custom-skills.md"),
+    ("External MCP Servers", "external-mcp-servers.md"),
     ("API Reference", "api-reference.md"),
     ("Configuration", "configuration.md"),
     ("Deployment", "deployment.md"),
