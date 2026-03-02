@@ -1,27 +1,25 @@
 """
-Ask Mode LLM agent.
+Ask Mode LLM agent — agentic codebase Q&A.
 
-Answers natural-language questions about the codebase in a mentor tone:
-clear, direct, grounded in real code, with concrete citations.
+Instead of pre-fetching context before the LLM call, Claude is given the
+retrieval tools directly and decides what to search for. Claude iterates —
+searching the vector DB, looking up symbols, tracing callers — then calls
+answer_question when it has enough real context.
 
-Deliberately uses a DIFFERENT system prompt from the planning module:
-  - Planning: "every token must be actionable", structured JSON tool output
-  - Ask:      conversational markdown prose, inline code citations, mentor voice
+Flow:
+  query → AgentLoop(tools=[search, get_symbol, find_callers, get_file_context])
+        → Claude searches iteratively (up to ask_max_iterations turns)
+        → Claude calls answer_question(answer, cited_files, follow_up_hints)
+        → parse → AskResult
 
-Uses the provider abstraction layer (src.llm) to support multiple LLM backends
-with per-request model selection.
+Tone: friendly senior-engineer mentor, conversational markdown, inline citations.
 """
 
 from __future__ import annotations
 
-import time
 from collections.abc import AsyncIterator
 
 from src.config import settings
-from src.llm import get_provider
-from src.llm.tool_converter import from_anthropic_schema
-from src.llm.types import LLMResponse, LLMStreamEvent
-from src.planning.retriever import PlanningContext
 from src.utils.logging import get_secure_logger
 
 logger = get_secure_logger(__name__)
@@ -29,67 +27,44 @@ logger = get_secure_logger(__name__)
 # ── System prompt ──────────────────────────────────────────────────────────────
 
 ASK_SYSTEM_PROMPT = """\
-You are a senior engineer mentoring a junior developer who has questions about \
-a live codebase. Your job is to EXPLAIN - not to build plans.
+You are a senior engineer mentoring a developer who has questions about a live codebase.
+Your job is to EXPLAIN — not to build plans.
 
-TONE
-────
-Friendly, direct, authoritative. Think of a trusted senior teammate answering \
-a Slack message - not writing a design doc. Use first-person ("I" / "you") \
-naturally. Avoid corporate jargon or excessive hedging.
+PROCESS
+───────
+1. Use search_codebase to find relevant code. Be specific with queries.
+2. Use get_symbol to look up specific functions or classes by name.
+3. Use find_callers to trace how something is used across the codebase.
+4. Use get_file_context to understand a file's structure and dependencies.
+5. Call multiple tools if needed — follow the code where it leads.
+6. Once you have real code to reference, call answer_question.
 
-WHAT GREAT ANSWERS LOOK LIKE
-─────────────────────────────
-1. Open with a direct, clear answer in 1-2 sentences. No preamble.
-2. Walk through how it actually works, citing the real code:
-   • Use backtick paths like `src/pipeline/pipeline.py` (lines 42-80) inline.
-   • When walking through a flow, trace it file by file so the reader
-     can follow along in their editor.
-3. Use code snippets (fenced blocks) when showing the relevant lines helps
-   more than prose alone.
-4. Use analogies or plain-English summaries for abstract concepts.
-5. Close with 2-3 specific follow-up questions the junior might want
-   to ask next - make them concrete and grounded in the codebase.
+You MUST call at least one search tool before calling answer_question.
 
-GROUNDING RULES
-───────────────
-• Only reference files, functions, classes, and line ranges that appear
-  in the provided codebase context. Never invent paths or symbols.
-• If you cite a symbol, spell it exactly as it appears in the context.
-• Do NOT reproduce the grounding-warning text verbatim in your answer -
-  just respect the constraints it describes.
+ANSWER STYLE
+────────────
+• Friendly, direct, authoritative. Think Slack message from a senior teammate.
+• Open with a clear 1–2 sentence answer. No preamble.
+• Walk through the code citing real file paths and line numbers.
+• Use fenced code blocks for key snippets.
+• Close with 2–3 concrete follow-up questions grounded in what you found.
 
-HARD CONSTRAINT — NEVER USE PRETRAINING KNOWLEDGE
-──────────────────────────────────────────────────
-If the ⚠ Grounding Warnings or 🚨 CRITICAL block in the user message
-contains MISSING_PATH, MISSING_SYMBOL, or NO_RESULTS warnings, you MUST:
-  1. Tell the user exactly which files or symbols are NOT in the index.
-  2. Explain that those files need to be indexed first.
-  3. DO NOT attempt to answer the question from your pretraining knowledge.
-     This includes phrases like "I can still walk you through…",
-     "Based on general knowledge…", or "Typically, this works by…".
-  4. Suggest the user check registered repos (GET /repos) and trigger
-     indexing for the missing repository.
-This is a hard constraint — not a suggestion. An answer that fills in
-missing context from pretraining is worse than no answer at all because
-it will be wrong about the specific codebase the user is asking about.
-
-OUTPUT FORMAT
-─────────────
-Use the `answer_question` tool. Fields:
-  answer         - full markdown answer (prose + code blocks + inline citations)
-  cited_files    - list of "path:line_range" strings for every file cited
-  follow_up_hints - 2-3 natural follow-up questions (strings, not bullet points)
+HARD RULES
+──────────
+• ONLY cite files and symbols you actually found via tool calls.
+• NEVER invent file paths, function names, or line numbers.
+• If something is not in the index, say so and suggest indexing the repo.
+• Do NOT fill gaps with training knowledge — say explicitly what is missing.
 """
 
 # ── Tool schema ────────────────────────────────────────────────────────────────
 
-_ASK_ANSWER_TOOL_DICT = {
+_ASK_ANSWER_TOOL: dict = {
     "name": "answer_question",
     "description": (
-        "Answer a developer's question about the codebase. "
-        "The answer must be conversational markdown with inline code citations. "
-        "Always cite real file paths and line numbers from the provided context."
+        "Answer the developer's question with a conversational markdown response "
+        "grounded in the code you retrieved. Call this ONLY after searching the codebase. "
+        "Cite real file paths and line numbers found via tool calls."
     ),
     "input_schema": {
         "type": "object",
@@ -97,27 +72,27 @@ _ASK_ANSWER_TOOL_DICT = {
             "answer": {
                 "type": "string",
                 "description": (
-                    "Full markdown answer. Use inline citations like "
-                    "`src/foo/bar.py` (lines 12-30). Include fenced code "
-                    "blocks for key snippets. Mentor tone - clear and direct."
+                    "Full markdown answer. Lead with the direct answer. "
+                    "Walk through the relevant code with inline citations like "
+                    "`src/foo/bar.py` (lines 12-30). Include fenced code blocks. "
+                    "Close with 2-3 follow-up questions."
                 ),
             },
             "cited_files": {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "Every file path cited in the answer, with line range, "
-                    "e.g. 'src/pipeline/pipeline.py:42-80'. One entry per "
-                    "distinct file+range pair."
+                    "Every file path cited in the answer, with line range. "
+                    "Format: 'src/pipeline/pipeline.py:42-80'. "
+                    "Only paths from tool results — never invented."
                 ),
             },
             "follow_up_hints": {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "2-3 natural follow-up questions the developer might want "
-                    "to ask next, grounded in the codebase context. "
-                    "Concrete questions, not generic suggestions."
+                    "2-3 concrete follow-up questions the developer might ask next. "
+                    "Ground them in the code you found, not generic suggestions."
                 ),
             },
         },
@@ -125,19 +100,22 @@ _ASK_ANSWER_TOOL_DICT = {
     },
 }
 
-# Keep the original dict exported for backward compat
-ASK_ANSWER_TOOL = _ASK_ANSWER_TOOL_DICT
-
-# Convert to provider-agnostic schema
-_TOOLS = [from_anthropic_schema(_ASK_ANSWER_TOOL_DICT)]
-
-# ── Ask response dataclass ─────────────────────────────────────────────────────
+# ── Result dataclass ───────────────────────────────────────────────────────────
 
 
 class AskResult:
     """Parsed result from the ask agent."""
 
-    __slots__ = ("answer", "cited_files", "elapsed_ms", "follow_up_hints", "quality_score")
+    __slots__ = (
+        "answer",
+        "cited_files",
+        "elapsed_ms",
+        "follow_up_hints",
+        "quality_score",
+        "context_tokens",
+        "tool_calls_count",
+        "iterations",
+    )
 
     def __init__(
         self,
@@ -146,12 +124,18 @@ class AskResult:
         follow_up_hints: list[str],
         elapsed_ms: float,
         quality_score: float = 0.0,
+        context_tokens: int = 0,
+        tool_calls_count: int = 0,
+        iterations: int = 0,
     ):
         self.answer = answer
         self.cited_files = cited_files
         self.follow_up_hints = follow_up_hints
         self.elapsed_ms = elapsed_ms
         self.quality_score = quality_score
+        self.context_tokens = context_tokens
+        self.tool_calls_count = tool_calls_count
+        self.iterations = iterations
 
     def to_dict(self) -> dict:
         return {
@@ -160,129 +144,43 @@ class AskResult:
             "follow_up_hints": self.follow_up_hints,
             "elapsed_ms": self.elapsed_ms,
             "quality_score": self.quality_score,
+            "context_tokens": self.context_tokens,
+            "tool_calls_count": self.tool_calls_count,
+            "iterations": self.iterations,
         }
 
 
-# ── User message builder ───────────────────────────────────────────────────────
+# ── Helpers ────────────────────────────────────────────────────────────────────
 
 
-def _build_ask_user_message(
+def _build_system_prompt(repo_owner: str | None, repo_name: str | None) -> str:
+    from src.agent.rules import load_rules
+
+    rules = load_rules(repo_owner, repo_name)
+    if not rules:
+        return ASK_SYSTEM_PROMPT
+    return ASK_SYSTEM_PROMPT + f"\n\n---\n\n## Codebase-Specific Rules\n\n{rules}"
+
+
+def _build_initial_message(
     query: str,
-    ctx: PlanningContext,
     repo_owner: str | None,
     repo_name: str | None,
 ) -> str:
-    repo_scope = f"{repo_owner}/{repo_name}" if (repo_owner and repo_name) else "all indexed repos"
-    parts: list[str] = [
-        f"## Question\n{query}",
-        f"## Scope\nRepository: {repo_scope}",
-    ]
-
-    # Enumerate the exact file paths present in the retrieved context.
-    # This prevents the LLM from citing paths it invented (e.g. "doc.md" when
-    # the real paths are "doc/README.md") or files not in the index at all.
-    if ctx.chunks_used:
-        files_in_ctx = sorted({c["file"] for c in ctx.chunks_used})
-        file_list = "\n".join(f"- `{f}`" for f in files_in_ctx)
-        parts.append(
-            "## Files Available in Retrieved Context\n"
-            "You MUST cite ONLY the exact paths listed below. "
-            "Do NOT reference any other file path, even if you know it from training data:\n"
-            f"{file_list}"
-        )
-
-    if ctx.sub_queries and len(ctx.sub_queries) > 1:
-        meta = "## Query Decomposition\nThis question touches multiple concerns:\n"
-        for i, sq in enumerate(ctx.sub_queries, 1):
-            meta += f"  {i}. {sq}\n"
-        parts.append(meta)
-
-    if ctx.grounding_warnings:
-        # Separate critical (missing indexed content) from advisory warnings
-        critical_types = ("MISSING_PATH:", "MISSING_SYMBOL:", "NO_RESULTS:")
-        critical_warnings = [w for w in ctx.grounding_warnings if w.startswith(critical_types)]
-        advisory_warnings = [w for w in ctx.grounding_warnings if not w.startswith(critical_types)]
-
-        if critical_warnings:
-            critical_block = "## 🚨 CRITICAL: REQUIRED CONTENT IS NOT INDEXED\n"
-            critical_block += (
-                "The following files/symbols were asked about but are NOT in the index. "
-                "You MUST NOT answer from pretraining knowledge. "
-                "Your entire response must be to explain what is missing and how to index it:\n\n"
-            )
-            for w in critical_warnings:
-                critical_block += f"- {w}\n"
-            critical_block += (
-                "\nRequired action: Tell the user which repo/files to index. "
-                "Do NOT provide any code walkthrough, explanation, or description "
-                "of how the missing code works."
-            )
-            parts.append(critical_block)
-
-        if advisory_warnings:
-            warning_block = "## ⚠ Grounding Warnings\n"
-            warning_block += "The retrieval system found these gaps - respect them:\n\n"
-            for w in advisory_warnings:
-                warning_block += f"- {w}\n"
-            parts.append(warning_block)
-
-    if ctx.component_context:
-        parts.append(ctx.component_context)
-
-    if ctx.primary_context:
-        parts.append(f"## Relevant Code Context\n{ctx.primary_context}")
-
-    if ctx.file_maps:
-        parts.append(f"## File Structure\n{ctx.file_maps}")
-
-    if ctx.dependency_context:
-        parts.append(ctx.dependency_context)
-
-    if ctx.caller_contexts:
-        parts.append(f"## Known Callers\n{ctx.caller_contexts}")
-
-    if ctx.expansion_context:
-        parts.append(f"## Additional Context\n{ctx.expansion_context}")
-
-    parts.append(
-        "## Instructions\n"
-        "Answer the developer's question directly and conversationally.\n"
-        "Walk through the relevant code from the context above, citing "
-        "file paths and line numbers inline. Use the `answer_question` tool.\n\n"
-        "Remember:\n"
-        "- Lead with the direct answer.\n"
-        "- Cite real files and symbols - only what appears in the context above.\n"
-        "- Close with 2-3 concrete follow-up questions."
-    )
-
-    return "\n\n".join(parts)
+    scope = f" (repository: {repo_owner}/{repo_name})" if repo_owner and repo_name else ""
+    return f"{query}{scope}"
 
 
-# ── Parse response ─────────────────────────────────────────────────────────────
-
-
-def _parse_tool_response(
-    response: LLMResponse,
-    elapsed_ms: float,
-    quality_score: float = 0.0,
-) -> AskResult:
-    if not response.tool_calls:
-        # Fallback: LLM responded in text
-        return AskResult(
-            answer=response.text_content or "_No answer generated._",
-            cited_files=[],
-            follow_up_hints=[],
-            elapsed_ms=elapsed_ms,
-            quality_score=quality_score,
-        )
-
-    data = response.tool_calls[0].input
+def _parse_tool_block(tool_block: dict, stats: dict) -> AskResult:
+    data = tool_block.get("input", {})
     return AskResult(
         answer=data.get("answer", "_No answer generated._"),
         cited_files=data.get("cited_files", []),
         follow_up_hints=data.get("follow_up_hints", []),
-        elapsed_ms=elapsed_ms,
-        quality_score=quality_score,
+        elapsed_ms=stats.get("elapsed_ms", 0.0),
+        context_tokens=stats.get("context_tokens", 0),
+        tool_calls_count=stats.get("tool_calls", 0),
+        iterations=stats.get("iterations", 0),
     )
 
 
@@ -291,35 +189,47 @@ def _parse_tool_response(
 
 async def generate_answer(
     query: str,
-    ctx: PlanningContext,
     repo_owner: str | None = None,
     repo_name: str | None = None,
     model: str | None = None,
 ) -> AskResult:
     """
-    Call the LLM with the Ask Mode prompt and return an AskResult.
-    No thinking budget - Ask Mode prioritises speed and conversational flow.
+    Run the Ask Mode agent loop (non-streaming).
+    Claude searches the codebase iteratively then calls answer_question.
     """
+    from src.agent.loop import AgentLoop, AgentLoopConfig
+    from src.agent.mcp_bridge import get_external_tool_schemas
+    from src.agent.tool_schemas import RETRIEVAL_TOOL_SCHEMAS
+
     effective_model = model or settings.default_model
-    provider = get_provider(effective_model)
+    all_retrieval = RETRIEVAL_TOOL_SCHEMAS + get_external_tool_schemas()
 
-    user_message = _build_ask_user_message(query, ctx, repo_owner, repo_name)
-    t0 = time.monotonic()
-
-    response = await provider.generate(
+    tool_block, stats = await AgentLoop().run(
         model=effective_model,
-        system=ASK_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_message}],
-        tools=_TOOLS,
-        tool_choice={"name": "answer_question"},
-        max_tokens=4096,
-        thinking_budget=0,
-        temperature=0,
+        system=_build_system_prompt(repo_owner, repo_name),
+        initial_message=_build_initial_message(query, repo_owner, repo_name),
+        retrieval_tools=all_retrieval,
+        final_answer_tools=[_ASK_ANSWER_TOOL],
+        config=AgentLoopConfig(
+            max_iterations=settings.ask_max_iterations,
+            cumulative_token_budget=settings.agent_token_budget,
+            require_search_before_answer=True,
+            thinking_budget=0,
+        ),
+        repo_owner=repo_owner,
+        repo_name=repo_name,
     )
 
-    elapsed_ms = (time.monotonic() - t0) * 1000
-    logger.info("ask: %s responded in %.0fms", effective_model, elapsed_ms)
-    return _parse_tool_response(response, elapsed_ms, quality_score=ctx.quality_score)
+    result = _parse_tool_block(tool_block, stats)
+    logger.info(
+        "ask: %s answered in %.0fms (iter=%d, tool_calls=%d, tokens=%d)",
+        effective_model,
+        result.elapsed_ms,
+        result.iterations,
+        result.tool_calls_count,
+        result.context_tokens,
+    )
+    return result
 
 
 # ── Public stream generator ────────────────────────────────────────────────────
@@ -327,39 +237,51 @@ async def generate_answer(
 
 async def stream_generate_answer(
     query: str,
-    ctx: PlanningContext,
     repo_owner: str | None = None,
     repo_name: str | None = None,
     model: str | None = None,
 ) -> AsyncIterator[dict]:
     """
-    Stream answer tokens from the LLM.
+    Stream the Ask Mode agent loop.
 
     Yields:
-      {"type": "token",           "text": "<chunk>"}
-      {"type": "answer_complete", "result": AskResult}
+      {"type": "agent_tool_call",   "tool": str, "input_summary": str}
+      {"type": "agent_tool_result", "tool": str, "tokens": int, "cumulative_tokens": int}
+      {"type": "thinking",          "text": str}
+      {"type": "token",             "text": str}
+      {"type": "answer_complete",   "result": AskResult}
     """
+    from src.agent.loop import AgentLoop, AgentLoopConfig
+    from src.agent.mcp_bridge import get_external_tool_schemas
+    from src.agent.tool_schemas import RETRIEVAL_TOOL_SCHEMAS
+
     effective_model = model or settings.default_model
-    provider = get_provider(effective_model)
+    all_retrieval = RETRIEVAL_TOOL_SCHEMAS + get_external_tool_schemas()
 
-    user_message = _build_ask_user_message(query, ctx, repo_owner, repo_name)
-    t0 = time.monotonic()
-
-    async for event in provider.stream(
+    async for event in AgentLoop().stream(
         model=effective_model,
-        system=ASK_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_message}],
-        tools=_TOOLS,
-        tool_choice={"name": "answer_question"},
-        max_tokens=4096,
-        thinking_budget=0,
-        temperature=0,
+        system=_build_system_prompt(repo_owner, repo_name),
+        initial_message=_build_initial_message(query, repo_owner, repo_name),
+        retrieval_tools=all_retrieval,
+        final_answer_tools=[_ASK_ANSWER_TOOL],
+        config=AgentLoopConfig(
+            max_iterations=settings.ask_max_iterations,
+            cumulative_token_budget=settings.agent_token_budget,
+            require_search_before_answer=True,
+            thinking_budget=0,
+        ),
+        repo_owner=repo_owner,
+        repo_name=repo_name,
     ):
-        if isinstance(event, LLMStreamEvent):
-            if event.type in ("text", "input_json"):
-                yield {"type": "token", "text": event.text}
-        elif isinstance(event, LLMResponse):
-            elapsed_ms = (time.monotonic() - t0) * 1000
-            logger.info("ask: stream complete in %.0fms", elapsed_ms)
-            result = _parse_tool_response(event, elapsed_ms, quality_score=ctx.quality_score)
+        if event["type"] == "done":
+            result = _parse_tool_block(event["tool_block"], event["stats"])
+            logger.info(
+                "ask: stream complete in %.0fms (iter=%d, tool_calls=%d)",
+                result.elapsed_ms,
+                result.iterations,
+                result.tool_calls_count,
+            )
             yield {"type": "answer_complete", "result": result}
+        else:
+            # Pass through: agent_tool_call, agent_tool_result, thinking, token
+            yield event

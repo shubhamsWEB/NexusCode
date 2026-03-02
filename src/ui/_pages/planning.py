@@ -40,8 +40,8 @@ def render():
     )
 
     st.info(
-        "**Requires:** At least one LLM API key in `.env` (ANTHROPIC_API_KEY, "
-        "OPENAI_API_KEY, or GROK_API_KEY). Web research requires Anthropic.",
+        "**Requires:** `ANTHROPIC_API_KEY` in `.env`. "
+        "Claude searches the codebase iteratively with extended thinking, then outputs a grounded plan.",
         icon="ℹ️",
     )
 
@@ -235,10 +235,23 @@ def _request_streaming(api_url: str, payload: dict) -> tuple[dict | None, float]
                 if etype == "status":
                     status_box.info(f"⏳ {event['message']}")
 
+                elif etype == "agent_tool_call":
+                    tool = event.get("tool", "")
+                    summary = event.get("input_summary", "")
+                    icon = {"search_codebase": "🔍", "get_symbol": "🎯", "find_callers": "📡", "get_file_context": "📄"}.get(tool, "🔧")
+                    status_box.info(f"{icon} **{tool}**: {summary}")
+
+                elif etype == "agent_tool_result":
+                    tool = event.get("tool", "")
+                    tokens = event.get("tokens", 0)
+                    cum = event.get("cumulative_tokens", 0)
+                    status_box.success(f"✅ **{tool}** → {tokens:,} tokens (total: {cum:,})")
+
                 elif etype == "thinking":
-                    status_box.info("🧠 Thinking…")
+                    status_box.info("🧠 Thinking deeply…")
 
                 elif etype == "retrieval_complete":
+                    # Legacy event — kept for backward compat
                     chunks = event.get("chunks", 0)
                     tokens = event.get("tokens", 0)
                     web_icon = " 🌐" if event.get("web_research_used") else ""

@@ -2,7 +2,8 @@
 POST /plan  — Implementation planning endpoint.
 
 Accepts a natural-language query (bug/feature/refactor) and returns a
-complete ImplementationPlan grounded in the live codebase index.
+complete ImplementationPlan. Claude searches the codebase iteratively via
+tool calls, then outputs a structured plan grounded in the actual code.
 
 Two response modes:
   stream=false (default)  →  JSON response  (ImplementationPlan)
@@ -10,7 +11,9 @@ Two response modes:
 
 SSE event types:
   {"type": "status",             "message": "..."}
-  {"type": "retrieval_complete", "log": "..."}
+  {"type": "agent_tool_call",    "tool": str, "input_summary": str}
+  {"type": "agent_tool_result",  "tool": str, "tokens": N, "cumulative_tokens": N}
+  {"type": "thinking",           "text": "..."}
   {"type": "plan_chunk",         "text": "..."}
   {"type": "plan_complete",      "plan": {...}}
   {"type": "error",              "message": "..."}
@@ -65,9 +68,7 @@ async def _save_plan(plan, repo_owner, repo_name):
 async def create_plan(req: PlanRequest):
     """
     Generate a complete implementation plan for a query.
-
-    Set `stream=true` to receive a server-sent-events stream instead of
-    waiting for the full response.
+    Set `stream=true` to receive a server-sent-events stream.
     """
     if req.stream:
         return _sse_response(req)
@@ -77,34 +78,20 @@ async def create_plan(req: PlanRequest):
 async def _sync_plan(req: PlanRequest) -> JSONResponse:
     try:
         from src.planning.claude_planner import generate_plan
-        from src.planning.retriever import retrieve_planning_context
     except ImportError:
         return JSONResponse(
             {"error": "Service unavailable. Required modules not loaded."}, status_code=503
         )
 
     try:
-        ctx = await retrieve_planning_context(
+        plan = await generate_plan(
             query=req.query,
             repo_owner=req.repo_owner,
             repo_name=req.repo_name,
             web_research=req.web_research,
             model=req.model,
         )
-    except Exception:
-        logger.exception("planning retriever failed")
-        return JSONResponse({"error": "Retrieval failed. Please try again."}, status_code=500)
-
-    try:
-        plan = await generate_plan(
-            query=req.query,
-            ctx=ctx,
-            repo_owner=req.repo_owner,
-            repo_name=req.repo_name,
-            model=req.model,
-        )
     except RuntimeError as exc:
-        # Check if it's a rate limit error (our custom RateLimitOrOverloadError)
         status = getattr(exc, "status_code", None)
         if status == 429:
             return JSONResponse(
@@ -112,7 +99,6 @@ async def _sync_plan(req: PlanRequest) -> JSONResponse:
                 status_code=429,
                 headers={"Retry-After": "60"},
             )
-        # anthropic not installed / no API key / overload
         return JSONResponse({"error": "Service unavailable. Please try again."}, status_code=503)
     except Exception:
         logger.exception("plan generation failed")
@@ -133,7 +119,7 @@ def _sse_response(req: PlanRequest) -> StreamingResponse:
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",  # disable nginx buffering
+            "X-Accel-Buffering": "no",
         },
     )
 
@@ -142,57 +128,52 @@ async def _sse_generator(req: PlanRequest):
     def _event(data: dict) -> str:
         return f"data: {json.dumps(data)}\n\n"
 
-    web_label = " + web research" if req.web_research else ""
-    yield _event({"type": "status", "message": f"Retrieving code context{web_label}…"})
+    yield _event({"type": "status", "message": "Searching codebase…"})
 
     try:
         from src.planning.claude_planner import stream_generate_plan
-        from src.planning.retriever import retrieve_planning_context
     except ImportError:
         yield _event(
             {"type": "error", "message": "Service unavailable. Required modules not loaded."}
         )
         return
 
-    # ── Phase: retrieval ──────────────────────────────────────────────────────
     try:
-        ctx = await retrieve_planning_context(
+        async for chunk in stream_generate_plan(
             query=req.query,
             repo_owner=req.repo_owner,
             repo_name=req.repo_name,
             web_research=req.web_research,
             model=req.model,
-        )
-        yield _event(
-            {
-                "type": "retrieval_complete",
-                "log": ctx.retrieval_log,
-                "chunks": len(ctx.chunks_used),
-                "tokens": ctx.tokens_used,
-                "web_research_used": bool(ctx.web_research_notes),
-            }
-        )
-    except Exception:
-        logger.exception("planning retriever failed (SSE)")
-        yield _event({"type": "error", "message": "Retrieval failed. Please try again."})
-        return
-
-    # ── Phase: generation (real token streaming via input_json_delta) ─────────
-    yield _event({"type": "status", "message": "Generating implementation plan…"})
-
-    try:
-        async for chunk in stream_generate_plan(
-            query=req.query,
-            ctx=ctx,
-            repo_owner=req.repo_owner,
-            repo_name=req.repo_name,
-            model=req.model,
         ):
-            if chunk["type"] == "thinking":
+            etype = chunk.get("type")
+
+            if etype == "agent_tool_call":
+                yield _event(
+                    {
+                        "type": "agent_tool_call",
+                        "tool": chunk["tool"],
+                        "input_summary": chunk.get("input_summary", ""),
+                    }
+                )
+
+            elif etype == "agent_tool_result":
+                yield _event(
+                    {
+                        "type": "agent_tool_result",
+                        "tool": chunk["tool"],
+                        "tokens": chunk.get("tokens", 0),
+                        "cumulative_tokens": chunk.get("cumulative_tokens", 0),
+                    }
+                )
+
+            elif etype == "thinking":
                 yield _event({"type": "thinking", "text": chunk["text"]})
-            elif chunk["type"] == "token":
+
+            elif etype == "token":
                 yield _event({"type": "plan_chunk", "text": chunk["text"]})
-            elif chunk["type"] == "plan_complete":
+
+            elif etype == "plan_complete":
                 plan = chunk["plan"]
                 await _save_plan(plan, req.repo_owner, req.repo_name)
                 yield _event(
@@ -202,6 +183,7 @@ async def _sse_generator(req: PlanRequest):
                         "plan_id": plan.plan_id,
                     }
                 )
+
     except RuntimeError as exc:
         status = getattr(exc, "status_code", None)
         if status == 429:

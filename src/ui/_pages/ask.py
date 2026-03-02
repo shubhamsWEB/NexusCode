@@ -46,9 +46,8 @@ def render():
     )
 
     st.info(
-        "**Requires:** At least one LLM API key in `.env` (ANTHROPIC_API_KEY, "
-        "OPENAI_API_KEY, or GROK_API_KEY). "
-        "Answers are cited to real files and line numbers in your codebase index.",
+        "**Requires:** `ANTHROPIC_API_KEY` in `.env`. "
+        "Claude searches the codebase iteratively, then answers with inline citations.",
         icon="ℹ️",
     )
 
@@ -213,7 +212,20 @@ def _stream_ask(api_url: str, payload: dict, query: str) -> tuple[str, dict]:
                     if etype == "status":
                         status_box.caption(f"⏳ {event['message']}")
 
+                    elif etype == "agent_tool_call":
+                        tool = event.get("tool", "")
+                        summary = event.get("input_summary", "")
+                        icon = {"search_codebase": "🔍", "get_symbol": "🎯", "find_callers": "📡", "get_file_context": "📄"}.get(tool, "🔧")
+                        status_box.caption(f"{icon} **{tool}**: {summary}")
+
+                    elif etype == "agent_tool_result":
+                        tool = event.get("tool", "")
+                        tokens = event.get("tokens", 0)
+                        cum = event.get("cumulative_tokens", 0)
+                        status_box.caption(f"✅ **{tool}** → {tokens:,} tokens (total: {cum:,})")
+
                     elif etype == "retrieval_complete":
+                        # Legacy event — kept for backward compat
                         chunks = event.get("chunks", 0)
                         tokens = event.get("tokens", 0)
                         status_box.caption(

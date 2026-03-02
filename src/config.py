@@ -41,40 +41,23 @@ class Settings(BaseSettings):
 
     # ── LLM / Planning ───────────────────────────────────────────────────────
     anthropic_api_key: str | None = Field(None)
-    openai_api_key: str | None = Field(None, description="OpenAI API key")
-    grok_api_key: str | None = Field(None, description="xAI API key for Grok models")
     default_model: str = Field(
-        "claude-sonnet-4-6", description="Default LLM model for planning and ask"
+        "claude-sonnet-4-6", description="Default Claude model for planning and ask"
     )
     enable_file_summaries: bool = Field(
         False, description="Whether to extract and index LLM file summaries"
     )
-    summary_model: str = Field(
-        "claude-haiku", description="Fast, cheap model for file summaries (default: claude-haiku)"
+    # Agent loop settings
+    ask_max_iterations: int = Field(5, description="Max retrieval iterations for Ask Mode")
+    plan_max_iterations: int = Field(8, description="Max retrieval iterations for Plan Mode")
+    agent_token_budget: int = Field(
+        80_000, description="Max cumulative tokens across all tool results in an agent loop"
     )
-    anthropic_model: str = Field(
-        "claude-sonnet-4-6", description="Deprecated: use default_model instead"
-    )
-    planning_context_budget: int = Field(
-        10000, description="Base token budget for planning context"
+    planning_thinking_budget: int = Field(
+        10000, description="Token budget for extended thinking in Plan Mode (0 to disable)"
     )
     planning_max_output_tokens: int = Field(
         16000, description="Max output tokens for plan generation"
-    )
-    planning_thinking_budget: int = Field(
-        10000, description="Token budget for extended thinking (0 to disable)"
-    )
-    planning_max_context_budget: int = Field(
-        30000, description="Max token budget (used for complex multi-file queries)"
-    )
-    planning_candidate_base: int = Field(15, description="Base candidate count for hybrid search")
-    planning_candidate_max: int = Field(
-        40, description="Max candidates for complex queries on large codebases"
-    )
-    planning_rerank_base: int = Field(10, description="Base rerank top-N")
-    planning_rerank_max: int = Field(25, description="Max rerank top-N for complex queries")
-    planning_import_depth: int = Field(
-        2, description="How many import hops to follow for dependency context"
     )
 
     # ── Webhook Auto-Registration ─────────────────────────────────────────────

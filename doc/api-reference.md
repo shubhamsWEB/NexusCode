@@ -200,6 +200,75 @@ data: {"type": "plan_complete", "plan": {...}}
 
 ---
 
+## External MCP Servers
+
+### `GET /mcp-servers`
+List all registered external MCP servers.
+
+```bash
+curl http://localhost:8000/mcp-servers
+```
+
+### `POST /mcp-servers`
+Register a new server. Returns `201 Created`.
+
+**Body:**
+```json
+{
+  "name":        "Package MCP",
+  "url":         "http://localhost:3100/sse",
+  "auth_header": "Bearer sk-...",
+  "description": "optional notes",
+  "enabled":     true
+}
+```
+
+### `PATCH /mcp-servers/{id}`
+Update `name`, `enabled`, `auth_header`, or `description`.
+
+```bash
+curl -X PATCH http://localhost:8000/mcp-servers/1 \
+  -H "Content-Type: application/json" \
+  -d '{"enabled": false}'
+```
+
+### `DELETE /mcp-servers/{id}`
+Remove server and evict its tools from the bridge cache.
+
+```bash
+curl -X DELETE http://localhost:8000/mcp-servers/1
+# → {"deleted": 1, "tools_evicted": 8}
+```
+
+### `POST /mcp-servers/{id}/test`
+Test the live connection for a saved server (no DB write).
+
+```bash
+curl -X POST http://localhost:8000/mcp-servers/1/test
+# → {"ok": true, "tools": ["get_package_info", "list_packages"]}
+```
+
+### `POST /mcp-servers/test-url`
+Test an unsaved server by URL before registering.
+
+```bash
+curl -X POST http://localhost:8000/mcp-servers/test-url \
+  -H "Content-Type: application/json" \
+  -d '{"url": "http://localhost:3100/sse", "auth_header": "Bearer sk-..."}'
+```
+
+### `POST /mcp-servers/reload`
+Reconnect all enabled servers and refresh tool schemas in memory.
+
+```bash
+curl -X POST http://localhost:8000/mcp-servers/reload
+# → {"tool_count": 8, "message": "Bridge reloaded — 8 tool(s) active"}
+```
+
+See [external-mcp-servers.md](./external-mcp-servers.md) for the full guide.
+
+---
+
 ## Skills
 
 ### `GET /skills`
@@ -368,6 +437,7 @@ Common HTTP status codes:
 | `400` | Bad request — invalid parameters |
 | `401` | Unauthorized — missing or invalid Bearer token |
 | `404` | Resource not found (repo, skill, session) |
+| `409` | Conflict — duplicate URL when registering an MCP server |
 | `422` | Validation error — request body doesn't match schema |
 | `500` | Internal server error — check server logs |
 | `503` | Service unavailable — database or worker not reachable |

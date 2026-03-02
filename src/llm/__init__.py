@@ -1,13 +1,11 @@
 """
-Multi-LLM provider abstraction layer.
+Anthropic client module — single LLM provider for NexusCode.
 
 Usage:
-    from src.llm import get_provider, list_available_models
-
-    provider = get_provider("gpt-4o")
-    response = await provider.generate(model="gpt-4o", system="...", messages=[...])
+    from src.llm import get_client
+    client = get_client()
 """
 
-from src.llm.registry import get_provider, list_available_models, resolve_provider
+from src.llm.client import RateLimitOrOverloadError, get_client
 
-__all__ = ["get_provider", "list_available_models", "resolve_provider"]
+__all__ = ["get_client", "RateLimitOrOverloadError"]

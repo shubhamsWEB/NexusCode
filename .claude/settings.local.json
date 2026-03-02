@@ -81,7 +81,13 @@
       "Bash(/Users/shubhamagr/Documents/nexusCode_server/.venv/bin/pip install:*)",
       "WebFetch(domain:docs.pinecone.io)",
       "Bash(pip show:*)",
-      "Bash(.venv/bin/pip show:*)"
+      "Bash(.venv/bin/pip show:*)",
+      "Bash(/Users/shubhamagr/Documents/nexusCode_server/src/ask/ask_agent.py:*)",
+      "Bash(/Users/shubhamagr/Documents/nexusCode_server/src/planning/claude_planner.py:*)",
+      "Bash(/Users/shubhamagr/Documents/nexusCode_server/src/api/ask.py:*)",
+      "Bash(/Users/shubhamagr/Documents/nexusCode_server/src/api/plan.py:*)",
+      "Bash(PYTHONPATH=. uv run:*)",
+      "Bash(git stash:*)"
     ]
   }
 }

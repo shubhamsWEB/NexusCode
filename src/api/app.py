@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from src.api.ask import router as ask_router
 from src.api.history import router as history_router
+from src.api.mcp_servers import router as mcp_servers_router
 from src.api.plan import router as plan_router
 from src.api.repos import router as repos_router
 from src.api.skills import router as skills_router
@@ -45,6 +46,11 @@ async def _warmup_models():
 
     load_all_skills()
 
+    # Initialise external MCP bridge (non-fatal if no servers configured)
+    from src.agent.mcp_bridge import init_bridge
+
+    await init_bridge()
+
 
 app.include_router(webhook_router)
 app.include_router(auth_router)
@@ -53,6 +59,7 @@ app.include_router(plan_router)
 app.include_router(ask_router)
 app.include_router(history_router)
 app.include_router(skills_router)
+app.include_router(mcp_servers_router)
 
 
 # Mount MCP server — exposes /mcp/sse and /mcp/messages/
@@ -73,10 +80,18 @@ async def health() -> JSONResponse:
 
 @app.get("/models", tags=["ops"])
 async def available_models() -> JSONResponse:
-    """Return LLM models whose API keys are configured."""
-    from src.llm.registry import list_available_models
+    """Return available Claude models (requires ANTHROPIC_API_KEY)."""
+    from src.config import settings
 
-    return JSONResponse(list_available_models())
+    if not settings.anthropic_api_key:
+        return JSONResponse([])
+
+    models = [
+        {"model": "claude-sonnet-4-6", "provider": "anthropic"},
+        {"model": "claude-opus-4-6", "provider": "anthropic"},
+        {"model": "claude-haiku-4-5-20251001", "provider": "anthropic"},
+    ]
+    return JSONResponse(models)
 
 
 # ── Search ────────────────────────────────────────────────────────────────────
