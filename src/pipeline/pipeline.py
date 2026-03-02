@@ -53,6 +53,7 @@ async def _async_incremental_index(payload: dict[str, Any]) -> dict[str, Any]:
     files_to_upsert = payload.get("files_to_upsert", [])
     files_to_delete = payload.get("files_to_delete", [])
     delivery_id = payload.get("delivery_id", "manual")
+    local_path = payload.get("local_path")  # None for GitHub repos
 
     log = logger.bind(
         repo=sanitize_log(f"{owner}/{repo}"),
@@ -87,6 +88,7 @@ async def _async_incremental_index(payload: dict[str, Any]) -> dict[str, Any]:
             files_to_upsert,
             stats,
             log,
+            local_path=local_path,
         )
 
     elapsed = time.monotonic() - start_time
@@ -155,8 +157,8 @@ async def _handle_upserts(
     paths: list[str],
     stats: dict,
     log,
+    local_path: str | None = None,
 ) -> None:
-    from src.github.fetcher import fetch_file
     from src.pipeline.chunker import chunk_file
     from src.pipeline.embedder import embed_chunks, get_existing_chunk_ids
     from src.pipeline.enricher import enrich_chunks, link_parent_chunks
@@ -172,12 +174,18 @@ async def _handle_upserts(
     )
 
     BATCH_SIZE = 50  # Process files in batches for rate-limit resilience + progress
-    _sem = asyncio.Semaphore(5)  # max 5 concurrent GitHub API calls
+    # Local filesystem reads are cheap — allow higher concurrency than GitHub API calls
+    _sem = asyncio.Semaphore(20 if local_path else 5)
 
     async def _process_file(path: str) -> dict | None:
         async with _sem:
             try:
-                result = await fetch_file(owner, repo, path, ref=commit_sha)
+                if local_path:
+                    from src.local.fetcher import read_file
+                    result = read_file(local_path, path)
+                else:
+                    from src.github.fetcher import fetch_file
+                    result = await fetch_file(owner, repo, path, ref=commit_sha)
                 if result is None:
                     log.debug("pipeline.fetch_none", path=path)
                     return None

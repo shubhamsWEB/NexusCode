@@ -398,7 +398,14 @@ async def delete_merkle_node(file_path: str, repo_owner: str, repo_name: str) ->
 # ── Repo operations ──────────────────────────────────────────────────────────
 
 
-async def register_repo(owner: str, name: str, branch: str = "main", description: str = "") -> Repo:
+async def register_repo(
+    owner: str,
+    name: str,
+    branch: str = "main",
+    description: str = "",
+    source_type: str = "github",
+    local_path: str | None = None,
+) -> Repo:
     """Register a new repository (idempotent)."""
     async with AsyncSessionLocal() as session:
         stmt = pg_insert(Repo).values(
@@ -406,10 +413,17 @@ async def register_repo(owner: str, name: str, branch: str = "main", description
             name=name,
             branch=branch,
             description=description,
+            source_type=source_type,
+            local_path=local_path,
         )
         stmt = stmt.on_conflict_do_update(
             constraint="repos_owner_name_key",
-            set_={"branch": stmt.excluded.branch, "description": stmt.excluded.description},
+            set_={
+                "branch": stmt.excluded.branch,
+                "description": stmt.excluded.description,
+                "source_type": stmt.excluded.source_type,
+                "local_path": stmt.excluded.local_path,
+            },
         )
         await session.execute(stmt)
         await session.commit()
@@ -487,6 +501,8 @@ async def get_repo_stats() -> list[dict[str, Any]]:
                 r.registered_at,
                 r.last_indexed,
                 r.webhook_hook_id,
+                r.source_type,
+                r.local_path,
                 COALESCE(c.active_chunks,  0) AS active_chunks,
                 COALESCE(c.deleted_chunks, 0) AS deleted_chunks,
                 COALESCE(c.files,          0) AS files,

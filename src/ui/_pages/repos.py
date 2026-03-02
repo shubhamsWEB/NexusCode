@@ -43,31 +43,39 @@ def render():
             webhook_registered = repo.get("webhook_registered", False)
             confirm_key = f"confirm_delete_{owner}_{name}"
 
+            source_type = repo.get("source_type", "github")
+            local_path_val = repo.get("local_path")
+            source_badge = "📁 Local" if source_type == "local" else "🐙 GitHub"
+
             with st.container(border=True):
                 left_col, right_col = st.columns([3, 1])
 
                 with left_col:
-                    st.markdown(f"**{repo_slug}**")
-                    st.markdown(
-                        f"Branch: `{branch}` &nbsp;|&nbsp; Status: {status_badge(status)}",
-                        unsafe_allow_html=True,
-                    )
+                    st.markdown(f"**{repo_slug}** &nbsp; {source_badge}", unsafe_allow_html=True)
+                    if source_type == "local" and local_path_val:
+                        st.caption(f"Path: {local_path_val}")
+                    else:
+                        st.markdown(
+                            f"Branch: `{branch}` &nbsp;|&nbsp; Status: {status_badge(status)}",
+                            unsafe_allow_html=True,
+                        )
                     st.markdown(
                         f"Chunks: **{active_chunks}** (deleted: {deleted_chunks}) &nbsp;|&nbsp; "
                         f"Files: **{files}** &nbsp;|&nbsp; "
                         f"Symbols: **{symbols}**",
                         unsafe_allow_html=True,
                     )
-                    if webhook_registered:
-                        st.markdown(
-                            f"Webhook: <span style='color:green'>registered (hook #{webhook_hook_id})</span>",
-                            unsafe_allow_html=True,
-                        )
-                    else:
-                        st.markdown(
-                            "Webhook: <span style='color:orange'>not registered</span>",
-                            unsafe_allow_html=True,
-                        )
+                    if source_type == "github":
+                        if webhook_registered:
+                            st.markdown(
+                                f"Webhook: <span style='color:green'>registered (hook #{webhook_hook_id})</span>",
+                                unsafe_allow_html=True,
+                            )
+                        else:
+                            st.markdown(
+                                "Webhook: <span style='color:orange'>not registered</span>",
+                                unsafe_allow_html=True,
+                            )
                     st.caption(f"Last indexed: {last_indexed_str}")
 
                 with right_col:
@@ -93,36 +101,37 @@ def render():
                                 )
 
                     with btn_webhook:
-                        if not webhook_registered:
-                            if st.button("🔗 Setup Webhook", key=f"webhook_{owner}_{name}"):
-                                with st.spinner("Registering webhook…"):
-                                    data, err = api_post(
-                                        f"/repos/{owner}/{name}/webhook",
-                                        json={},
-                                        timeout=15,
-                                    )
-                                if err:
-                                    st.error(f"Webhook setup failed: {err}")
-                                elif data and data.get("success"):
-                                    st.success(data.get("message", "Webhook registered!"))
-                                    st.rerun()
-                                else:
-                                    st.warning(data.get("message", "Could not register webhook."))
-                                    instructions = (data or {}).get("manual_instructions")
-                                    if instructions:
-                                        st.info(instructions)
-                        else:
-                            if st.button("🔗 Remove Webhook", key=f"rm_webhook_{owner}_{name}"):
-                                with st.spinner("Removing webhook…"):
-                                    data, err = api_delete(
-                                        f"/repos/{owner}/{name}/webhook",
-                                        timeout=15,
-                                    )
-                                if err:
-                                    st.error(f"Remove failed: {err}")
-                                else:
-                                    st.success((data or {}).get("message", "Webhook removed."))
-                                    st.rerun()
+                        if source_type == "github":
+                            if not webhook_registered:
+                                if st.button("🔗 Setup Webhook", key=f"webhook_{owner}_{name}"):
+                                    with st.spinner("Registering webhook…"):
+                                        data, err = api_post(
+                                            f"/repos/{owner}/{name}/webhook",
+                                            json={},
+                                            timeout=15,
+                                        )
+                                    if err:
+                                        st.error(f"Webhook setup failed: {err}")
+                                    elif data and data.get("success"):
+                                        st.success(data.get("message", "Webhook registered!"))
+                                        st.rerun()
+                                    else:
+                                        st.warning(data.get("message", "Could not register webhook."))
+                                        instructions = (data or {}).get("manual_instructions")
+                                        if instructions:
+                                            st.info(instructions)
+                            else:
+                                if st.button("🔗 Remove Webhook", key=f"rm_webhook_{owner}_{name}"):
+                                    with st.spinner("Removing webhook…"):
+                                        data, err = api_delete(
+                                            f"/repos/{owner}/{name}/webhook",
+                                            timeout=15,
+                                        )
+                                    if err:
+                                        st.error(f"Remove failed: {err}")
+                                    else:
+                                        st.success((data or {}).get("message", "Webhook removed."))
+                                        st.rerun()
 
                     with btn_remove:
                         if not st.session_state.get(confirm_key, False):
@@ -164,16 +173,37 @@ def render():
     # -------------------------------------------------------------------------
     st.subheader("Add Repository")
 
+    source_type_ui = st.radio(
+        "Source", ["GitHub", "Local"], horizontal=True, key="add_source_type"
+    )
+    is_local = source_type_ui == "Local"
+
     with st.form("add_repo_form"):
-        owner_input = st.text_input("Owner", placeholder="myorg")
-        name_input = st.text_input("Repository Name", placeholder="my-repo")
-        branch_input = st.text_input("Branch", value="main")
+        if is_local:
+            local_path_input = st.text_input(
+                "Local path (absolute)",
+                placeholder="/home/user/projects/myapp",
+            )
+            owner_input = st.text_input("Owner label", value="local", placeholder="local")
+            name_input = st.text_input(
+                "Repository name",
+                placeholder="my-app",
+            )
+            branch_input = ""  # detected from git
+        else:
+            local_path_input = ""
+            owner_input = st.text_input("Owner", placeholder="myorg")
+            name_input = st.text_input("Repository Name", placeholder="my-repo")
+            branch_input = st.text_input("Branch", value="main")
+
         description_input = st.text_input("Description (optional)", placeholder="")
         start_indexing = st.checkbox("Start indexing immediately after registration", value=True)
         submitted = st.form_submit_button("➕ Register Repository")
 
     if submitted:
-        if not owner_input.strip():
+        if is_local and not local_path_input.strip():
+            st.error("Local path is required.")
+        elif not owner_input.strip():
             st.error("Owner is required.")
         elif not name_input.strip():
             st.error("Repository name is required.")
@@ -182,12 +212,15 @@ def render():
             name_clean = name_input.strip()
             branch_clean = branch_input.strip() or "main"
 
-            payload = {
+            payload: dict = {
                 "owner": owner_clean,
                 "name": name_clean,
                 "branch": branch_clean,
                 "description": description_input.strip(),
+                "source_type": "local" if is_local else "github",
             }
+            if is_local:
+                payload["local_path"] = local_path_input.strip()
 
             with st.spinner(f"Registering {owner_clean}/{name_clean}…"):
                 reg_data, reg_err = api_post("/repos", json=payload, timeout=15)
@@ -197,17 +230,18 @@ def render():
             else:
                 st.success(f"Repository {owner_clean}/{name_clean} registered successfully.")
 
-                # Show webhook auto-registration result
-                webhook_info = (reg_data or {}).get("webhook", {})
-                if webhook_info.get("success"):
-                    st.success(f"🔗 {webhook_info.get('message', 'Webhook registered!')}")
-                elif webhook_info:
-                    st.warning(
-                        f"🔗 Webhook: {webhook_info.get('message', 'Could not auto-register.')}"
-                    )
-                    instructions = webhook_info.get("manual_instructions")
-                    if instructions:
-                        st.info(instructions)
+                if not is_local:
+                    # Show webhook auto-registration result
+                    webhook_info = (reg_data or {}).get("webhook", {})
+                    if webhook_info.get("success"):
+                        st.success(f"🔗 {webhook_info.get('message', 'Webhook registered!')}")
+                    elif webhook_info:
+                        st.warning(
+                            f"🔗 Webhook: {webhook_info.get('message', 'Could not auto-register.')}"
+                        )
+                        instructions = webhook_info.get("manual_instructions")
+                        if instructions:
+                            st.info(instructions)
 
                 if start_indexing:
                     with st.spinner("Triggering initial index job…"):

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import os
 import uuid
 
 import httpx
@@ -35,10 +36,12 @@ logger = __import__("logging").getLogger(__name__)
 
 
 class RegisterRepoRequest(BaseModel):
-    owner: str = Field(..., description="GitHub owner (org or user)")
-    name: str = Field(..., description="GitHub repository name")
-    branch: str = Field("main", description="Branch to track")
+    owner: str = Field(..., description="GitHub owner (org or user), or 'local' for local repos")
+    name: str = Field(..., description="Repository name")
+    branch: str = Field("main", description="Branch to track (GitHub repos only)")
     description: str | None = Field(None, description="Optional description")
+    source_type: str = Field("github", pattern="^(github|local)$", description="'github' or 'local'")
+    local_path: str | None = Field(None, description="Absolute path on this machine (local repos only)")
 
 
 class IndexJobResponse(BaseModel):
@@ -51,66 +54,98 @@ class IndexJobResponse(BaseModel):
 # ── Helper: build and enqueue a full-index job ────────────────────────────────
 
 
-async def _enqueue_full_index(owner: str, name: str, branch: str) -> dict:
+async def _enqueue_full_index(repo_row) -> dict:
     """
-    Fetches the repo file tree from GitHub and enqueues one RQ job
-    covering all indexable files. Returns job metadata.
+    Builds the RQ job payload for a full index run and enqueues it.
+    Dispatches to local filesystem walker or GitHub API based on repo source_type.
+    Returns job metadata.
     """
     import redis
     from rq import Queue
 
-    from src.github.fetcher import (
-        _GITHUB_API,
-        _make_client,
-        fetch_full_tree,
-        filter_indexable_paths,
-    )
     from src.storage.db import update_repo_status
+
+    owner = repo_row.owner
+    name = repo_row.name
 
     await update_repo_status(owner, name, "indexing")
 
-    tree = await fetch_full_tree(owner, name, ref=branch)
-    all_paths = [item["path"] for item in tree]
-    indexable = filter_indexable_paths(all_paths)
+    if repo_row.source_type == "local":
+        from src.local.fetcher import get_local_commit_meta, walk_indexable_files
 
-    if not indexable:
-        await update_repo_status(owner, name, "error")
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"No indexable files found in {owner}/{name}@{branch}. "
-            "Check SUPPORTED_EXTENSIONS in your config.",
-        )
-
-    # Resolve HEAD commit metadata
-    async with _make_client() as client:
-        resp = await client.get(
-            f"{_GITHUB_API}/repos/{owner}/{name}/commits/{branch}",
-            params={"per_page": 1},
-        )
-        if resp.status_code == 404:
+        indexable = walk_indexable_files(repo_row.local_path)
+        if not indexable:
             await update_repo_status(owner, name, "error")
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Repository {owner}/{name} not found or branch '{branch}' doesn't exist.",
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"No indexable files found under {repo_row.local_path}. "
+                "Check SUPPORTED_EXTENSIONS in your config.",
             )
-        resp.raise_for_status()
-        commit_data = resp.json()
 
-    head_sha = commit_data.get("sha", branch)
-    commit_author = commit_data.get("commit", {}).get("author", {}).get("email", "")
-    commit_message = commit_data.get("commit", {}).get("message", "").splitlines()[0]
-    delivery_id = f"full-index-{owner}-{name}-{head_sha[:7]}-{uuid.uuid4().hex[:6]}"
+        meta = get_local_commit_meta(repo_row.local_path)
+        head_sha = meta["commit_sha"]
+        delivery_id = f"full-index-{owner}-{name}-{head_sha[:7]}-{uuid.uuid4().hex[:6]}"
+        job_payload = {
+            "repo_owner": owner,
+            "repo_name": name,
+            "local_path": repo_row.local_path,
+            "commit_sha": head_sha,
+            "commit_author": meta["commit_author"],
+            "commit_message": meta["commit_message"],
+            "files_to_upsert": indexable,
+            "files_to_delete": [],
+            "delivery_id": delivery_id,
+        }
+        branch = meta["branch"]
+    else:
+        from src.github.fetcher import (
+            _GITHUB_API,
+            _make_client,
+            fetch_full_tree,
+            filter_indexable_paths,
+        )
 
-    job_payload = {
-        "repo_owner": owner,
-        "repo_name": name,
-        "commit_sha": head_sha,
-        "commit_author": commit_author,
-        "commit_message": commit_message,
-        "files_to_upsert": indexable,
-        "files_to_delete": [],
-        "delivery_id": delivery_id,
-    }
+        branch = repo_row.branch
+        tree = await fetch_full_tree(owner, name, ref=branch)
+        all_paths = [item["path"] for item in tree]
+        indexable = filter_indexable_paths(all_paths)
+
+        if not indexable:
+            await update_repo_status(owner, name, "error")
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"No indexable files found in {owner}/{name}@{branch}. "
+                "Check SUPPORTED_EXTENSIONS in your config.",
+            )
+
+        async with _make_client() as client:
+            resp = await client.get(
+                f"{_GITHUB_API}/repos/{owner}/{name}/commits/{branch}",
+                params={"per_page": 1},
+            )
+            if resp.status_code == 404:
+                await update_repo_status(owner, name, "error")
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Repository {owner}/{name} not found or branch '{branch}' doesn't exist.",
+                )
+            resp.raise_for_status()
+            commit_data = resp.json()
+
+        head_sha = commit_data.get("sha", branch)
+        commit_author = commit_data.get("commit", {}).get("author", {}).get("email", "")
+        commit_message = commit_data.get("commit", {}).get("message", "").splitlines()[0]
+        delivery_id = f"full-index-{owner}-{name}-{head_sha[:7]}-{uuid.uuid4().hex[:6]}"
+        job_payload = {
+            "repo_owner": owner,
+            "repo_name": name,
+            "commit_sha": head_sha,
+            "commit_author": commit_author,
+            "commit_message": commit_message,
+            "files_to_upsert": indexable,
+            "files_to_delete": [],
+            "delivery_id": delivery_id,
+        }
 
     conn = redis.from_url(settings.redis_url)
     queue = Queue("indexing", connection=conn)
@@ -223,6 +258,8 @@ async def list_repos() -> JSONResponse:
             "name": row["name"],
             "repo": f"{row['owner']}/{row['name']}",
             "branch": row["branch"],
+            "source_type": row.get("source_type", "github"),
+            "local_path": row.get("local_path"),
             "status": row["status"],
             "active_chunks": row["active_chunks"] or 0,
             "deleted_chunks": row["deleted_chunks"] or 0,
@@ -244,20 +281,40 @@ async def list_repos() -> JSONResponse:
 async def register_repo_endpoint(req: RegisterRepoRequest) -> JSONResponse:
     from src.storage.db import register_repo
 
+    # Validate local repos
+    if req.source_type == "local":
+        if not req.local_path or not os.path.isdir(req.local_path):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="local_path must be an existing directory on this machine.",
+            )
+
     repo = await register_repo(
         owner=req.owner,
         name=req.name,
         branch=req.branch,
         description=req.description or "",
+        source_type=req.source_type,
+        local_path=req.local_path,
     )
 
-    # Auto-register webhook (best-effort)
-    webhook_result = await _try_auto_register_webhook(repo.owner, repo.name)
+    # Auto-register GitHub webhook (skip for local repos)
+    if req.source_type == "local":
+        webhook_result = {
+            "success": False,
+            "hook_id": None,
+            "message": "Webhooks are not used for local repos.",
+            "manual_instructions": None,
+        }
+    else:
+        webhook_result = await _try_auto_register_webhook(repo.owner, repo.name)
 
     return JSONResponse(
         {
             "repo": f"{repo.owner}/{repo.name}",
             "branch": repo.branch,
+            "source_type": repo.source_type,
+            "local_path": repo.local_path,
             "status": repo.status,
             "registered_at": repo.registered_at.isoformat(),
             "webhook": webhook_result,
@@ -327,7 +384,7 @@ async def trigger_index(owner: str, name: str) -> JSONResponse:
             detail=f"Repository {owner}/{name} is not registered. Call POST /repos first.",
         )
 
-    result = await _enqueue_full_index(owner, name, repo.branch)
+    result = await _enqueue_full_index(repo)
     return JSONResponse(result, status_code=status.HTTP_202_ACCEPTED)
 
 
