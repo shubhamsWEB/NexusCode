@@ -93,12 +93,21 @@ def _build_api_params(
     tool_choice: dict,
     config: AgentLoopConfig,
 ) -> dict:
+    effective_tool_choice = tool_choice
+    if config.thinking_budget > 0 and tool_choice.get('type') in ("any","tool"):
+        effective_tool_choice = {"type":"auto"}
+        logger.debug(
+            "_build_api_params:downgraded tool_choice form %s to auto' "
+            "(thinking is incompatible with forced tool use)",
+            tool_choice.get('type')
+        )
+        
     params: dict = {
         "model": model,
         "system": system,
         "messages": messages,
         "tools": tools,
-        "tool_choice": tool_choice,
+        "tool_choice": effective_tool_choice,
         "max_tokens": config.planning_max_output_tokens
         if hasattr(config, "planning_max_output_tokens")
         else (16000 + config.thinking_budget if config.thinking_budget > 0 else 8192),
@@ -184,7 +193,10 @@ class AgentLoop:
 
             if force_final:
                 tools_this_turn = final_answer_tools
-                tool_choice: dict = {"type": "any"}
+                tool_choice:dict = (
+                {"type":"auto"} if config.thinking_budget > 0
+                else {"type":"any"}
+               )
                 if not force_message_added:
                     messages.append({"role": "user", "content": _FORCE_ANSWER_MSG})
                     force_message_added = True
@@ -388,7 +400,10 @@ class AgentLoop:
 
             if force_final:
                 tools_this_turn = final_answer_tools
-                tool_choice: dict = {"type": "any"}
+                tool_choice: dict = (
+                    {"type":"auto"} if config.thinking_budget > 0
+                    else {"type":"any"}
+                )
                 if not force_message_added:
                     messages.append({"role": "user", "content": _FORCE_ANSWER_MSG})
                     force_message_added = True

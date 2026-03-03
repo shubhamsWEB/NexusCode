@@ -209,7 +209,7 @@ async def github_webhook(
                 job = queue.enqueue(
                     "src.pipeline.pipeline.run_incremental_index",
                     job_payload,
-                    job_timeout=600,  # 10 min max per job
+                    job_timeout=settings.rq_job_timeout,
                     result_ttl=3600,
                 )
                 logger.info("Enqueued job %s for %d files", job.id, total_files)

@@ -77,6 +77,11 @@ class Settings(BaseSettings):
     github_oauth_client_id: str | None = Field(None)
     github_oauth_client_secret: str | None = Field(None)
 
+    # ── RQ Worker  ─────────────────────────────────────────────────────────────
+    rq_job_timeout:int = Field(
+        21600,description="RQ job timeout in seconds (default 6 hours; -1 for no timeout)"
+    )
+
     # ── Indexing ─────────────────────────────────────────────────────────────
     chunk_target_tokens: int = Field(512)
     chunk_overlap_tokens: int = Field(128)

@@ -152,7 +152,7 @@ async def _enqueue_full_index(repo_row) -> dict:
     job = queue.enqueue(
         "src.pipeline.pipeline.run_incremental_index",
         job_payload,
-        job_timeout=3600,
+        job_timeout=settings.rq_job_timeout,
         result_ttl=3600,
     )
 

@@ -88,7 +88,7 @@ async def main(owner: str, repo: str, branch: str) -> None:
     job = queue.enqueue(
         "src.pipeline.pipeline.run_incremental_index",
         job_payload,
-        job_timeout=3600,  # 1 hour for large repos
+        job_timeout=settings.rq_job_timeout,
         result_ttl=3600,
     )
 
