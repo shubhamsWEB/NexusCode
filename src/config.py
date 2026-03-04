@@ -41,23 +41,37 @@ class Settings(BaseSettings):
 
     # ── LLM / Planning ───────────────────────────────────────────────────────
     anthropic_api_key: str | None = Field(None)
+    openai_api_key: str | None = Field(None, description="OpenAI API key for web research")
+    grok_api_key: str | None = Field(None, description="Grok API key")
+    # ── Ollama (local) ────────────────────────────────────────────────────────
+    ollama_base_url: str = Field(
+        "http://localhost:11434",
+        description="Ollama API base URL. Set to empty string to disable Ollama routing.",
+    )
+    ollama_models: str = Field(
+        "",
+        description=(
+            "Comma-separated model names routed to local Ollama. "
+            "Example: 'glm-4.6:cloud,llama3.2:latest'"
+        ),
+    )
     default_model: str = Field(
-        "claude-sonnet-4-6", description="Default Claude model for planning and ask"
+        "claude-haiku-4-5-20251001", description="Default Claude model for planning and ask"
     )
     enable_file_summaries: bool = Field(
         False, description="Whether to extract and index LLM file summaries"
     )
     # Agent loop settings
-    ask_max_iterations: int = Field(5, description="Max retrieval iterations for Ask Mode")
-    plan_max_iterations: int = Field(8, description="Max retrieval iterations for Plan Mode")
+    ask_max_iterations: int = Field(3, description="Max retrieval iterations for Ask Mode")
+    plan_max_iterations: int = Field(5, description="Max retrieval iterations for Plan Mode")
     agent_token_budget: int = Field(
-        80_000, description="Max cumulative tokens across all tool results in an agent loop"
+        35_000, description="Max cumulative tokens across all tool results in an agent loop"
     )
     planning_thinking_budget: int = Field(
-        10000, description="Token budget for extended thinking in Plan Mode (0 to disable)"
+        0, description="Token budget for extended thinking in Plan Mode (0 to disable)"
     )
     planning_max_output_tokens: int = Field(
-        16000, description="Max output tokens for plan generation"
+        8000, description="Max output tokens for plan generation"
     )
 
     # ── Webhook Auto-Registration ─────────────────────────────────────────────

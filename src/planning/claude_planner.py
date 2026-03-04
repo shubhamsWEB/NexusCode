@@ -20,6 +20,9 @@ Flow:
 
 from __future__ import annotations
 
+import asyncio
+import json
+import re
 import time
 from collections.abc import AsyncIterator
 
@@ -35,6 +38,85 @@ from src.planning.schemas import (
 from src.utils.logging import get_secure_logger
 
 logger = get_secure_logger(__name__)
+
+
+# ── XML <item> sanitiser ──────────────────────────────────────────────────────
+# Claude's streaming tool_use sometimes emits XML-like <item>…</item> strings
+# instead of proper JSON arrays.  This function detects those strings and
+# converts them to native Python lists before Pydantic validation.
+
+def _parse_xml_items(text: str) -> list:
+    """Parse XML-like <item> nested strings into Python lists."""
+    tokens = re.split(r"(</?item>)", text)
+    
+    stack: list[list] = [[]]
+    current_text: list[str] = []
+
+    for token in tokens:
+        if not token:
+            continue
+        if token == "<item>":
+            if current_text:
+                val = "".join(current_text).strip()
+                if val:
+                    stack[-1].append(val)
+                current_text = []
+            stack.append([])
+        elif token == "</item>":
+            if current_text:
+                val = "".join(current_text).strip()
+                if val:
+                    # Attempt JSON parse in case it's an object string
+                    if val.startswith("{") and val.endswith("}"):
+                        try:
+                            val = json.loads(val)
+                        except (json.JSONDecodeError, ValueError):
+                            pass
+                    stack[-1].append(val)
+                current_text = []
+            
+            if len(stack) > 1:
+                item_content = stack.pop()
+                if len(item_content) == 1:
+                    # Flatten single-element lists
+                    stack[-1].append(item_content[0])
+                elif len(item_content) > 1:
+                    stack[-1].append(item_content)
+        else:
+            current_text.append(token)
+            
+    if current_text:
+        val = "".join(current_text).strip()
+        if val:
+            stack[0].append(val)
+            
+    return stack[0]
+
+
+def _sanitize_tool_data(data: dict) -> dict:
+    """Recursively replace XML <item> strings with proper Python lists/dicts."""
+    cleaned: dict = {}
+    for key, value in data.items():
+        if isinstance(value, str) and "<item>" in value:
+            parsed = _parse_xml_items(value)
+            # Try assembling lists of lists of 2 elements into dicts
+            assembled: list = []
+            for item in parsed:
+                if isinstance(item, list) and all(isinstance(el, list) and len(el) == 2 for el in item):
+                    assembled.append({el[0]: el[1] for el in item})
+                else:
+                    assembled.append(item)
+            cleaned[key] = assembled
+        elif isinstance(value, dict):
+            cleaned[key] = _sanitize_tool_data(value)
+        elif isinstance(value, list):
+            cleaned[key] = [
+                _sanitize_tool_data(el) if isinstance(el, dict) else el
+                for el in value
+            ]
+        else:
+            cleaned[key] = value
+    return cleaned
 
 # ── System prompt ──────────────────────────────────────────────────────────────
 
@@ -103,9 +185,13 @@ def _build_initial_message(
     query: str,
     repo_owner: str | None,
     repo_name: str | None,
+    web_research_notes: str = "",
 ) -> str:
     scope = f" (repository: {repo_owner}/{repo_name})" if repo_owner and repo_name else ""
-    return f"{query}{scope}"
+    msg = f"{query}{scope}"
+    if web_research_notes:
+        msg += f"\n\n---\n\n## Web Research Notes\n{web_research_notes}"
+    return msg
 
 
 def _build_metadata(stats: dict, model: str) -> PlanMetadata:
@@ -132,7 +218,7 @@ def _parse_tool_block(
 ) -> ImplementationPlan:
     """Parse an agent final answer tool block into an ImplementationPlan."""
     name = tool_block.get("name", "")
-    data = tool_block.get("input", {})
+    data = _sanitize_tool_data(tool_block.get("input", {}))
     metadata = _build_metadata(stats, model)
 
     if name == "answer_codebase_question":
@@ -184,7 +270,7 @@ async def generate_plan(
     query: str,
     repo_owner: str | None = None,
     repo_name: str | None = None,
-    web_research: bool = True,  # noted: web search not yet wired into agent loop
+    web_research: bool = True,
     model: str | None = None,
 ) -> ImplementationPlan:
     """
@@ -198,30 +284,57 @@ async def generate_plan(
     effective_model = model or settings.default_model
     all_retrieval = RETRIEVAL_TOOL_SCHEMAS + get_external_tool_schemas()
 
+    # Gate extended thinking on query complexity — simple/moderate queries skip it
+    from src.planning.retriever import _analyze_query
+    analysis = _analyze_query(query)
+    effective_thinking = (
+        settings.planning_thinking_budget
+        if analysis.complexity == "complex"
+        else 0
+    )
+
+    # Fire web research as a background task (runs concurrently with query analysis)
+    web_notes = ""
+    if web_research:
+        try:
+            from src.planning.retriever import _extract_stack_fingerprint
+            from src.planning.web_researcher import research_implementation
+
+            stack_fp = await _extract_stack_fingerprint(repo_owner, repo_name)
+            web_notes = await research_implementation(query, stack_context=stack_fp, model=model)
+            if web_notes:
+                logger.info("planning: web research complete (%d chars)", len(web_notes))
+        except Exception as exc:
+            logger.warning("planning: web research failed (non-fatal): %s", exc)
+
     tool_block, stats = await AgentLoop().run(
         model=effective_model,
         system=_build_system_prompt(repo_owner, repo_name),
-        initial_message=_build_initial_message(query, repo_owner, repo_name),
+        initial_message=_build_initial_message(query, repo_owner, repo_name, web_research_notes=web_notes),
         retrieval_tools=all_retrieval,
         final_answer_tools=_FINAL_ANSWER_TOOLS,
         config=AgentLoopConfig(
             max_iterations=settings.plan_max_iterations,
             cumulative_token_budget=settings.agent_token_budget,
             require_search_before_answer=True,
-            thinking_budget=settings.planning_thinking_budget,
+            thinking_budget=effective_thinking,
+            planning_max_output_tokens=settings.planning_max_output_tokens,
         ),
         repo_owner=repo_owner,
         repo_name=repo_name,
     )
 
     plan = _parse_tool_block(tool_block, query, stats, effective_model)
+    if plan.metadata:
+        plan.metadata.web_research_used = bool(web_notes)
     logger.info(
-        "planning: %s responded in %.0fms (iter=%d, tool_calls=%d, tool=%s)",
+        "planning: %s responded in %.0fms (iter=%d, tool_calls=%d, tool=%s, web=%s)",
         effective_model,
         stats.get("elapsed_ms", 0),
         stats.get("iterations", 0),
         stats.get("tool_calls", 0),
         tool_block.get("name"),
+        bool(web_notes),
     )
     return plan
 
@@ -253,29 +366,56 @@ async def stream_generate_plan(
     effective_model = model or settings.default_model
     all_retrieval = RETRIEVAL_TOOL_SCHEMAS + get_external_tool_schemas()
 
+    # Gate extended thinking on query complexity — simple/moderate queries skip it
+    from src.planning.retriever import _analyze_query
+    analysis = _analyze_query(query)
+    effective_thinking = (
+        settings.planning_thinking_budget
+        if analysis.complexity == "complex"
+        else 0
+    )
+
+    # Fire web research as a background task
+    web_notes = ""
+    if web_research:
+        try:
+            from src.planning.retriever import _extract_stack_fingerprint
+            from src.planning.web_researcher import research_implementation
+
+            stack_fp = await _extract_stack_fingerprint(repo_owner, repo_name)
+            web_notes = await research_implementation(query, stack_context=stack_fp, model=model)
+            if web_notes:
+                logger.info("planning: web research complete (%d chars)", len(web_notes))
+        except Exception as exc:
+            logger.warning("planning: web research failed (non-fatal): %s", exc)
+
     async for event in AgentLoop().stream(
         model=effective_model,
         system=_build_system_prompt(repo_owner, repo_name),
-        initial_message=_build_initial_message(query, repo_owner, repo_name),
+        initial_message=_build_initial_message(query, repo_owner, repo_name, web_research_notes=web_notes),
         retrieval_tools=all_retrieval,
         final_answer_tools=_FINAL_ANSWER_TOOLS,
         config=AgentLoopConfig(
             max_iterations=settings.plan_max_iterations,
             cumulative_token_budget=settings.agent_token_budget,
             require_search_before_answer=True,
-            thinking_budget=settings.planning_thinking_budget,
+            thinking_budget=effective_thinking,
+            planning_max_output_tokens=settings.planning_max_output_tokens,
         ),
         repo_owner=repo_owner,
         repo_name=repo_name,
     ):
         if event["type"] == "done":
             plan = _parse_tool_block(event["tool_block"], query, event["stats"], effective_model)
+            if plan.metadata:
+                plan.metadata.web_research_used = bool(web_notes)
             logger.info(
-                "planning: stream complete in %.0fms (iter=%d, tool_calls=%d, tool=%s)",
+                "planning: stream complete in %.0fms (iter=%d, tool_calls=%d, tool=%s, web=%s)",
                 event["stats"].get("elapsed_ms", 0),
                 event["stats"].get("iterations", 0),
                 event["stats"].get("tool_calls", 0),
                 event["tool_block"].get("name"),
+                bool(web_notes),
             )
             yield {"type": "plan_complete", "plan": plan}
         else:

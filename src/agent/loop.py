@@ -42,6 +42,7 @@ class AgentLoopConfig:
     cumulative_token_budget: int = 80_000
     require_search_before_answer: bool = True
     thinking_budget: int = 0  # 0 = disabled; >0 = extended thinking for plan mode
+    planning_max_output_tokens: int = 8000  # base max output tokens per turn
 
 
 class AgentGroundingError(RuntimeError):
@@ -53,8 +54,8 @@ class AgentMaxIterationsError(RuntimeError):
 
 
 def _estimate_tokens(text: str) -> int:
-    """Rough 4-chars-per-token estimate."""
-    return max(1, len(text) // 4)
+    """Rough 3.5-chars-per-token estimate (code is denser than prose)."""
+    return max(1, int(len(text) / 3.5))
 
 
 def _is_retryable(exc) -> bool:
@@ -85,30 +86,47 @@ def _tool_input_summary(tool_name: str, tool_input: dict) -> str:
     return str(tool_input)[:80]
 
 
-def _build_api_params(
-    model: str,
-    system: str,
-    messages: list[dict],
-    tools: list[dict],
-    tool_choice: dict,
-    config: AgentLoopConfig,
-) -> dict:
-    params: dict = {
-        "model": model,
-        "system": system,
-        "messages": messages,
-        "tools": tools,
-        "tool_choice": tool_choice,
-        "max_tokens": config.planning_max_output_tokens
-        if hasattr(config, "planning_max_output_tokens")
-        else (16000 + config.thinking_budget if config.thinking_budget > 0 else 8192),
-    }
-    if config.thinking_budget > 0:
-        params["thinking"] = {"type": "enabled", "budget_tokens": config.thinking_budget}
-        # temperature must be 1 with extended thinking
-    else:
-        params["temperature"] = 0
-    return params
+# ── Token-saving helpers ───────────────────────────────────────────────────────
+
+_MAX_PRIOR_RESULT_CHARS = 2_400  # ≈600 tokens; older tool results are truncated to this
+
+
+def _add_cache_control_to_last(tools: list[dict]) -> list[dict]:
+    """Return tools with cache_control on the last entry.
+
+    Marks system + all tool schemas as a cacheable prefix (Anthropic prompt
+    caching). Saves re-processing ~2 000+ tokens on every turn after the first
+    in a multi-turn agent loop at ~10% of normal input token cost.
+    """
+    if not tools:
+        return tools
+    result = list(tools)
+    result[-1] = {**result[-1], "cache_control": {"type": "ephemeral"}}
+    return result
+
+
+def _truncate_prior_tool_results(messages: list[dict]) -> None:
+    """Compact older tool-result batches in-place to cap O(n²) token growth.
+
+    Leaves the most-recent user tool-result batch untouched (Claude needs the
+    full text of what it just retrieved). Earlier batches are truncated to
+    _MAX_PRIOR_RESULT_CHARS to bound accumulated context across iterations.
+    """
+    tr_indices = [
+        i for i, m in enumerate(messages)
+        if m["role"] == "user"
+        and isinstance(m["content"], list)
+        and m["content"]
+        and m["content"][0].get("type") == "tool_result"
+    ]
+    for idx in tr_indices[:-1]:  # leave the latest batch untouched
+        for result in messages[idx]["content"]:
+            text = result.get("content", "")
+            if isinstance(text, str) and len(text) > _MAX_PRIOR_RESULT_CHARS:
+                result["content"] = text[:_MAX_PRIOR_RESULT_CHARS] + "\n[...truncated]"
+
+
+
 
 
 class AgentLoop:
@@ -156,12 +174,14 @@ class AgentLoop:
             MAX_RETRIES,
             RETRYABLE_CODES,
             RateLimitOrOverloadError,
-            get_client,
+            get_client_for_model,
             get_retry_after,
+            is_ollama_model,
             semaphore,
         )
 
-        client = get_client()
+        client = get_client_for_model(model)
+        _use_caching = not is_ollama_model(model)  # Ollama doesn't support prompt caching
         final_tool_names = {t["name"] for t in final_answer_tools}
         retrieval_tool_names = {t["name"] for t in retrieval_tools}
         all_tools = retrieval_tools + final_answer_tools
@@ -198,16 +218,25 @@ class AgentLoop:
                 tool_choice = {"type": "auto"}
 
             # ── Call the API with retry ────────────────────────────────────────
-            max_tokens = 16000 + config.thinking_budget if config.thinking_budget > 0 else 8192
+            # Anthropic forbids thinking + tool_choice:{type:any}, so disable
+            # thinking when we force the final answer turn.
+            use_thinking = config.thinking_budget > 0 and not force_final
+            max_tokens = config.planning_max_output_tokens + config.thinking_budget if use_thinking else 8192
+            _truncate_prior_tool_results(messages)
+            tools_for_turn = (
+                _add_cache_control_to_last(tools_this_turn)
+                if _use_caching
+                else list(tools_this_turn)
+            )
             params: dict = {
                 "model": model,
                 "system": system,
                 "messages": messages,
-                "tools": tools_this_turn,
+                "tools": tools_for_turn,
                 "tool_choice": tool_choice,
                 "max_tokens": max_tokens,
             }
-            if config.thinking_budget > 0:
+            if use_thinking:
                 params["thinking"] = {"type": "enabled", "budget_tokens": config.thinking_budget}
             else:
                 params["temperature"] = 0
@@ -220,7 +249,7 @@ class AgentLoop:
                         # Use streaming internally when thinking is enabled — the Anthropic
                         # SDK rejects non-streaming calls whose max_tokens may exceed the
                         # non-streaming timeout limit (e.g. 16k + thinking_budget).
-                        if config.thinking_budget > 0:
+                        if use_thinking:
                             async with client.messages.stream(**params) as _stream:
                                 response = await _stream.get_final_message()
                         else:
@@ -362,12 +391,14 @@ class AgentLoop:
             MAX_RETRIES,
             RETRYABLE_CODES,
             RateLimitOrOverloadError,
-            get_client,
+            get_client_for_model,
             get_retry_after,
+            is_ollama_model,
             semaphore,
         )
 
-        client = get_client()
+        client = get_client_for_model(model)
+        _use_caching = not is_ollama_model(model)
         final_tool_names = {t["name"] for t in final_answer_tools}
         retrieval_tool_names = {t["name"] for t in retrieval_tools}
         all_tools = retrieval_tools + final_answer_tools
@@ -396,16 +427,25 @@ class AgentLoop:
                 tools_this_turn = all_tools
                 tool_choice = {"type": "auto"}
 
-            max_tokens = 16000 + config.thinking_budget if config.thinking_budget > 0 else 8192
+            # Anthropic forbids thinking + tool_choice:{type:any}, so disable
+            # thinking when we force the final answer turn.
+            use_thinking = config.thinking_budget > 0 and not force_final
+            max_tokens = config.planning_max_output_tokens + config.thinking_budget if use_thinking else 8192
+            _truncate_prior_tool_results(messages)
+            tools_for_turn = (
+                _add_cache_control_to_last(tools_this_turn)
+                if _use_caching
+                else list(tools_this_turn)
+            )
             params: dict = {
                 "model": model,
                 "system": system,
                 "messages": messages,
-                "tools": tools_this_turn,
+                "tools": tools_for_turn,
                 "tool_choice": tool_choice,
                 "max_tokens": max_tokens,
             }
-            if config.thinking_budget > 0:
+            if use_thinking:
                 params["thinking"] = {"type": "enabled", "budget_tokens": config.thinking_budget}
             else:
                 params["temperature"] = 0

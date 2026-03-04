@@ -13,14 +13,10 @@ from __future__ import annotations
 SEARCH_CODEBASE_SCHEMA: dict = {
     "name": "search_codebase",
     "description": (
-        "Hybrid semantic + keyword search over the indexed codebase. "
-        "Returns code chunks with file paths, symbol names, line numbers, and source previews. "
-        "\n\nWHEN TO USE: any time you need to find relevant code — always start here. "
-        "Prefer search_codebase for exploration; use get_symbol only when you know the exact name."
-        "\nSTRATEGY: call multiple times with different angles: "
-        "topic ('authentication flow'), identifier ('JWTMiddleware'), "
-        "behaviour ('rate limiting'), error ('401 unauthorized')."
-        "\nDO NOT use vague 1-word queries; specific phrases return far better results."
+        "Hybrid semantic + keyword search. Returns code chunks with file paths, symbols, line numbers. "
+        "Always start here. Call multiple times with different angles: "
+        "topic ('authentication flow'), identifier ('JWTMiddleware'), error ('401 unauthorized'). "
+        "Specific phrases beat vague 1-word queries."
     ),
     "input_schema": {
         "type": "object",
@@ -39,8 +35,8 @@ SEARCH_CODEBASE_SCHEMA: dict = {
             },
             "top_k": {
                 "type": "integer",
-                "description": "Results to return (1–15). Default 8. Use 12–15 for broad exploration.",
-                "default": 8,
+                "description": "Results to return (1–15). Default 5. Use 10–15 for broad exploration.",
+                "default": 5,
             },
         },
         "required": ["query"],
@@ -50,10 +46,9 @@ SEARCH_CODEBASE_SCHEMA: dict = {
 GET_SYMBOL_SCHEMA: dict = {
     "name": "get_symbol",
     "description": (
-        "Look up a function, class, or method by name — like IDE 'Go to Definition'. "
-        "Returns exact file location, line numbers, full signature, and docstring. "
-        "Supports fuzzy matching: 'auth' finds 'authenticate', 'Authorization', 'AuthMiddleware'. "
-        "Prefer search_codebase when exploring; use get_symbol when you know the exact name."
+        "Look up a symbol by name (like Go to Definition). Returns file, line numbers, signature, docstring. "
+        "Fuzzy: 'auth' finds 'authenticate', 'AuthMiddleware'. "
+        "Use when you know the name; prefer search_codebase for exploration."
     ),
     "input_schema": {
         "type": "object",
@@ -74,10 +69,9 @@ GET_SYMBOL_SCHEMA: dict = {
 FIND_CALLERS_SCHEMA: dict = {
     "name": "find_callers",
     "description": (
-        "Find all code that calls a given function or method. "
-        "Use this to understand how a function is used across the codebase, "
-        "or to assess the blast radius of a change before planning it. "
-        "depth=1 returns direct callers; depth=2 returns callers of callers."
+        "Find all callers of a function/method. "
+        "Use to understand usage or assess blast radius of a change. "
+        "depth=1: direct callers; depth=2: callers of callers."
     ),
     "input_schema": {
         "type": "object",
@@ -99,11 +93,8 @@ FIND_CALLERS_SCHEMA: dict = {
 GET_FILE_CONTEXT_SCHEMA: dict = {
     "name": "get_file_context",
     "description": (
-        "Get the structural map of a file: all symbols defined in it, its imports, "
-        "and which other files import it. "
-        "Use this after finding a file via search_codebase to understand its full structure. "
-        "Partial paths are supported: 'app.py' will match 'src/api/app.py'. "
-        "Do not pass full absolute paths; relative or partial paths are fine."
+        "Get a file's structural map: symbols, imports, reverse dependencies. "
+        "Use after search_codebase. Partial paths OK: 'app.py' matches 'src/api/app.py'."
     ),
     "input_schema": {
         "type": "object",
@@ -131,4 +122,11 @@ RETRIEVAL_TOOL_SCHEMAS: list[dict] = [
     GET_SYMBOL_SCHEMA,
     FIND_CALLERS_SCHEMA,
     GET_FILE_CONTEXT_SCHEMA,
+]
+
+# Trimmed schemas for Ask Mode — drops get_file_context to save ~300 tokens/turn
+ASK_RETRIEVAL_TOOL_SCHEMAS: list[dict] = [
+    SEARCH_CODEBASE_SCHEMA,
+    GET_SYMBOL_SCHEMA,
+    FIND_CALLERS_SCHEMA,
 ]

@@ -162,7 +162,7 @@ async def research_implementation(
         try:
             logger.info("web_researcher: trying fallback model (anthropic web_search_20250305)")
             response = await anthropic_client.messages.create(
-                model=settings.anthropic_model,
+                model=settings.default_model,
                 max_tokens=1200,
                 system=_RESEARCH_SYSTEM,
                 tools=[
