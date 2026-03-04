@@ -87,7 +87,9 @@
       "Bash(/Users/shubhamagr/Documents/nexusCode_server/src/api/ask.py:*)",
       "Bash(/Users/shubhamagr/Documents/nexusCode_server/src/api/plan.py:*)",
       "Bash(PYTHONPATH=. uv run:*)",
-      "Bash(git stash:*)"
+      "Bash(git stash:*)",
+      "Bash(PYTHONPATH=/Users/shubhamagr/Documents/nexusCode_server /Users/shubhamagr/Documents/nexusCode_server/.venv/bin/python:*)",
+      "WebFetch(domain:ollama.com)"
     ]
   }
 }

@@ -251,11 +251,7 @@ PLAN_TOOL_SCHEMA: dict = {
             "query": {"type": "string"},
             "summary": {
                 "type": "string",
-                "description": (
-                    "2-4 sentences. Describe the data/control flow of the change "
-                    "and which layers are affected. NEVER list packages, imports, "
-                    "stack components, or copy web research content."
-                ),
+                "description": "2-4 sentences on data/control flow and affected layers. No package lists or web research.",
             },
             "clarifying_assumptions": {
                 "type": "array",
@@ -265,27 +261,16 @@ PLAN_TOOL_SCHEMA: dict = {
             "design_decisions": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": (
-                    "Key non-obvious design decisions with WHY rationale. "
-                    "e.g. 'Base64-in-JSON (not multipart) to keep the existing JSON contract intact.' "
-                    "Max 5. Do NOT include package lists or stack analysis here."
-                ),
+                "description": "Non-obvious design decisions with WHY. e.g. 'Base64-in-JSON to preserve JSON contract.' Max 5.",
             },
             "constraints": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": (
-                    "Binding constraints identified BEFORE designing the solution. "
-                    "Include: framework constraints, runtime constraints, API contract constraints, "
-                    "backward compatibility constraints, and payload/performance constraints."
-                ),
+                "description": "Binding constraints (framework, runtime, API, backward compat, performance).",
             },
             "design_alternatives": {
                 "type": "array",
-                "description": (
-                    "At least 2 viable approaches for non-trivial changes. "
-                    "Include the selected approach and rejected ones with justification."
-                ),
+                "description": "≥2 viable approaches for non-trivial changes (selected + rejected with justification).",
                 "items": {
                     "type": "object",
                     "required": ["approach", "pros", "cons"],
@@ -302,10 +287,7 @@ PLAN_TOOL_SCHEMA: dict = {
             },
             "failure_modes": {
                 "type": "array",
-                "description": (
-                    "Potential failure modes for API-level or architectural changes. "
-                    "Assume inputs may be invalid or adversarial."
-                ),
+                "description": "Failure modes for API/architectural changes (assume adversarial inputs).",
                 "items": {
                     "type": "object",
                     "required": ["scenario", "cause", "mitigation"],
@@ -348,11 +330,7 @@ PLAN_TOOL_SCHEMA: dict = {
                                     "symbol": {"type": "string"},
                                     "description": {
                                         "type": "string",
-                                        "description": (
-                                            "Exact edit instruction the coding agent can execute. "
-                                            "e.g. 'Add field image_data: str | None = None after line 42'. "
-                                            "Do NOT explain protocols, HTTP constraints, or API design patterns."
-                                        ),
+                                        "description": "Exact edit: e.g. 'Add field image_data: str | None = None after line 42'. No protocol explanations.",
                                     },
                                     "pseudocode": {
                                         "type": "string",
@@ -410,7 +388,7 @@ PLAN_TOOL_SCHEMA: dict = {
             },
             "sparc_summary": {
                 "type": "object",
-                "description": "SPARC methodology walkthrough (1-3 sentences per phase). Required for implementation plans.",
+                "description": "SPARC methodology (1-3 sentences per phase).",
                 "properties": {
                     "specification": {
                         "type": "string",
@@ -422,15 +400,15 @@ PLAN_TOOL_SCHEMA: dict = {
                     },
                     "architecture": {
                         "type": "string",
-                        "description": "A: How the change flows through the system. Maps to the summary field.",
+                        "description": "A: How the change flows through the system.",
                     },
                     "refinement": {
                         "type": "string",
-                        "description": "R: Edge cases and trade-offs. Maps to design_alternatives + failure_modes.",
+                        "description": "R: Edge cases and trade-offs.",
                     },
                     "completion": {
                         "type": "string",
-                        "description": "C: Verification approach. Maps to test_plan.",
+                        "description": "C: Verification approach.",
                     },
                 },
             },
@@ -478,14 +456,10 @@ ANSWER_TOOL_SCHEMA: dict = {
 ANALYZE_IMPROVE_TOOL_SCHEMA: dict = {
     "name": "analyze_and_improve",
     "description": (
-        "Use this when the query asks how to IMPROVE, ENHANCE, REVIEW, AUDIT, or OPTIMIZE "
-        "something that already exists in the codebase. "
-        "Examples: 'how can I make /plan better?', 'how to improve the retriever?', "
-        "'review the chunker', 'what are the weaknesses of the auth system?', "
-        "'how to make the response quality better?', 'optimize the search pipeline'. "
-        "Respond with a DEEP, GROUNDED analysis — not a generic implementation plan. "
-        "You must analyze the CURRENT implementation first, then give specific improvements "
-        "grounded in real file paths and symbol names."
+        "Use for queries asking to IMPROVE, ENHANCE, REVIEW, AUDIT, or OPTIMIZE existing code. "
+        "Examples: 'improve the retriever', 'review the chunker', 'optimize the search pipeline'. "
+        "Respond with deep grounded analysis of the CURRENT implementation, then specific "
+        "improvements citing real file paths and symbols."
     ),
     "input_schema": {
         "type": "object",
@@ -494,20 +468,12 @@ ANALYZE_IMPROVE_TOOL_SCHEMA: dict = {
             "analysis": {
                 "type": "string",
                 "description": (
-                    "Deep markdown analysis. MUST use these sections in order:\n"
-                    "## Current Implementation\n"
-                    "  — What it does now, how it works, reference actual file:line\n"
-                    "## What Works Well\n"
-                    "  — Specific strengths with evidence from the code\n"
-                    "## Issues & Gaps\n"
-                    "  — Specific weaknesses, anti-patterns, missed opportunities "
-                    "(cite file:line for each)\n"
-                    "## Concrete Improvements\n"
-                    "  — Specific, grounded changes. For each: what to change, "
-                    "which file/function, why it matters\n"
-                    "## Implementation Guidance\n"
-                    "  — If changes are needed: exact files, functions to modify, "
-                    "pseudocode for non-trivial logic"
+                    "Deep markdown analysis with sections (in order):\n"
+                    "## Current Implementation — file:line citations\n"
+                    "## What Works Well — evidence from code\n"
+                    "## Issues & Gaps — cite file:line for each\n"
+                    "## Concrete Improvements — file/function specific\n"
+                    "## Implementation Guidance — pseudocode if needed"
                 ),
             },
             "key_files": {

@@ -63,8 +63,7 @@ _ASK_ANSWER_TOOL: dict = {
     "name": "answer_question",
     "description": (
         "Answer the developer's question with a conversational markdown response "
-        "grounded in the code you retrieved. Call this ONLY after searching the codebase. "
-        "Cite real file paths and line numbers found via tool calls."
+        "grounded in retrieved code. Call ONLY after searching the codebase."
     ),
     "input_schema": {
         "type": "object",
@@ -72,28 +71,19 @@ _ASK_ANSWER_TOOL: dict = {
             "answer": {
                 "type": "string",
                 "description": (
-                    "Full markdown answer. Lead with the direct answer. "
-                    "Walk through the relevant code with inline citations like "
-                    "`src/foo/bar.py` (lines 12-30). Include fenced code blocks. "
-                    "Close with 2-3 follow-up questions."
+                    "Full markdown answer: direct answer first, inline citations "
+                    "(src/foo/bar.py:12-30), code blocks, 2-3 follow-up questions."
                 ),
             },
             "cited_files": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": (
-                    "Every file path cited in the answer, with line range. "
-                    "Format: 'src/pipeline/pipeline.py:42-80'. "
-                    "Only paths from tool results — never invented."
-                ),
+                "description": "File paths cited in the answer. Format: 'src/pipeline/pipeline.py:42-80'. Only from tool results.",
             },
             "follow_up_hints": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": (
-                    "2-3 concrete follow-up questions the developer might ask next. "
-                    "Ground them in the code you found, not generic suggestions."
-                ),
+                "description": "2-3 follow-up questions grounded in the code you found.",
             },
         },
         "required": ["answer", "cited_files", "follow_up_hints"],
@@ -199,10 +189,10 @@ async def generate_answer(
     """
     from src.agent.loop import AgentLoop, AgentLoopConfig
     from src.agent.mcp_bridge import get_external_tool_schemas
-    from src.agent.tool_schemas import RETRIEVAL_TOOL_SCHEMAS
+    from src.agent.tool_schemas import ASK_RETRIEVAL_TOOL_SCHEMAS
 
     effective_model = model or settings.default_model
-    all_retrieval = RETRIEVAL_TOOL_SCHEMAS + get_external_tool_schemas()
+    all_retrieval = ASK_RETRIEVAL_TOOL_SCHEMAS + get_external_tool_schemas()
 
     tool_block, stats = await AgentLoop().run(
         model=effective_model,
@@ -253,10 +243,10 @@ async def stream_generate_answer(
     """
     from src.agent.loop import AgentLoop, AgentLoopConfig
     from src.agent.mcp_bridge import get_external_tool_schemas
-    from src.agent.tool_schemas import RETRIEVAL_TOOL_SCHEMAS
+    from src.agent.tool_schemas import ASK_RETRIEVAL_TOOL_SCHEMAS
 
     effective_model = model or settings.default_model
-    all_retrieval = RETRIEVAL_TOOL_SCHEMAS + get_external_tool_schemas()
+    all_retrieval = ASK_RETRIEVAL_TOOL_SCHEMAS + get_external_tool_schemas()
 
     async for event in AgentLoop().stream(
         model=effective_model,

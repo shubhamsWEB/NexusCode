@@ -554,8 +554,9 @@ async def retrieve_planning_context(
     )
 
     # ── Phase 5b: import-chain following (dependency context) ───────────
+    # Skip for simple queries — import chains add noise, not signal
     dependency_context = ""
-    if budgets["dependency"] > 0 and top_files:
+    if analysis.complexity != "simple" and budgets["dependency"] > 0 and top_files:
         dependency_context = await _follow_import_chains(
             file_paths=top_files[:5],
             repo_owner=repo_owner,
@@ -1353,7 +1354,12 @@ async def _fetch_component_context(
     )
 
 
-# ── Phase 0a helper: stack fingerprint ────────────────────────────────────────
+# ── Phase 0a helper: stack fingerprint (with TTL cache) ──────────────────────
+
+import time as _time
+
+_stack_cache: dict[tuple, tuple[str, float]] = {}
+_STACK_CACHE_TTL = 300  # 5 minutes
 
 
 async def _extract_stack_fingerprint(
@@ -1362,7 +1368,24 @@ async def _extract_stack_fingerprint(
 ) -> str:
     """
     Build a compact picture of what the codebase already has installed.
+    Results are cached per-repo with a 5-minute TTL.
     """
+    cache_key = (repo_owner, repo_name)
+    if cache_key in _stack_cache:
+        cached_result, cached_ts = _stack_cache[cache_key]
+        if _time.monotonic() - cached_ts < _STACK_CACHE_TTL:
+            logger.info("stack fingerprint: serving from cache")
+            return cached_result
+
+    result = await _extract_stack_fingerprint_impl(repo_owner, repo_name)
+    _stack_cache[cache_key] = (result, _time.monotonic())
+    return result
+
+
+async def _extract_stack_fingerprint_impl(
+    repo_owner: str | None,
+    repo_name: str | None,
+) -> str:
     from sqlalchemy import text
 
     from src.storage.db import AsyncSessionLocal

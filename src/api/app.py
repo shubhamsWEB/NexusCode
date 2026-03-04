@@ -80,17 +80,24 @@ async def health() -> JSONResponse:
 
 @app.get("/models", tags=["ops"])
 async def available_models() -> JSONResponse:
-    """Return available Claude models (requires ANTHROPIC_API_KEY)."""
+    """Return available models across all configured providers."""
     from src.config import settings
 
-    if not settings.anthropic_api_key:
-        return JSONResponse([])
+    models: list[dict] = []
 
-    models = [
-        {"model": "claude-sonnet-4-6", "provider": "anthropic"},
-        {"model": "claude-opus-4-6", "provider": "anthropic"},
-        {"model": "claude-haiku-4-5-20251001", "provider": "anthropic"},
-    ]
+    if settings.anthropic_api_key:
+        models += [
+            {"model": "claude-sonnet-4-6", "provider": "anthropic"},
+            {"model": "claude-opus-4-6", "provider": "anthropic"},
+            {"model": "claude-haiku-4-5-20251001", "provider": "anthropic"},
+        ]
+
+    if settings.ollama_base_url and settings.ollama_models:
+        for m in settings.ollama_models.split(","):
+            m = m.strip()
+            if m:
+                models.append({"model": m, "provider": "ollama"})
+
     return JSONResponse(models)
 
 
