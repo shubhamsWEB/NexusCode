@@ -126,6 +126,28 @@ def _truncate_prior_tool_results(messages: list[dict]) -> None:
                 result["content"] = text[:_MAX_PRIOR_RESULT_CHARS] + "\n[...truncated]"
 
 
+def _coerce_to_dict(raw: object) -> dict:
+    """Ensure a tool block's input is always a plain dict.
+
+    Some providers (Ollama/GLM) return tool arguments as a JSON *string*
+    rather than a pre-parsed dict.  This normalizer handles all observed
+    variants so downstream _parse_tool_block code can safely call .get().
+    """
+    import json as _json
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        raw = raw.strip()
+        if raw:
+            try:
+                parsed = _json.loads(raw)
+                if isinstance(parsed, dict):
+                    return parsed
+            except _json.JSONDecodeError:
+                pass
+    return {}
+
+
 
 
 
@@ -299,7 +321,7 @@ class AgentLoop:
                     )
                 stats = _make_stats(iteration + 1, total_tool_calls, total_context_tokens, t0, search_tools_called)
                 final_b = final_blocks[0]
-                return {"name": final_b.name, "input": final_b.input}, stats
+                return {"name": final_b.name, "input": _coerce_to_dict(final_b.input)}, stats
 
             if force_final and not final_blocks:
                 # We forced but Claude still called retrieval tools — error
@@ -547,7 +569,7 @@ class AgentLoop:
                 final_b = final_blocks[0]
                 yield {
                     "type": "done",
-                    "tool_block": {"name": final_b.name, "input": final_b.input},
+                    "tool_block": {"name": final_b.name, "input": _coerce_to_dict(final_b.input)},
                     "stats": stats,
                 }
                 return

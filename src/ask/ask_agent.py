@@ -143,13 +143,34 @@ class AskResult:
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 
-def _build_system_prompt(repo_owner: str | None, repo_name: str | None) -> str:
-    from src.agent.rules import load_rules
+_OLLAMA_TOOL_HINT = """
+TOOL ARGUMENT FORMAT (IMPORTANT)
+─────────────────────────────────
+Always pass tool arguments as a JSON object with the exact field names.
+Examples:
+  search_codebase  → {"query": "JWT token validation"}
+  get_symbol       → {"name": "authenticate"}
+  find_callers     → {"symbol": "authenticate"}
+  get_file_context → {"path": "src/api/app.py"}
+Never call a tool with empty arguments — the call will fail.
+"""
 
+
+def _build_system_prompt(
+    repo_owner: str | None,
+    repo_name: str | None,
+    model: str | None = None,
+) -> str:
+    from src.agent.rules import load_rules
+    from src.llm.client import is_ollama_model
+
+    prompt = ASK_SYSTEM_PROMPT
+    if model and is_ollama_model(model):
+        prompt += _OLLAMA_TOOL_HINT
     rules = load_rules(repo_owner, repo_name)
-    if not rules:
-        return ASK_SYSTEM_PROMPT
-    return ASK_SYSTEM_PROMPT + f"\n\n---\n\n## Codebase-Specific Rules\n\n{rules}"
+    if rules:
+        prompt += f"\n\n---\n\n## Codebase-Specific Rules\n\n{rules}"
+    return prompt
 
 
 def _build_initial_message(
@@ -196,7 +217,7 @@ async def generate_answer(
 
     tool_block, stats = await AgentLoop().run(
         model=effective_model,
-        system=_build_system_prompt(repo_owner, repo_name),
+        system=_build_system_prompt(repo_owner, repo_name, model=effective_model),
         initial_message=_build_initial_message(query, repo_owner, repo_name),
         retrieval_tools=all_retrieval,
         final_answer_tools=[_ASK_ANSWER_TOOL],
@@ -250,7 +271,7 @@ async def stream_generate_answer(
 
     async for event in AgentLoop().stream(
         model=effective_model,
-        system=_build_system_prompt(repo_owner, repo_name),
+        system=_build_system_prompt(repo_owner, repo_name, model=effective_model),
         initial_message=_build_initial_message(query, repo_owner, repo_name),
         retrieval_tools=all_retrieval,
         final_answer_tools=[_ASK_ANSWER_TOOL],
