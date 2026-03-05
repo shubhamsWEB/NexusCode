@@ -77,6 +77,7 @@ async def _async_incremental_index(payload: dict[str, Any]) -> dict[str, Any]:
         await _handle_deletions(owner, repo, files_to_delete, stats, log)
 
     # ── Step 2: Upsert files ──────────────────────────────────────────────────
+    all_parsed_files: list = []
     if files_to_upsert:
         await _handle_upserts(
             owner,
@@ -87,7 +88,18 @@ async def _async_incremental_index(payload: dict[str, Any]) -> dict[str, Any]:
             files_to_upsert,
             stats,
             log,
+            all_parsed_files=all_parsed_files,
         )
+
+    # ── Step 3: Update knowledge graph edges (best-effort, non-fatal) ─────────
+    if all_parsed_files or files_to_delete:
+        try:
+            from src.graph.builder import build_calls_from_parsed, build_file_graph
+
+            await build_calls_from_parsed(owner, repo, all_parsed_files)
+            await build_file_graph(owner, repo)
+        except Exception as exc:
+            log.warning("graph build failed (non-fatal)", error=str(exc))
 
     elapsed = time.monotonic() - start_time
     log.info("pipeline.done", elapsed_s=round(elapsed, 2), **stats)
@@ -155,6 +167,7 @@ async def _handle_upserts(
     paths: list[str],
     stats: dict,
     log,
+    all_parsed_files: list | None = None,
 ) -> None:
     from src.github.fetcher import fetch_file
     from src.pipeline.chunker import chunk_file
@@ -213,6 +226,7 @@ async def _handle_upserts(
                     "blob_sha": blob_sha,
                     "symbols": parsed.all_symbols,
                     "enriched": enriched,
+                    "parsed_file": parsed,
                 }
             except Exception as exc:
                 log.error("pipeline.parse_error", path=path, error=str(exc))
@@ -249,6 +263,8 @@ async def _handle_upserts(
                 batch_enriched.extend(result["enriched"])
                 batch_meta.append(result)
                 stats["files_processed"] += 1
+                if all_parsed_files is not None and result.get("parsed_file"):
+                    all_parsed_files.append(result["parsed_file"])
 
         files_done += len(batch_paths)
 

@@ -68,6 +68,7 @@ class ParsedSymbol:
     parent_name: str | None = None  # set for methods
     children: list[ParsedSymbol] = field(default_factory=list)
     is_exported: bool = False
+    calls: list[str] = field(default_factory=list)  # function/method names called within the body
 
 
 @dataclass
@@ -149,6 +150,78 @@ def _node_lines(node) -> tuple[int, int]:
     return node.start_point[0] + 1, node.end_point[0] + 1
 
 
+# ── Call extraction helpers (per-language recursive AST walkers) ──────────────
+
+
+def _py_walk_calls(node, source_bytes: bytes, calls: list[str]) -> None:
+    if node.type == "call":
+        func = node.child_by_field_name("function")
+        if func:
+            if func.type == "identifier":
+                calls.append(_node_text(func, source_bytes))
+            elif func.type == "attribute":
+                attr = func.child_by_field_name("attribute")
+                if attr:
+                    calls.append(_node_text(attr, source_bytes))
+    for child in node.named_children:
+        _py_walk_calls(child, source_bytes, calls)
+
+
+def _ts_walk_calls(node, source_bytes: bytes, calls: list[str]) -> None:
+    if node.type == "call_expression":
+        func = node.child_by_field_name("function")
+        if func:
+            if func.type == "identifier":
+                calls.append(_node_text(func, source_bytes))
+            elif func.type == "member_expression":
+                prop = func.child_by_field_name("property")
+                if prop:
+                    calls.append(_node_text(prop, source_bytes))
+    for child in node.named_children:
+        _ts_walk_calls(child, source_bytes, calls)
+
+
+def _java_walk_calls(node, source_bytes: bytes, calls: list[str]) -> None:
+    if node.type == "method_invocation":
+        name_node = node.child_by_field_name("name")
+        if name_node:
+            calls.append(_node_text(name_node, source_bytes))
+    for child in node.named_children:
+        _java_walk_calls(child, source_bytes, calls)
+
+
+def _go_walk_calls(node, source_bytes: bytes, calls: list[str]) -> None:
+    if node.type == "call_expression":
+        func = node.child_by_field_name("function")
+        if func:
+            if func.type == "identifier":
+                calls.append(_node_text(func, source_bytes))
+            elif func.type == "selector_expression":
+                field_node = func.child_by_field_name("field")
+                if field_node:
+                    calls.append(_node_text(field_node, source_bytes))
+    for child in node.named_children:
+        _go_walk_calls(child, source_bytes, calls)
+
+
+def _rust_walk_calls(node, source_bytes: bytes, calls: list[str]) -> None:
+    if node.type == "call_expression":
+        func = node.child_by_field_name("function")
+        if func and func.type == "identifier":
+            calls.append(_node_text(func, source_bytes))
+    elif node.type == "method_call_expression":
+        name_node = node.child_by_field_name("name")
+        if name_node:
+            calls.append(_node_text(name_node, source_bytes))
+    for child in node.named_children:
+        _rust_walk_calls(child, source_bytes, calls)
+
+
+def _dedup(calls: list[str]) -> list[str]:
+    """Deduplicate while preserving first-occurrence order."""
+    return list(dict.fromkeys(calls))
+
+
 # ── Python parser ─────────────────────────────────────────────────────────────
 
 
@@ -190,6 +263,9 @@ def _py_parse_function(node, source_bytes: bytes, parent_name: str | None = None
     kind = "method" if parent_name else "function"
     start, end = _node_lines(node)
     body = node.child_by_field_name("body")
+    calls: list[str] = []
+    if body:
+        _py_walk_calls(body, source_bytes, calls)
     return ParsedSymbol(
         name=name,
         qualified_name=qualified,
@@ -201,6 +277,7 @@ def _py_parse_function(node, source_bytes: bytes, parent_name: str | None = None
         docstring=_py_extract_docstring(body, source_bytes),
         parent_name=parent_name,
         is_exported=not name.startswith("_"),
+        calls=_dedup(calls),
     )
 
 
@@ -318,6 +395,10 @@ def _ts_parse_function(
     qualified = f"{parent_name}.{name}" if parent_name else name
     kind = "method" if parent_name else "function"
     start, end = _node_lines(node)
+    body = node.child_by_field_name("body")
+    calls: list[str] = []
+    if body:
+        _ts_walk_calls(body, source_bytes, calls)
     return ParsedSymbol(
         name=name,
         qualified_name=qualified,
@@ -328,6 +409,7 @@ def _ts_parse_function(
         signature=_ts_function_signature(node, source_bytes),
         parent_name=parent_name,
         is_exported=exported,
+        calls=_dedup(calls),
     )
 
 
@@ -358,6 +440,10 @@ def _ts_parse_class(node, source_bytes: bytes, exported: bool = False) -> Parsed
                 )
                 qualified = f"{name}.{method_name}"
                 m_start, m_end = _node_lines(child)
+                m_body = child.child_by_field_name("body")
+                m_calls: list[str] = []
+                if m_body:
+                    _ts_walk_calls(m_body, source_bytes, m_calls)
                 method = ParsedSymbol(
                     name=method_name,
                     qualified_name=qualified,
@@ -366,6 +452,7 @@ def _ts_parse_class(node, source_bytes: bytes, exported: bool = False) -> Parsed
                     end_line=m_end,
                     source=_node_text(child, source_bytes),
                     parent_name=name,
+                    calls=_dedup(m_calls),
                 )
                 sym.children.append(method)
 
@@ -452,6 +539,10 @@ def _parse_go(source: str, file_path: str) -> ParsedFile:
             name_node = child.child_by_field_name("name")
             name = _node_text(name_node, source_bytes) if name_node else "<anon>"
             start, end = _node_lines(child)
+            go_body = child.child_by_field_name("body")
+            go_calls: list[str] = []
+            if go_body:
+                _go_walk_calls(go_body, source_bytes, go_calls)
             symbols.append(
                 ParsedSymbol(
                     name=name,
@@ -460,6 +551,7 @@ def _parse_go(source: str, file_path: str) -> ParsedFile:
                     start_line=start,
                     end_line=end,
                     source=_node_text(child, source_bytes),
+                    calls=_dedup(go_calls),
                 )
             )
 
@@ -476,6 +568,10 @@ def _parse_go(source: str, file_path: str) -> ParsedFile:
                         break
             qualified = f"{receiver}.{name}" if receiver else name
             start, end = _node_lines(child)
+            go_mbody = child.child_by_field_name("body")
+            go_mcalls: list[str] = []
+            if go_mbody:
+                _go_walk_calls(go_mbody, source_bytes, go_mcalls)
             symbols.append(
                 ParsedSymbol(
                     name=name,
@@ -485,6 +581,7 @@ def _parse_go(source: str, file_path: str) -> ParsedFile:
                     end_line=end,
                     source=_node_text(child, source_bytes),
                     parent_name=receiver or None,
+                    calls=_dedup(go_mcalls),
                 )
             )
 
@@ -551,6 +648,10 @@ def _parse_java(source: str, file_path: str) -> ParsedFile:
                                 _node_text(m_name_node, source_bytes) if m_name_node else "<anon>"
                             )
                             m_start, m_end = _node_lines(member)
+                            java_mbody = member.child_by_field_name("body")
+                            java_mcalls: list[str] = []
+                            if java_mbody:
+                                _java_walk_calls(java_mbody, source_bytes, java_mcalls)
                             sym.children.append(
                                 ParsedSymbol(
                                     name=m_name,
@@ -560,6 +661,7 @@ def _parse_java(source: str, file_path: str) -> ParsedFile:
                                     end_line=m_end,
                                     source=_node_text(member, source_bytes),
                                     parent_name=name,
+                                    calls=_dedup(java_mcalls),
                                 )
                             )
                 symbols.append(sym)
@@ -604,6 +706,10 @@ def _rust_parse_function(node, source_bytes: bytes, parent_name: str | None = No
     qualified = f"{parent_name}.{name}" if parent_name else name
     kind = "method" if parent_name else "function"
     start, end = _node_lines(node)
+    body = node.child_by_field_name("body")
+    calls: list[str] = []
+    if body:
+        _rust_walk_calls(body, source_bytes, calls)
     return ParsedSymbol(
         name=name,
         qualified_name=qualified,
@@ -614,6 +720,7 @@ def _rust_parse_function(node, source_bytes: bytes, parent_name: str | None = No
         signature=_rust_function_signature(node, source_bytes),
         parent_name=parent_name,
         is_exported=_rust_is_pub(node),
+        calls=_dedup(calls),
     )
 
 

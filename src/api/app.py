@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from src.api.ask import router as ask_router
+from src.api.graph import router as graph_router
 from src.api.history import router as history_router
 from src.api.mcp_servers import router as mcp_servers_router
 from src.api.plan import router as plan_router
@@ -60,6 +61,7 @@ app.include_router(ask_router)
 app.include_router(history_router)
 app.include_router(skills_router)
 app.include_router(mcp_servers_router)
+app.include_router(graph_router)
 
 
 # Mount MCP server — exposes /mcp/sse and /mcp/messages/
