@@ -89,7 +89,15 @@
       "Bash(PYTHONPATH=. uv run:*)",
       "Bash(git stash:*)",
       "Bash(PYTHONPATH=/Users/shubhamagr/Documents/nexusCode_server /Users/shubhamagr/Documents/nexusCode_server/.venv/bin/python:*)",
-      "WebFetch(domain:ollama.com)"
+      "WebFetch(domain:ollama.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:api.github.com)",
+      "WebFetch(domain:gitnexus.vercel.app)",
+      "Bash(pip3 show:*)",
+      "Bash(pip3 list:*)",
+      "Bash(python3.11:*)",
+      "Bash(ls:*)",
+      "Bash(PYTHONPATH=/Users/shubhamagr/Documents/nexusCode_server /Users/shubhamagr/Documents/nexusCode_server/.venv/bin/python3:*)"
     ]
   }
 }

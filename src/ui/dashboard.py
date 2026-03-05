@@ -50,6 +50,7 @@ PAGES = [
     "🚀 Get Started",
     "⚙️  Settings",
     "📦 Repositories",
+    "🕸️ Knowledge Graph",
     "🔗 Webhook Setup",
     "🔑 MCP Tokens",
     "🏠 Health",
@@ -474,6 +475,11 @@ elif page == "⚙️  Settings":
 
 elif page == "📦 Repositories":
     from src.ui._pages.repos import render
+
+    render()
+
+elif page == "🕸️ Knowledge Graph":
+    from src.ui._pages.knowledge_graph import render
 
     render()
 
