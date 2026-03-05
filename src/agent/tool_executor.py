@@ -21,9 +21,42 @@ def _escape_ilike(v: str) -> str:
     return v.replace("%", r"\%").replace("_", r"\_")
 
 
+def _normalize_input(raw: object, tool_name: str) -> dict:
+    """Coerce whatever a model returns as tool input into a plain dict.
+
+    Some providers (Ollama/GLM, older OpenAI-compat layers) return tool
+    arguments as a JSON *string* rather than a pre-parsed dict, or they
+    return None / empty when parsing fails on their side.  This normalizer
+    handles all observed variants so downstream code can assume a dict.
+    """
+    if raw is None:
+        logger.warning("tool_executor: %s received None input", tool_name)
+        return {}
+    if isinstance(raw, str):
+        raw = raw.strip()
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
+            logger.warning(
+                "tool_executor: %s input parsed to non-dict type %s",
+                tool_name, type(parsed).__name__,
+            )
+            return {}
+        except json.JSONDecodeError:
+            logger.warning("tool_executor: %s input is invalid JSON string: %.120r", tool_name, raw)
+            return {}
+    if isinstance(raw, dict):
+        return raw
+    logger.warning("tool_executor: %s unexpected input type %s", tool_name, type(raw).__name__)
+    return {}
+
+
 async def execute_tool(
     name: str,
-    tool_input: dict,
+    tool_input: object,
     repo_owner: str | None = None,
     repo_name: str | None = None,
 ) -> str:
@@ -33,20 +66,31 @@ async def execute_tool(
     repo_owner / repo_name are injected from the request context.
     Returns JSON string — never raises (errors are returned as JSON).
     """
+    inp = _normalize_input(tool_input, name)
+
+    if not inp:
+        logger.warning(
+            "tool_executor: %s called with empty/unparseable input (raw=%r) — "
+            "this often means the model did not populate the tool arguments correctly. "
+            "Required fields: search_codebase→query, get_symbol→name, "
+            "find_callers→symbol, get_file_context→path.",
+            name, tool_input,
+        )
+
     try:
         if name == "search_codebase":
-            return await _search_codebase(tool_input, repo_owner, repo_name)
+            return await _search_codebase(inp, repo_owner, repo_name)
         elif name == "get_symbol":
-            return await _get_symbol(tool_input, repo_owner, repo_name)
+            return await _get_symbol(inp, repo_owner, repo_name)
         elif name == "find_callers":
-            return await _find_callers(tool_input, repo_owner, repo_name)
+            return await _find_callers(inp, repo_owner, repo_name)
         elif name == "get_file_context":
-            return await _get_file_context(tool_input, repo_owner, repo_name)
+            return await _get_file_context(inp, repo_owner, repo_name)
         else:
             from src.agent.mcp_bridge import call_external_tool, is_external_tool
 
             if is_external_tool(name):
-                return await call_external_tool(name, tool_input)
+                return await call_external_tool(name, inp)
             return json.dumps({"error": f"Unknown tool: {name}"})
     except Exception as exc:
         logger.exception("tool_executor: %s failed", sanitize_log(name))
@@ -65,7 +109,13 @@ async def _search_codebase(
     from src.retrieval.reranker import rerank
     from src.retrieval.searcher import embed_query, search
 
-    query = inp["query"]
+    query = inp.get("query") or inp.get("text") or inp.get("search") or ""
+    if not query:
+        return json.dumps({
+            "error": "search_codebase requires a 'query' field. "
+                     "Example: {\"query\": \"JWT token validation\"}",
+            "received_keys": list(inp.keys()),
+        })
     language = inp.get("language")
     top_k = max(1, min(15, int(inp.get("top_k", 8))))
     mode = inp.get("mode", "hybrid")
@@ -135,7 +185,13 @@ async def _get_symbol(
 
     from src.storage.db import AsyncSessionLocal
 
-    name = inp["name"]
+    name = inp.get("name") or inp.get("symbol") or inp.get("identifier") or ""
+    if not name:
+        return json.dumps({
+            "error": "get_symbol requires a 'name' field. "
+                     "Example: {\"name\": \"authenticate\"}",
+            "received_keys": list(inp.keys()),
+        })
     params: dict = {"name": name, "name_like": f"%{_escape_ilike(name)}%"}
     where_clauses = [
         "similarity(name, :name) > 0.1 OR name ILIKE :name_like OR qualified_name ILIKE :name_like"
@@ -203,7 +259,13 @@ async def _find_callers(
 ) -> str:
     from src.retrieval.searcher import _keyword_search
 
-    symbol = inp["symbol"]
+    symbol = inp.get("symbol") or inp.get("name") or inp.get("function") or ""
+    if not symbol:
+        return json.dumps({
+            "error": "find_callers requires a 'symbol' field. "
+                     "Example: {\"symbol\": \"authenticate\"}",
+            "received_keys": list(inp.keys()),
+        })
     depth = max(1, min(2, int(inp.get("depth", 1))))
 
     _DEFINITION_PREFIXES = (
@@ -311,7 +373,13 @@ async def _get_file_context(
 
     from src.storage.db import AsyncSessionLocal
 
-    path = inp["path"]
+    path = inp.get("path") or inp.get("file") or inp.get("file_path") or ""
+    if not path:
+        return json.dumps({
+            "error": "get_file_context requires a 'path' field. "
+                     "Example: {\"path\": \"src/api/app.py\"}",
+            "received_keys": list(inp.keys()),
+        })
     include_deps = inp.get("include_deps", True)
 
     params: dict = {"path": path, "path_like": f"%{_escape_ilike(path)}%"}
