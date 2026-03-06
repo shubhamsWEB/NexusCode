@@ -76,7 +76,17 @@ def render():
             top_left, top_right = st.columns([4, 2])
 
             with top_left:
-                st.markdown(f"**{icon} {server['name']}**  &nbsp; `{server['url']}`", unsafe_allow_html=True)
+                transport = server.get("transport", "auto")
+                transport_badge = {
+                    "streamable_http": "🌐 Streamable HTTP",
+                    "sse": "📡 SSE",
+                    "auto": "⚡ Auto",
+                }.get(transport, transport)
+                st.markdown(
+                    f"**{icon} {server['name']}**  &nbsp; `{server['url']}`"
+                    f"  <span style='font-size:11px;color:#8b949e'>{transport_badge}</span>",
+                    unsafe_allow_html=True,
+                )
                 if server.get("description"):
                     st.caption(server["description"])
                 if last_error:
@@ -152,14 +162,31 @@ def render():
     st.subheader("Add New MCP Server")
 
     with st.form("add_mcp_server_form", clear_on_submit=True):
-        new_name = st.text_input("Name", placeholder="My Package MCP")
-        new_url = st.text_input("URL (SSE endpoint)", placeholder="http://localhost:3100/sse")
-        new_auth = st.text_input(
-            "Auth header (optional)",
-            placeholder="Bearer sk-...",
-            type="password",
+        new_name = st.text_input("Name", placeholder="Context7 / My Package MCP")
+        new_url = st.text_input(
+            "URL",
+            placeholder="https://mcp.context7.com/mcp  or  http://localhost:3100/sse",
         )
-        new_desc = st.text_input("Description (optional)", placeholder="Monorepo package intelligence")
+        col_transport, col_auth = st.columns([1, 2])
+        with col_transport:
+            new_transport = st.selectbox(
+                "Transport",
+                options=["auto", "streamable_http", "sse"],
+                format_func=lambda x: {
+                    "auto": "⚡ Auto-detect (recommended)",
+                    "streamable_http": "🌐 Streamable HTTP (Context7, cloud servers)",
+                    "sse": "📡 SSE (legacy / self-hosted)",
+                }[x],
+                help="Auto-detect tries Streamable HTTP first, then SSE. "
+                     "Pick a specific transport if auto-detect is slow or unreliable.",
+            )
+        with col_auth:
+            new_auth = st.text_input(
+                "Auth header (optional)",
+                placeholder="Bearer sk-...",
+                type="password",
+            )
+        new_desc = st.text_input("Description (optional)", placeholder="Up-to-date library docs")
         new_enabled = st.checkbox("Enable immediately", value=True)
 
         col_test, col_save = st.columns(2)
@@ -172,13 +199,19 @@ def render():
         with st.spinner("Testing connection…"):
             result, err = api_post(
                 "/mcp-servers/test-url",
-                json={"url": new_url.strip(), "auth_header": new_auth.strip() or None},
+                json={
+                    "url": new_url.strip(),
+                    "auth_header": new_auth.strip() or None,
+                    "transport": new_transport,
+                },
             )
         if err:
             st.error(f"Test failed: {err}")
         elif result and result.get("ok"):
             names = ", ".join(result.get("tools", []))
-            st.success(f"✅ Connection OK — {len(result['tools'])} tool(s): {names}")
+            used = result.get("transport_used", "")
+            transport_note = f" via **{used}**" if used else ""
+            st.success(f"✅ Connection OK{transport_note} — {len(result['tools'])} tool(s): {names}")
         else:
             st.error(result.get("error", "Connection failed") if result else "No response")
 
@@ -197,6 +230,7 @@ def render():
                     "auth_header": new_auth.strip() or None,
                     "description": new_desc.strip() or None,
                     "enabled": new_enabled,
+                    "transport": new_transport,
                 },
             )
             if err:

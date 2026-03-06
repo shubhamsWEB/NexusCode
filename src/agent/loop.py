@@ -75,6 +75,7 @@ def _is_retryable(exc) -> bool:
 
 def _tool_input_summary(tool_name: str, tool_input: dict) -> str:
     """Return a short human-readable summary of a tool call for SSE events."""
+    # Known local tools
     if tool_name == "search_codebase":
         return tool_input.get("query", "")[:80]
     if tool_name == "get_symbol":
@@ -83,7 +84,27 @@ def _tool_input_summary(tool_name: str, tool_input: dict) -> str:
         return tool_input.get("symbol", "")[:80]
     if tool_name == "get_file_context":
         return tool_input.get("path", "")[:80]
-    return str(tool_input)[:80]
+
+    # External MCP tools — try common descriptive keys in priority order
+    _DESCRIPTIVE_KEYS = (
+        "query", "search", "text",            # search-like
+        "libraryName", "library", "package",  # library docs (Context7, etc.)
+        "topic", "subject",                   # context filters
+        "context7CompatibleLibraryID",        # Context7 specific
+        "name", "id", "identifier",           # lookup
+        "path", "file", "url",                # resource
+        "input", "message", "prompt",         # generic
+    )
+    for key in _DESCRIPTIVE_KEYS:
+        val = tool_input.get(key)
+        if val and isinstance(val, str) and val.strip():
+            return f"{val.strip()[:70]}"
+
+    # Fall back to first key: value pair
+    if tool_input:
+        k, v = next(iter(tool_input.items()))
+        return f"{k}: {str(v)[:60]}"
+    return ""
 
 
 # ── Token-saving helpers ───────────────────────────────────────────────────────
@@ -485,43 +506,50 @@ class AgentLoop:
             async with semaphore:
                 for attempt in range(MAX_RETRIES + 1):
                     try:
-                        async with client.messages.stream(**params) as stream:
-                            async for event in stream:
-                                event_type = getattr(event, "type", None)
+                        if force_final:
+                            # Use create() for the forced-final-answer turn — mirrors the
+                            # non-streaming run() path (which works) and avoids issues when
+                            # history contains thinking blocks from prior turns but thinking
+                            # must be disabled here (tool_choice:{type:any} forbids thinking).
+                            final_message = await client.messages.create(**params)
+                        else:
+                            async with client.messages.stream(**params) as stream:
+                                async for event in stream:
+                                    event_type = getattr(event, "type", None)
 
-                                # Detect tool name from content_block_start
-                                if event_type == "content_block_start":
-                                    cb = getattr(event, "content_block", None)
-                                    if cb:
-                                        cb_type = getattr(cb, "type", None)
-                                        if cb_type == "tool_use":
-                                            current_tool_name = getattr(cb, "name", None)
-                                            is_streaming_final_tool = (
-                                                current_tool_name in final_tool_names
-                                            )
+                                    # Detect tool name from content_block_start
+                                    if event_type == "content_block_start":
+                                        cb = getattr(event, "content_block", None)
+                                        if cb:
+                                            cb_type = getattr(cb, "type", None)
+                                            if cb_type == "tool_use":
+                                                current_tool_name = getattr(cb, "name", None)
+                                                is_streaming_final_tool = (
+                                                    current_tool_name in final_tool_names
+                                                )
 
-                                elif event_type == "content_block_stop":
-                                    current_tool_name = None
-                                    is_streaming_final_tool = False
+                                    elif event_type == "content_block_stop":
+                                        current_tool_name = None
+                                        is_streaming_final_tool = False
 
-                                # Stream thinking (always)
-                                elif event_type == "thinking":
-                                    thinking_text = getattr(event, "thinking", None)
-                                    if thinking_text:
-                                        yield {"type": "thinking", "text": thinking_text}
+                                    # Stream thinking (always)
+                                    elif event_type == "thinking":
+                                        thinking_text = getattr(event, "thinking", None)
+                                        if thinking_text:
+                                            yield {"type": "thinking", "text": thinking_text}
 
-                                # Stream text/input_json only for final answer tools
-                                elif event_type == "text":
-                                    text = getattr(event, "text", None)
-                                    if text and is_streaming_final_tool:
-                                        yield {"type": "token", "text": text}
+                                    # Stream text/input_json only for final answer tools
+                                    elif event_type == "text":
+                                        text = getattr(event, "text", None)
+                                        if text and is_streaming_final_tool:
+                                            yield {"type": "token", "text": text}
 
-                                elif event_type == "input_json":
-                                    partial = getattr(event, "partial_json", None)
-                                    if partial and is_streaming_final_tool:
-                                        yield {"type": "token", "text": partial}
+                                    elif event_type == "input_json":
+                                        partial = getattr(event, "partial_json", None)
+                                        if partial and is_streaming_final_tool:
+                                            yield {"type": "token", "text": partial}
 
-                            final_message = await stream.get_final_message()
+                                final_message = await stream.get_final_message()
                         streamed_ok = True
                         break
 
