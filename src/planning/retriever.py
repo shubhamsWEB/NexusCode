@@ -486,6 +486,7 @@ async def retrieve_planning_context(
         repo_owner=repo_owner,
         repo_name=repo_name,
         hyde=use_hyde,
+        search_quality="thorough",
     )
 
     # Sub-query searches (parallel) — merge results
@@ -500,6 +501,7 @@ async def retrieve_planning_context(
                 repo_owner=repo_owner,
                 repo_name=repo_name,
                 hyde=analysis.is_concept,
+                search_quality="thorough",
             )
 
         sub_search_tasks = [_sub_search(sq, sv) for sq, sv in sub_query_vectors.items()]
@@ -583,6 +585,7 @@ async def retrieve_planning_context(
             mode="hybrid",
             repo_owner=repo_owner,
             repo_name=repo_name,
+            search_quality="thorough",
         )
 
     expand_symbols = top_symbols[:3]  # more expansion for complex queries

@@ -132,6 +132,7 @@ async def _search_codebase(
         repo_owner=repo_owner,
         repo_name=repo_name,
         language=language,
+        search_quality="thorough",
     )
 
     if not results:

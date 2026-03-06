@@ -45,6 +45,14 @@ class SearchResult:
     quality_score: float = 0.0  # sigmoid-normalized rerank_score (0.0-1.0)
 
 
+# ── ef_search quality presets ─────────────────────────────────────────────────
+
+_EF_PRESETS = {
+    "fast":     lambda base: max(10, base // 2),
+    "balanced": lambda base: base,
+    "thorough": lambda base: min(200, base * 2),
+}
+
 # ── Public entry point ────────────────────────────────────────────────────────
 
 
@@ -57,6 +65,7 @@ async def search(
     repo_name: str | None = None,
     language: str | None = None,
     hyde: bool = False,
+    search_quality: str = "balanced",
 ) -> list[SearchResult]:
     """
     Run a search and return top_k results.
@@ -77,20 +86,45 @@ async def search(
             language=language,
         )
 
+    # Check cache (skip for HyDE which is handled above)
+    from src.retrieval.embed_cache import (
+        get_cached_search_results,
+        make_search_cache_key,
+        set_cached_search_results,
+    )
+
+    cache_key = make_search_cache_key(query, repo_owner, repo_name, mode, language, top_k)
+    cached = await get_cached_search_results(cache_key)
+    if cached is not None:
+        return [SearchResult(**r) for r in cached]
+
     candidates = top_k * settings.retrieval_candidate_multiplier
 
     if mode == "semantic":
-        results = await _semantic_search(query_vector, candidates, repo_owner, repo_name, language)
+        results = await _semantic_search(
+            query_vector, candidates, repo_owner, repo_name, language, search_quality
+        )
 
     elif mode == "keyword":
         results = await _keyword_search(query, candidates, repo_owner, repo_name, language)
 
     else:  # hybrid
-        semantic = await _semantic_search(query_vector, candidates, repo_owner, repo_name, language)
+        semantic = await _semantic_search(
+            query_vector, candidates, repo_owner, repo_name, language, search_quality
+        )
         keyword = await _keyword_search(query, candidates, repo_owner, repo_name, language)
         results = _reciprocal_rank_fusion(semantic, keyword)
 
-    return results[:top_k]
+    results = results[:top_k]
+
+    if results:
+        await set_cached_search_results(
+            cache_key,
+            [r.__dict__ for r in results],
+            ttl=settings.search_result_cache_ttl,
+        )
+
+    return results
 
 
 # ── Semantic search ───────────────────────────────────────────────────────────
@@ -102,7 +136,9 @@ async def _semantic_search(
     repo_owner: str | None,
     repo_name: str | None,
     language: str | None,
+    search_quality: str = "balanced",
 ) -> list[SearchResult]:
+    ef = _EF_PRESETS.get(search_quality, lambda b: b)(settings.hnsw_ef_search)
     vec_str = "[" + ",".join(f"{v:.8f}" for v in vector) + "]"
     where, params = _build_where(repo_owner, repo_name, language)
     params["limit"] = limit
@@ -123,7 +159,7 @@ async def _semantic_search(
     """)
 
     # SET LOCAL hnsw.ef_search — no-op if ivfflat is still in use
-    pre_stmts = [text(f"SET LOCAL hnsw.ef_search = {settings.hnsw_ef_search}")]
+    pre_stmts = [text(f"SET LOCAL hnsw.ef_search = {ef}")]
     return await _execute_search(sql, params, pre_statements=pre_stmts)
 
 
@@ -270,8 +306,6 @@ async def _execute_search(
 
 async def embed_query(query: str) -> list[float]:
     """Embed a search query using voyage-code-2 with input_type='query'."""
-    import asyncio
-
     from src.pipeline.embedder import _make_client
     from src.retrieval.embed_cache import get_cached_embedding, set_cached_embedding
 
@@ -280,11 +314,7 @@ async def embed_query(query: str) -> list[float]:
         return cached
 
     client = _make_client()
-    loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(
-        None,
-        lambda: client.embed([query], model=settings.embedding_model, input_type="query"),
-    )
+    result = await client.embed([query], model=settings.embedding_model, input_type="query")
 
     vec = result.embeddings[0]
     await set_cached_embedding(query, vec)
@@ -302,15 +332,12 @@ async def embed_queries_batch(queries: list[str]) -> list[list[float]]:
     Returns a list of embedding vectors in the same order as `queries`.
     Falls back to per-query calls if the batch request fails.
     """
-    import asyncio
-
     from src.pipeline.embedder import _make_client
 
     if not queries:
         return []
 
     client = _make_client()
-    loop = asyncio.get_running_loop()
 
     try:
         from src.retrieval.embed_cache import get_cached_embedding, set_cached_embedding
@@ -330,13 +357,10 @@ async def embed_queries_batch(queries: list[str]) -> list[list[float]]:
         if not missing_queries:
             return cached_results
 
-        result = await loop.run_in_executor(
-            None,
-            lambda: client.embed(
-                missing_queries,
-                model=settings.embedding_model,
-                input_type="query",
-            ),
+        result = await client.embed(
+            missing_queries,
+            model=settings.embedding_model,
+            input_type="query",
         )
 
         # Merge back and cache
