@@ -34,6 +34,7 @@ class AddMCPServerRequest(BaseModel):
     auth_header: str | None = None
     description: str | None = None
     enabled: bool = True
+    transport: str = "auto"  # "auto" | "streamable_http" | "sse"
 
 
 class UpdateMCPServerRequest(BaseModel):
@@ -41,11 +42,13 @@ class UpdateMCPServerRequest(BaseModel):
     enabled: bool | None = None
     auth_header: str | None = None
     description: str | None = None
+    transport: str | None = None
 
 
 class TestUrlRequest(BaseModel):
     url: str
     auth_header: str | None = None
+    transport: str = "auto"
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
@@ -59,6 +62,7 @@ async def _get_all_servers() -> list[dict]:
     sql = text(
         """
         SELECT id, name, url, enabled, auth_header, description,
+               COALESCE(transport, 'auto') AS transport,
                tool_count, last_seen_at, last_error, created_at
         FROM external_mcp_servers
         ORDER BY created_at ASC
@@ -85,6 +89,7 @@ async def _get_server_by_id(server_id: int) -> dict | None:
     sql = text(
         """
         SELECT id, name, url, enabled, auth_header, description,
+               COALESCE(transport, 'auto') AS transport,
                tool_count, last_seen_at, last_error, created_at
         FROM external_mcp_servers
         WHERE id = :id
@@ -137,9 +142,10 @@ async def add_server(req: AddMCPServerRequest) -> JSONResponse:
 
     sql = text(
         """
-        INSERT INTO external_mcp_servers (name, url, enabled, auth_header, description)
-        VALUES (:name, :url, :enabled, :auth_header, :description)
+        INSERT INTO external_mcp_servers (name, url, enabled, auth_header, description, transport)
+        VALUES (:name, :url, :enabled, :auth_header, :description, :transport)
         RETURNING id, name, url, enabled, auth_header, description,
+                  COALESCE(transport, 'auto') AS transport,
                   tool_count, last_seen_at, last_error, created_at
         """
     )
@@ -149,6 +155,7 @@ async def add_server(req: AddMCPServerRequest) -> JSONResponse:
         "enabled": req.enabled,
         "auth_header": req.auth_header,
         "description": req.description,
+        "transport": req.transport,
     }
 
     try:
@@ -193,6 +200,9 @@ async def update_server(server_id: int, req: UpdateMCPServerRequest) -> JSONResp
     if req.description is not None:
         updates.append("description = :description")
         params["description"] = req.description
+    if req.transport is not None:
+        updates.append("transport = :transport")
+        params["transport"] = req.transport
 
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update.")
@@ -248,7 +258,11 @@ async def test_saved_server(server_id: int) -> JSONResponse:
     if not server:
         raise HTTPException(status_code=404, detail=f"Server {server_id} not found.")
 
-    result = await test_server(server["url"], server.get("auth_header"))
+    result = await test_server(
+        server["url"],
+        server.get("auth_header"),
+        transport=server.get("transport", "auto"),
+    )
     return JSONResponse(result)
 
 
@@ -257,7 +271,7 @@ async def test_url(req: TestUrlRequest) -> JSONResponse:
     """Test an unsaved MCP server by URL (ad-hoc test before saving)."""
     from src.agent.mcp_bridge import test_server
 
-    result = await test_server(req.url, req.auth_header)
+    result = await test_server(req.url, req.auth_header, transport=req.transport)
     return JSONResponse(result)
 
 

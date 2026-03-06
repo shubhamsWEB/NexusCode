@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.
 import httpx
 import streamlit as st
 
-from src.ui.helpers import api_get
+from src.ui.helpers import AGENT_DEFAULT_ICON, AGENT_TOOL_ICONS, api_get, render_agent_timeline_html
 
 # ── Severity colours ──────────────────────────────────────────────────────────
 _SEVERITY_COLOR = {"low": "🟡", "medium": "🟠", "high": "🔴"}
@@ -131,6 +131,9 @@ def render():
 
         api_url = os.getenv("API_URL", "http://localhost:8000")
 
+        # Reset execution timeline for this new plan
+        st.session_state["plan_agent_logs"] = []
+
         if stream_enabled:
             plan_data, elapsed = _request_streaming(api_url, payload)
         else:
@@ -200,18 +203,36 @@ def _request_sync(api_url: str, payload: dict) -> tuple[dict | None, float]:
     return resp.json(), elapsed
 
 
-# ── Streaming request (experimental) ──────────────────────────────────────────
+# ── Streaming request ──────────────────────────────────────────────────────────
 
 
 def _request_streaming(api_url: str, payload: dict) -> tuple[dict | None, float]:
-    """POST /plan with stream=true, render SSE events in real-time."""
-    status_box = st.empty()
-    progress_box = st.empty()
-    stream_render_box = st.empty()
+    """
+    POST /plan with stream=true, render SSE events as a Cursor-style timeline.
 
-    plan_data: dict | None = None
+    Layout during execution:
+      ┌─ 🧠 Generating plan… (expanded) ─────────────────────────────────┐
+      │  ✓ 🔍 search_codebase   "rate limiting patterns"    2,341t        │
+      │  💭 Reviewing best approach…                                      │
+      │  ✓ 🔧 resolve-library-id  "express-rate-limit"        418t        │
+      └───────────────────────────────────────────────────────────────────┘
+      ✍️ Generating… 3,412 chars received   ← plan_chunk progress
+
+    On plan_complete: trace collapses to "✅ 4 tool calls · 12.3s", plan renders below.
+    """
+    plan_steps: list[dict] = []
+    plan_data:  dict | None = None
     t0 = time.monotonic()
     accumulated_text = ""
+
+    web_label = " + web research" if payload.get("web_research") else ""
+
+    # ── Reasoning trace (Cursor-style st.status) ──────────────────────────────
+    with st.status(f"🧠 Generating plan{web_label}…", expanded=True) as trace_status:
+        trace_placeholder = st.empty()
+
+    # Progress counter for partial JSON (plan_chunk) — rendered below trace
+    progress_box = st.empty()
 
     try:
         with (
@@ -219,6 +240,7 @@ def _request_streaming(api_url: str, payload: dict) -> tuple[dict | None, float]
             client.stream("POST", f"{api_url}/plan", json=payload) as resp,
         ):
             if resp.status_code != 200:
+                trace_status.update(label="❌ Request failed", state="error")
                 st.error(f"API error: HTTP {resp.status_code}")
                 st.stop()
 
@@ -232,54 +254,120 @@ def _request_streaming(api_url: str, payload: dict) -> tuple[dict | None, float]
 
                 etype = event.get("type")
 
+                # ── Status label ──────────────────────────────────────────────
                 if etype == "status":
-                    status_box.info(f"⏳ {event['message']}")
-
-                elif etype == "agent_tool_call":
-                    tool = event.get("tool", "")
-                    summary = event.get("input_summary", "")
-                    icon = {"search_codebase": "🔍", "get_symbol": "🎯", "find_callers": "📡", "get_file_context": "📄"}.get(tool, "🔧")
-                    status_box.info(f"{icon} **{tool}**: {summary}")
-
-                elif etype == "agent_tool_result":
-                    tool = event.get("tool", "")
-                    tokens = event.get("tokens", 0)
-                    cum = event.get("cumulative_tokens", 0)
-                    status_box.success(f"✅ **{tool}** → {tokens:,} tokens (total: {cum:,})")
-
-                elif etype == "thinking":
-                    status_box.info("🧠 Thinking deeply…")
-
-                elif etype == "retrieval_complete":
-                    # Legacy event — kept for backward compat
-                    chunks = event.get("chunks", 0)
-                    tokens = event.get("tokens", 0)
-                    web_icon = " 🌐" if event.get("web_research_used") else ""
-                    status_box.success(
-                        f"✅ Retrieved **{chunks}** chunks · **{tokens}** tokens{web_icon}"
+                    trace_status.update(
+                        label=f"🧠 {event['message']}", state="running"
                     )
 
+                # ── Extended thinking ─────────────────────────────────────────
+                elif etype == "thinking":
+                    text = event.get("text", "")
+                    if text:
+                        preview = (text[:120] + "…") if len(text) > 120 else text
+                        step = {"type": "thinking", "summary": preview}
+                        plan_steps.append(step)
+                        st.session_state["plan_agent_logs"].append(step)
+                        trace_placeholder.markdown(
+                            render_agent_timeline_html(plan_steps),
+                            unsafe_allow_html=True,
+                        )
+
+                # ── Tool called ───────────────────────────────────────────────
+                elif etype == "agent_tool_call":
+                    tool    = event.get("tool", "")
+                    summary = event.get("input_summary", "")
+                    step = {"type": "tool_call", "tool": tool,
+                            "summary": summary, "state": "running", "tokens": None}
+                    plan_steps.append(step)
+                    st.session_state["plan_agent_logs"].append(step)
+                    trace_placeholder.markdown(
+                        render_agent_timeline_html(plan_steps),
+                        unsafe_allow_html=True,
+                    )
+                    icon  = AGENT_TOOL_ICONS.get(tool, AGENT_DEFAULT_ICON)
+                    short = summary[:50] + "…" if len(summary) > 50 else summary
+                    trace_status.update(
+                        label=f"{icon} {tool}: {short}" if short else f"{icon} {tool}",
+                        state="running",
+                    )
+
+                # ── Tool returned ─────────────────────────────────────────────
+                elif etype == "agent_tool_result":
+                    tool   = event.get("tool", "")
+                    tokens = event.get("tokens", 0)
+                    for step in plan_steps:
+                        if step.get("tool") == tool and step.get("state") == "running":
+                            step["state"]  = "done"
+                            step["tokens"] = tokens
+                            break
+                    trace_placeholder.markdown(
+                        render_agent_timeline_html(plan_steps),
+                        unsafe_allow_html=True,
+                    )
+                    running = sum(1 for s in plan_steps if s.get("state") == "running")
+                    done_n  = sum(1 for s in plan_steps if s.get("state") == "done")
+                    if running:
+                        trace_status.update(
+                            label=f"🧠 {running} tool{'s' if running > 1 else ''} in progress…",
+                            state="running",
+                        )
+                    else:
+                        trace_status.update(
+                            label=f"🧠 {done_n} tool{'s' if done_n > 1 else ''} done · composing plan…",
+                            state="running",
+                        )
+
+                # ── Legacy retrieval event ────────────────────────────────────
+                elif etype == "retrieval_complete":
+                    chunks   = event.get("chunks", 0)
+                    tokens   = event.get("tokens", 0)
+                    web_icon = "🌐 " if event.get("web_research_used") else ""
+                    trace_status.update(
+                        label=f"✅ {web_icon}Retrieved {chunks} chunks · {tokens:,} tokens",
+                        state="running",
+                    )
+
+                # ── Plan tokens streaming ─────────────────────────────────────
                 elif etype == "plan_chunk":
                     accumulated_text += event.get("text", "")
-                    # Answer/analysis → plain markdown → render live.
-                    # Plan → partial JSON from tool_use → progress counter.
+                    # Plan = partial JSON → show char counter
+                    # Answer/analysis = plain markdown → stream it live
                     if accumulated_text.lstrip().startswith("{"):
                         progress_box.caption(
                             f"✍️ Generating… **{len(accumulated_text):,}** chars received"
                         )
                     else:
-                        stream_render_box.markdown(accumulated_text + " ▌")
+                        progress_box.markdown(accumulated_text + " ▌")
 
+                # ── Plan complete ─────────────────────────────────────────────
                 elif etype == "plan_complete":
                     plan_data = event.get("plan")
-                    status_box.empty()
-                    progress_box.empty()
-                    stream_render_box.empty()
 
-                elif etype == "error":
-                    status_box.empty()
+                    # Finalise all still-running steps
+                    for step in plan_steps:
+                        if step.get("state") == "running":
+                            step["state"] = "done"
+
+                    st.session_state["plan_agent_logs"] = list(plan_steps)
+                    trace_placeholder.markdown(
+                        render_agent_timeline_html(plan_steps),
+                        unsafe_allow_html=True,
+                    )
+
+                    elapsed_so_far = time.monotonic() - t0
+                    n_calls = sum(1 for s in plan_steps if s.get("type") == "tool_call")
+                    trace_status.update(
+                        label=f"✅ {n_calls} tool call{'s' if n_calls != 1 else ''} · {elapsed_so_far:.1f}s",
+                        state="complete",
+                        expanded=False,
+                    )
                     progress_box.empty()
-                    stream_render_box.empty()
+
+                # ── Error ─────────────────────────────────────────────────────
+                elif etype == "error":
+                    progress_box.empty()
+                    trace_status.update(label="❌ Error", state="error", expanded=True)
                     msg = event.get("message", "Unknown error")
                     st.error(f"❌ {msg}")
                     if "rate limit" in str(msg).lower() or event.get("retry_after"):
@@ -302,9 +390,11 @@ def _request_streaming(api_url: str, payload: dict) -> tuple[dict | None, float]
                     st.stop()
 
     except httpx.ConnectError:
+        trace_status.update(label="❌ Connection failed", state="error")
         st.error("Cannot connect to the API server. Is it running on `localhost:8000`?")
         st.stop()
     except Exception as exc:
+        trace_status.update(label="❌ Streaming error", state="error")
         st.error(f"Streaming error: {exc}")
         st.stop()
 

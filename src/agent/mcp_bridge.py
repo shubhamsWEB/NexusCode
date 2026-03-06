@@ -46,7 +46,9 @@ async def _load_enabled_servers() -> list[dict]:
         from src.storage.db import AsyncSessionLocal
 
         sql = text(
-            "SELECT id, name, url, auth_header FROM external_mcp_servers WHERE enabled = TRUE"
+            "SELECT id, name, url, auth_header, "
+            "COALESCE(transport, 'auto') AS transport "
+            "FROM external_mcp_servers WHERE enabled = TRUE"
         )
         async with AsyncSessionLocal() as session:
             rows = (await session.execute(sql)).mappings().all()
@@ -93,56 +95,76 @@ async def _update_server_stats(
         logger.debug("mcp_bridge: could not update server stats: %s", exc)
 
 
-# ── MCP connection helper ─────────────────────────────────────────────────────
+# ── Transport helpers ─────────────────────────────────────────────────────────
+
+_TRANSPORT_SSE = "sse"
+_TRANSPORT_HTTP = "streamable_http"
+_TRANSPORT_AUTO = "auto"
 
 
-async def _connect_and_list_tools(url: str, auth_header: str | None) -> list[dict]:
-    """
-    Open an SSE connection to an MCP server, list its tools, and return
-    them as a list of Anthropic-format tool schema dicts.
-    Raises on connection failure.
-    """
+async def _list_tools_sse(url: str, headers: dict) -> list[dict]:
+    """Connect via legacy SSE transport and return tool schemas."""
     from mcp import ClientSession
     from mcp.client.sse import sse_client
 
-    headers = {}
-    if auth_header:
-        headers["Authorization"] = auth_header
-
     tool_schemas: list[dict] = []
-
     async with sse_client(url, headers=headers) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
             tools_result = await session.list_tools()
             for tool in tools_result.tools:
-                schema: dict = {
+                tool_schemas.append({
                     "name": tool.name,
                     "description": tool.description or "",
                     "input_schema": tool.inputSchema if tool.inputSchema else {"type": "object", "properties": {}},
-                }
-                tool_schemas.append(schema)
-
+                })
     return tool_schemas
 
 
-async def _call_tool_on_server(
-    url: str, auth_header: str | None, tool_name: str, tool_input: dict
-) -> str:
-    """Call a single tool on a remote MCP server and return its result as a string."""
+async def _list_tools_streamable_http(url: str, headers: dict) -> list[dict]:
+    """Connect via Streamable HTTP transport and return tool schemas."""
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamablehttp_client
+
+    tool_schemas: list[dict] = []
+    async with streamablehttp_client(url, headers=headers) as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            tools_result = await session.list_tools()
+            for tool in tools_result.tools:
+                tool_schemas.append({
+                    "name": tool.name,
+                    "description": tool.description or "",
+                    "input_schema": tool.inputSchema if tool.inputSchema else {"type": "object", "properties": {}},
+                })
+    return tool_schemas
+
+
+async def _call_tool_sse(url: str, headers: dict, tool_name: str, tool_input: dict) -> str:
+    """Call a tool via legacy SSE transport."""
     from mcp import ClientSession
     from mcp.client.sse import sse_client
-
-    headers = {}
-    if auth_header:
-        headers["Authorization"] = auth_header
 
     async with sse_client(url, headers=headers) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
             result = await session.call_tool(tool_name, tool_input)
+    return _extract_tool_result(result)
 
-    # MCP returns a list of content blocks
+
+async def _call_tool_streamable_http(url: str, headers: dict, tool_name: str, tool_input: dict) -> str:
+    """Call a tool via Streamable HTTP transport."""
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamablehttp_client
+
+    async with streamablehttp_client(url, headers=headers) as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            result = await session.call_tool(tool_name, tool_input)
+    return _extract_tool_result(result)
+
+
+def _extract_tool_result(result) -> str:
     parts: list[str] = []
     for block in result.content:
         if hasattr(block, "text"):
@@ -152,18 +174,100 @@ async def _call_tool_on_server(
     return "\n".join(parts) if parts else json.dumps({"result": "ok"})
 
 
+# ── MCP connection helper ─────────────────────────────────────────────────────
+
+
+async def _connect_and_list_tools(
+    url: str, auth_header: str | None, transport: str = _TRANSPORT_AUTO
+) -> list[dict]:
+    """
+    Connect to an MCP server and return its tool schemas.
+
+    transport:
+      'streamable_http' — new MCP transport (Context7 and most cloud servers)
+      'sse'             — legacy SSE transport (older self-hosted servers)
+      'auto'            — try streamable_http first, fall back to sse
+    """
+    headers: dict = {}
+    if auth_header:
+        headers["Authorization"] = auth_header
+
+    if transport == _TRANSPORT_HTTP:
+        return await _list_tools_streamable_http(url, headers)
+
+    if transport == _TRANSPORT_SSE:
+        return await _list_tools_sse(url, headers)
+
+    # auto: try Streamable HTTP first, fall back to SSE
+    try:
+        return await _list_tools_streamable_http(url, headers)
+    except Exception as http_exc:
+        logger.debug("mcp_bridge: streamable_http failed for %s (%s), trying SSE", url, http_exc)
+        try:
+            return await _list_tools_sse(url, headers)
+        except Exception as sse_exc:
+            # Re-raise with both error messages for easier debugging
+            raise RuntimeError(
+                f"Both transports failed — streamable_http: {http_exc}; sse: {sse_exc}"
+            ) from sse_exc
+
+
+async def _call_tool_on_server(
+    url: str, auth_header: str | None, tool_name: str, tool_input: dict,
+    transport: str = _TRANSPORT_AUTO,
+) -> str:
+    """Call a single tool on a remote MCP server and return its result as a string."""
+    headers: dict = {}
+    if auth_header:
+        headers["Authorization"] = auth_header
+
+    if transport == _TRANSPORT_HTTP:
+        return await _call_tool_streamable_http(url, headers, tool_name, tool_input)
+
+    if transport == _TRANSPORT_SSE:
+        return await _call_tool_sse(url, headers, tool_name, tool_input)
+
+    # auto: try Streamable HTTP first, fall back to SSE
+    try:
+        return await _call_tool_streamable_http(url, headers, tool_name, tool_input)
+    except Exception as http_exc:
+        logger.debug("mcp_bridge: streamable_http call failed for %s (%s), trying SSE", url, http_exc)
+        try:
+            return await _call_tool_sse(url, headers, tool_name, tool_input)
+        except Exception as sse_exc:
+            raise RuntimeError(
+                f"Both transports failed — streamable_http: {http_exc}; sse: {sse_exc}"
+            ) from sse_exc
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 
-async def test_server(url: str, auth_header: str | None) -> dict:
+async def test_server(url: str, auth_header: str | None, transport: str = _TRANSPORT_AUTO) -> dict:
     """
     Attempt to connect to a server and list its tools.
-    Returns {ok: bool, tools: [name,...], error?: str}.
+    Returns {ok: bool, tools: [name,...], transport_used?: str, error?: str}.
     Does NOT modify the DB or in-memory registry.
     """
+    # For auto mode, report which transport actually succeeded
+    if transport == _TRANSPORT_AUTO:
+        headers: dict = {}
+        if auth_header:
+            headers["Authorization"] = auth_header
+        try:
+            schemas = await _list_tools_streamable_http(url, headers)
+            return {"ok": True, "tools": [s["name"] for s in schemas], "transport_used": "streamable_http"}
+        except Exception:
+            pass
+        try:
+            schemas = await _list_tools_sse(url, headers)
+            return {"ok": True, "tools": [s["name"] for s in schemas], "transport_used": "sse"}
+        except Exception as exc:
+            return {"ok": False, "tools": [], "error": str(exc)}
+
     try:
-        schemas = await _connect_and_list_tools(url, auth_header)
-        return {"ok": True, "tools": [s["name"] for s in schemas]}
+        schemas = await _connect_and_list_tools(url, auth_header, transport)
+        return {"ok": True, "tools": [s["name"] for s in schemas], "transport_used": transport}
     except Exception as exc:
         return {"ok": False, "tools": [], "error": str(exc)}
 
@@ -176,10 +280,11 @@ async def _load_single_server(server: dict) -> int:
     server_id: int = server["id"]
     url: str = server["url"]
     auth_header: str | None = server.get("auth_header")
+    transport: str = server.get("transport") or _TRANSPORT_AUTO
     count = 0
 
     try:
-        schemas = await _connect_and_list_tools(url, auth_header)
+        schemas = await _connect_and_list_tools(url, auth_header, transport)
         for schema in schemas:
             name = schema["name"]
             if name in _LOCAL_TOOL_NAMES:
@@ -193,10 +298,11 @@ async def _load_single_server(server: dict) -> int:
                 "schema": schema,
                 "server_url": url,
                 "auth_header": auth_header,
+                "transport": transport,
             }
             count += 1
         await _update_server_stats(server_id, count, None)
-        logger.info("mcp_bridge: loaded %d tool(s) from %s", count, url)
+        logger.info("mcp_bridge: loaded %d tool(s) from %s (transport=%s)", count, url, transport)
     except Exception as exc:
         err_str = str(exc)
         logger.warning("mcp_bridge: failed to connect to %s: %s", url, err_str)
@@ -259,6 +365,7 @@ async def call_external_tool(name: str, tool_input: dict) -> str:
             entry["auth_header"],
             name,
             tool_input,
+            transport=entry.get("transport", _TRANSPORT_AUTO),
         )
         return result
     except Exception as exc:

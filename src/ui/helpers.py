@@ -88,6 +88,113 @@ def time_ago(ts_str: str | None) -> str:
         return ts_str or "—"
 
 
+# ── Agent execution timeline ──────────────────────────────────────────────────
+
+AGENT_TOOL_ICONS: dict[str, str] = {
+    "search_codebase":            "🔍",
+    "get_symbol":                 "🎯",
+    "find_callers":               "📡",
+    "get_file_context":           "📄",
+    "answer_question":            "💬",
+    "output_implementation_plan": "📋",
+    "analyze_and_improve":        "🔬",
+}
+AGENT_DEFAULT_ICON = "🔧"
+
+
+def render_agent_timeline_html(steps: list[dict]) -> str:
+    """
+    Build a Cursor/Copilot-style execution timeline as styled HTML.
+
+    Each step is a dict with these keys (flexible — both ask and plan formats):
+      type:    "tool_call" | "thinking" | "error"  (or inferred from 'tool' key)
+      tool:    str          tool name ("_thinking" for thinking blocks in ask.py)
+      state:   "running" | "done" | "error"
+      summary: str          human-readable input / preview
+      tokens:  int | None
+    """
+    if not steps:
+        return ""
+
+    rows: list[str] = []
+    for step in steps:
+        stype = step.get("type", "tool_call")
+        tool  = step.get("tool", "")
+
+        # Normalise: ask.py stores thinking as tool="_thinking"
+        is_thinking = stype == "thinking" or tool == "_thinking"
+        is_error    = stype == "error"
+
+        if is_thinking:
+            preview = step.get("summary", step.get("text", ""))
+            if len(preview) > 120:
+                preview = preview[:120] + "…"
+            rows.append(
+                '<div class="tl-row tl-think">'
+                '<span class="tl-ic">💭</span>'
+                f'<span class="tl-lbl"><em>{preview}</em></span>'
+                '</div>'
+            )
+            continue
+
+        if is_error:
+            msg = step.get("message", step.get("summary", ""))[:100]
+            rows.append(
+                '<div class="tl-row">'
+                '<span class="tl-ic">❌</span>'
+                f'<span class="tl-lbl" style="color:#f85149">{msg}</span>'
+                '</div>'
+            )
+            continue
+
+        # Tool call row
+        state   = step.get("state", "done")
+        summary = step.get("summary", "")
+        tokens  = step.get("tokens")
+        icon    = AGENT_TOOL_ICONS.get(tool, AGENT_DEFAULT_ICON)
+
+        state_sym, state_color = {
+            "running": ("⏳", "#d29922"),
+            "done":    ("✓",  "#3fb950"),
+            "error":   ("✗",  "#f85149"),
+        }.get(state, ("✓", "#3fb950"))
+
+        summary_html = (
+            f'<span class="tl-sum">{summary[:65]}</span>' if summary else ""
+        )
+        token_html = (
+            f'<span class="tl-tok">{tokens:,}t</span>' if tokens else ""
+        )
+
+        rows.append(
+            '<div class="tl-row">'
+            f'<span class="tl-st" style="color:{state_color}">{state_sym}</span>'
+            f'<span class="tl-ic">{icon}</span>'
+            f'<span class="tl-tool">{tool}</span>'
+            f'{summary_html}'
+            f'{token_html}'
+            '</div>'
+        )
+
+    css = """<style>
+.tl-wrap{font-family:ui-monospace,'Cascadia Code',Consolas,monospace;
+  background:#0d1117;border-radius:8px;padding:6px 10px;
+  border:1px solid #30363d;max-height:300px;overflow-y:auto}
+.tl-row{display:flex;align-items:center;gap:7px;padding:4px 0;
+  border-bottom:1px solid #21262d;min-width:0}
+.tl-row:last-child{border-bottom:none}
+.tl-think{align-items:flex-start}
+.tl-st{font-size:11px;font-weight:700;flex-shrink:0;width:14px;text-align:center}
+.tl-ic{font-size:13px;flex-shrink:0}
+.tl-tool{font-size:12px;font-weight:600;color:#e6edf3;flex-shrink:0}
+.tl-sum{font-size:11px;color:#8b949e;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;flex:1;min-width:0}
+.tl-tok{font-size:11px;color:#6e7681;margin-left:auto;flex-shrink:0}
+.tl-lbl{font-size:12px;color:#8b949e;flex:1}
+</style>"""
+    return f'{css}<div class="tl-wrap">{"".join(rows)}</div>'
+
+
 def status_badge(status: str) -> str:
     """Return a coloured emoji badge for a repo/job status string."""
     return {

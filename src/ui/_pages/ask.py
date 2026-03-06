@@ -4,6 +4,17 @@ Ask Mode dashboard page.
 Chat interface for asking natural-language questions about the codebase.
 Answers are mentor-style: conversational, grounded in real code, with
 inline citations and follow-up suggestions.
+
+The reasoning trace uses st.status() to show a persistent Cursor/Copilot-style
+timeline of every tool call the agent made — search queries, symbol lookups,
+external MCP calls, etc. — all stacked up and visible before the answer appears.
+
+Session state keys
+------------------
+  ask_messages     — full chat history [{role, content, meta}]
+  ask_agent_logs   — last run's execution timeline (list of step dicts)
+  ask_pending_hint — next hint to inject as a user message
+  ask_session_id   — server-side session UUID for multi-turn memory
 """
 
 from __future__ import annotations
@@ -19,18 +30,22 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.
 import httpx
 import streamlit as st
 
-from src.ui.helpers import api_get
+from src.ui.helpers import AGENT_DEFAULT_ICON, AGENT_TOOL_ICONS, api_get, render_agent_timeline_html
+
 
 # ── Session state helpers ──────────────────────────────────────────────────────
 
 
 def _init_state():
-    if "ask_messages" not in st.session_state:
-        st.session_state.ask_messages = []  # list of {role, content, meta}
-    if "ask_pending_hint" not in st.session_state:
-        st.session_state.ask_pending_hint = None
-    if "ask_session_id" not in st.session_state:
-        st.session_state.ask_session_id = None
+    defaults = {
+        "ask_messages":     [],   # [{role, content, meta}]
+        "ask_agent_logs":   [],   # execution timeline for the latest run
+        "ask_pending_hint": None,
+        "ask_session_id":   None,
+    }
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
 
 
 # ── Main render ────────────────────────────────────────────────────────────────
@@ -59,7 +74,7 @@ def render():
     if repos_data:
         for repo in repos_data:
             owner = repo.get("owner", "")
-            name = repo.get("name", "")
+            name  = repo.get("name", "")
             if owner and name:
                 label = f"{owner}/{name}"
                 repo_options.append(label)
@@ -91,9 +106,10 @@ def render():
     with col_clear:
         st.markdown("&nbsp;", unsafe_allow_html=True)
         if st.button("🗑 Clear chat", use_container_width=True):
-            st.session_state.ask_messages = []
+            st.session_state.ask_messages   = []
+            st.session_state.ask_agent_logs = []
             st.session_state.ask_pending_hint = None
-            st.session_state.ask_session_id = None
+            st.session_state.ask_session_id   = None
             st.rerun()
 
     st.divider()
@@ -104,18 +120,19 @@ def render():
             if msg["role"] == "user":
                 st.markdown(msg["content"])
             else:
-                # Assistant message — render answer + cited files + hints
-                st.markdown(msg["content"])
+                # Assistant: trace accordion → answer → footer
                 _render_assistant_extras(msg.get("meta", {}))
+                st.markdown(msg["content"])
+                _render_assistant_footer(msg.get("meta", {}))
 
-    # ── Pending hint injection (clickable suggestion was tapped) ───────────────
+    # ── Pending hint injection ─────────────────────────────────────────────────
     if st.session_state.ask_pending_hint:
         hint = st.session_state.ask_pending_hint
         st.session_state.ask_pending_hint = None
         _handle_query(hint, repo_label, repo_map, model_label, model_map)
         st.rerun()
 
-    # ── Follow-up suggestion chips (shown below conversation) ─────────────────
+    # ── Follow-up suggestion chips ─────────────────────────────────────────────
     last_msg = st.session_state.ask_messages[-1] if st.session_state.ask_messages else None
     hints = (
         (last_msg or {}).get("meta", {}).get("follow_up_hints", [])
@@ -151,7 +168,9 @@ def _handle_query(
     model_map: dict | None = None,
 ):
     """Send the query to /ask (streaming) and append messages to session state."""
-    # Append user message immediately
+    # Reset execution timeline for this new query
+    st.session_state.ask_agent_logs = []
+
     st.session_state.ask_messages.append({"role": "user", "content": query})
 
     payload: dict = {"query": query, "stream": True}
@@ -165,29 +184,48 @@ def _handle_query(
         owner, name = repo_map.get(repo_label, (None, None))
         if owner and name:
             payload["repo_owner"] = owner
-            payload["repo_name"] = name
+            payload["repo_name"]  = name
 
     api_url = os.getenv("API_URL", "http://localhost:8000")
-
-    answer, meta = _stream_ask(api_url, payload, query)
-
+    answer, meta = _stream_ask(api_url, payload)
     st.session_state.ask_messages.append({"role": "assistant", "content": answer, "meta": meta})
 
 
 # ── Streaming request ──────────────────────────────────────────────────────────
 
 
-def _stream_ask(api_url: str, payload: dict, query: str) -> tuple[str, dict]:
+def _stream_ask(api_url: str, payload: dict) -> tuple[str, dict]:
     """
     POST /ask with stream=true.
+
+    Renders a Cursor/Copilot-style persistent reasoning trace inside
+    st.status().  Every tool call, tool result, and thinking block is
+    appended to st.session_state.ask_agent_logs and rendered as an HTML
+    timeline that updates in-place.
+
+    Layout:
+      ┌─ 🧠 Thinking… (expanded during run) ──────────────────────────────┐
+      │  ✓ 🔍 search_codebase  "JWT token validation"    1,234t            │
+      │  ✓ 🎯 get_symbol       "JWTValidator"              892t            │
+      │  💭 Reviewing the validator…                                       │
+      └───────────────────────────────────────────────────────────────────┘
+      [final answer rendered below, accordion collapses to "✅ 3 calls · 2.4s"]
+
     Returns (final_answer_markdown, metadata_dict).
     """
     with st.chat_message("assistant"):
-        status_box = st.empty()
-        answer_box = st.empty()
-        meta_box = st.empty()
+        tool_steps: list[dict] = []
 
-        accumulated = ""
+        # ── Reasoning trace container ─────────────────────────────────────────
+        # We exit the `with` block immediately so answer_box renders BELOW the
+        # status box, but trace_status + trace_placeholder stay writable.
+        with st.status("🧠 Thinking…", expanded=True) as trace_status:
+            trace_placeholder = st.empty()
+
+        answer_box = st.empty()   # live partial-answer cursor
+        meta_box   = st.empty()   # timing / token footer
+
+        accumulated  = ""
         final_meta: dict = {}
 
         try:
@@ -196,6 +234,7 @@ def _stream_ask(api_url: str, payload: dict, query: str) -> tuple[str, dict]:
                 client.stream("POST", f"{api_url}/ask", json=payload) as resp,
             ):
                 if resp.status_code != 200:
+                    trace_status.update(label="❌ Request failed", state="error")
                     st.error(f"API error: HTTP {resp.status_code}")
                     return "_Request failed._", {}
 
@@ -209,80 +248,148 @@ def _stream_ask(api_url: str, payload: dict, query: str) -> tuple[str, dict]:
 
                     etype = event.get("type")
 
+                    # ── Status label update ───────────────────────────────────
                     if etype == "status":
-                        status_box.caption(f"⏳ {event['message']}")
-
-                    elif etype == "agent_tool_call":
-                        tool = event.get("tool", "")
-                        summary = event.get("input_summary", "")
-                        icon = {"search_codebase": "🔍", "get_symbol": "🎯", "find_callers": "📡", "get_file_context": "📄"}.get(tool, "🔧")
-                        status_box.caption(f"{icon} **{tool}**: {summary}")
-
-                    elif etype == "agent_tool_result":
-                        tool = event.get("tool", "")
-                        tokens = event.get("tokens", 0)
-                        cum = event.get("cumulative_tokens", 0)
-                        status_box.caption(f"✅ **{tool}** → {tokens:,} tokens (total: {cum:,})")
-
-                    elif etype == "retrieval_complete":
-                        # Legacy event — kept for backward compat
-                        chunks = event.get("chunks", 0)
-                        tokens = event.get("tokens", 0)
-                        status_box.caption(
-                            f"✅ Found **{chunks}** relevant chunks · **{tokens}** tokens"
+                        trace_status.update(
+                            label=f"🧠 {event['message']}", state="running"
                         )
 
-                    elif etype == "answer_chunk":
-                        # answer_question tool streams partial JSON via input_json deltas
-                        # Try to extract the "answer" value incrementally
-                        text = event.get("text", "")
-                        accumulated += text
-                        # Try to render whatever answer we have so far
-                        partial_answer = _extract_partial_answer(accumulated)
-                        if partial_answer:
-                            answer_box.markdown(partial_answer + " ▌")
+                    # ── Tool called ───────────────────────────────────────────
+                    elif etype == "agent_tool_call":
+                        tool    = event.get("tool", "")
+                        summary = event.get("input_summary", "")
+                        step = {"type": "tool_call", "tool": tool,
+                                "summary": summary, "state": "running", "tokens": None}
+                        tool_steps.append(step)
+                        st.session_state.ask_agent_logs.append(step)
+                        trace_placeholder.markdown(
+                            render_agent_timeline_html(tool_steps),
+                            unsafe_allow_html=True,
+                        )
+                        icon  = AGENT_TOOL_ICONS.get(tool, AGENT_DEFAULT_ICON)
+                        short = summary[:50] + "…" if len(summary) > 50 else summary
+                        trace_status.update(
+                            label=f"{icon} {tool}: {short}" if short else f"{icon} {tool}",
+                            state="running",
+                        )
 
+                    # ── Tool returned ─────────────────────────────────────────
+                    elif etype == "agent_tool_result":
+                        tool   = event.get("tool", "")
+                        tokens = event.get("tokens", 0)
+                        for step in tool_steps:
+                            if step.get("tool") == tool and step.get("state") == "running":
+                                step["state"]  = "done"
+                                step["tokens"] = tokens
+                                break
+                        trace_placeholder.markdown(
+                            render_agent_timeline_html(tool_steps),
+                            unsafe_allow_html=True,
+                        )
+                        running = sum(1 for s in tool_steps if s.get("state") == "running")
+                        done_n  = sum(1 for s in tool_steps if s.get("state") == "done")
+                        if running:
+                            trace_status.update(
+                                label=f"🧠 {running} tool{'s' if running > 1 else ''} in progress…",
+                                state="running",
+                            )
+                        else:
+                            trace_status.update(
+                                label=f"🧠 {done_n} tool{'s' if done_n > 1 else ''} done · composing answer…",
+                                state="running",
+                            )
+
+                    # ── Extended thinking ─────────────────────────────────────
+                    elif etype == "thinking":
+                        text = event.get("text", "")
+                        if text:
+                            preview = text[:120] + ("…" if len(text) > 120 else "")
+                            step = {"type": "thinking", "tool": "_thinking",
+                                    "summary": preview, "state": "done", "tokens": None}
+                            tool_steps.append(step)
+                            st.session_state.ask_agent_logs.append(step)
+                            trace_placeholder.markdown(
+                                render_agent_timeline_html(tool_steps),
+                                unsafe_allow_html=True,
+                            )
+
+                    # ── Answer streaming (partial JSON) ───────────────────────
+                    elif etype == "answer_chunk":
+                        accumulated += event.get("text", "")
+                        partial = _extract_partial_answer(accumulated)
+                        if partial:
+                            answer_box.markdown(partial + " ▌")
+
+                    # ── Answer complete ───────────────────────────────────────
                     elif etype == "answer_complete":
-                        status_box.empty()
-                        answer_text = event.get("answer", accumulated)
-                        cited = event.get("cited_files", [])
-                        hints = event.get("follow_up_hints", [])
                         elapsed = round(event.get("elapsed_ms", 0) / 1000, 1)
-                        meta = event.get("metadata", {})
-                        sid = event.get("session_id")
+                        cited   = event.get("cited_files", [])
+                        hints   = event.get("follow_up_hints", [])
+                        meta    = event.get("metadata", {})
+                        sid     = event.get("session_id")
                         if sid:
                             st.session_state.ask_session_id = sid
 
-                        # Clear streaming box, render final answer
+                        # Finalize any still-running steps
+                        for step in tool_steps:
+                            if step.get("state") == "running":
+                                step["state"] = "done"
+
+                        # Persist final timeline to session state
+                        st.session_state.ask_agent_logs = list(tool_steps)
+
+                        trace_placeholder.markdown(
+                            render_agent_timeline_html(tool_steps),
+                            unsafe_allow_html=True,
+                        )
+
+                        # Collapse the trace with a clean summary
+                        n_calls = sum(
+                            1 for s in tool_steps
+                            if s.get("type") == "tool_call" or (
+                                s.get("tool", "").strip("_") and s.get("tool") != "_thinking"
+                            )
+                        )
+                        label_parts = [f"✅ {n_calls} tool call{'s' if n_calls != 1 else ''}"]
+                        if elapsed:
+                            label_parts.append(f"{elapsed}s")
+                        trace_status.update(
+                            label=" · ".join(label_parts),
+                            state="complete",
+                            expanded=False,
+                        )
+
+                        # Final answer rendered prominently below collapsed trace
+                        answer_text = event.get("answer", accumulated)
                         answer_box.empty()
                         st.markdown(answer_text)
 
-                        # Cited files
                         if cited:
                             st.divider()
-                            st.caption("📁 **Citations:** " + "  ·  ".join(f"`{f}`" for f in cited))
+                            st.caption(
+                                "📁 **Citations:** " + "  ·  ".join(f"`{f}`" for f in cited)
+                            )
 
-                        # Retrieval debug (collapsed)
                         if meta.get("retrieval_log"):
                             with st.expander("Retrieval log (debug)", expanded=False):
                                 st.code(meta["retrieval_log"], language="text")
 
-                        # Timing
                         meta_box.caption(
                             f"⏱ {elapsed}s · {meta.get('context_tokens', 0):,} tokens · "
-                            f"{meta.get('context_files', 0)} chunks"
+                            f"{meta.get('context_files', 0)} tool calls"
                         )
 
                         final_meta = {
-                            "cited_files": cited,
+                            "cited_files":    cited,
                             "follow_up_hints": hints,
-                            "elapsed_ms": elapsed,
+                            "elapsed_ms":     elapsed,
+                            "tool_trace":     tool_steps,
                             **meta,
                         }
                         return answer_text, final_meta
 
                     elif etype == "error":
-                        status_box.empty()
+                        trace_status.update(label="❌ Error", state="error", expanded=True)
                         answer_box.empty()
                         msg = event.get("message", "Unknown error")
                         st.error(f"❌ {msg}")
@@ -312,16 +419,13 @@ def _extract_partial_answer(raw: str) -> str:
     The tool streams partial JSON like: {"answer": "Walking you through...
     We parse what we have and return whatever text is available.
     """
-    # Look for the answer field value in partial JSON
     key = '"answer": "'
     idx = raw.find(key)
     if idx == -1:
         return ""
-    start = idx + len(key)
-    # Return everything after the key opening quote, unescape common sequences
+    start  = idx + len(key)
     partial = raw[start:]
-    # Stop at first unescaped quote if complete, otherwise return as-is
-    result = []
+    result: list[str] = []
     i = 0
     while i < len(partial):
         c = partial[i]
@@ -340,18 +444,41 @@ def _extract_partial_answer(raw: str) -> str:
                 result.append(nc)
             i += 2
         elif c == '"':
-            break  # end of answer string
+            break
         else:
             result.append(c)
             i += 1
     return "".join(result)
 
 
-# ── Assistant extras (shown in history replay) ─────────────────────────────────
+# ── Assistant message history rendering ────────────────────────────────────────
 
 
-def _render_assistant_extras(meta: dict):
-    """Render cited files and retrieval log from stored meta."""
+def _render_assistant_extras(meta: dict) -> None:
+    """
+    Rendered ABOVE the answer text (history replay).
+
+    Shows a collapsed execution timeline accordion so users can expand it to
+    see every tool call made — mirrors how Cursor shows "X tool calls" in history.
+    """
+    tool_trace = meta.get("tool_trace", [])
+    if not tool_trace:
+        return
+
+    n_calls  = sum(1 for s in tool_trace if not s.get("tool", "").startswith("_"))
+    elapsed  = meta.get("elapsed_ms", 0)
+    elapsed_str = f" · {elapsed}s" if elapsed else ""
+    label = f"🧠 {n_calls} tool call{'s' if n_calls != 1 else ''}{elapsed_str}"
+
+    with st.expander(label, expanded=False):
+        st.markdown(render_agent_timeline_html(tool_trace), unsafe_allow_html=True)
+
+
+def _render_assistant_footer(meta: dict) -> None:
+    """
+    Rendered BELOW the answer text (history replay).
+    Shows citations, retrieval debug log, and timing.
+    """
     cited = meta.get("cited_files", [])
     if cited:
         st.divider()
@@ -362,7 +489,7 @@ def _render_assistant_extras(meta: dict):
             st.code(meta["retrieval_log"], language="text")
 
     elapsed = meta.get("elapsed_ms", 0)
-    tokens = meta.get("context_tokens", 0)
-    chunks = meta.get("context_files", 0)
+    tokens  = meta.get("context_tokens", 0)
+    chunks  = meta.get("context_files", 0)
     if elapsed or tokens:
-        st.caption(f"⏱ {elapsed}s · {tokens:,} tokens · {chunks} chunks")
+        st.caption(f"⏱ {elapsed}s · {tokens:,} tokens · {chunks} tool calls")
