@@ -179,8 +179,18 @@ class TestMerkleSkip:
                 return_value=("content", BLOB_SHA),
             ),
             patch(
+                "src.github.fetcher.fetch_blob_shas_bulk",
+                new_callable=AsyncMock,
+                return_value={"src/auth.py": BLOB_SHA},
+            ),
+            patch(
+                "src.storage.db.batch_get_merkle_hashes",
+                new_callable=AsyncMock,
+                return_value={"src/auth.py": BLOB_SHA},
+            ),  # same → pre-filter skips
+            patch(
                 "src.storage.db.get_merkle_hash", new_callable=AsyncMock, return_value=BLOB_SHA
-            ),  # same → skip
+            ),  # same → skip (fallback)
             patch("src.pipeline.parser.parse_file") as mock_parse,
         ):
             from src.pipeline.pipeline import _handle_upserts
@@ -243,8 +253,18 @@ class TestMerkleSkip:
                 return_value=(PYTHON_CONTENT, NEW_BLOB),
             ),
             patch(
+                "src.github.fetcher.fetch_blob_shas_bulk",
+                new_callable=AsyncMock,
+                return_value={"src/hello.py": NEW_BLOB},
+            ),
+            patch(
+                "src.storage.db.batch_get_merkle_hashes",
+                new_callable=AsyncMock,
+                return_value={"src/hello.py": OLD_BLOB},
+            ),  # different → passes pre-filter
+            patch(
                 "src.storage.db.get_merkle_hash", new_callable=AsyncMock, return_value=OLD_BLOB
-            ),  # different → re-index
+            ),  # different → re-index (fallback)
             patch("src.pipeline.parser.parse_file", return_value=mock_parsed),
             patch("src.pipeline.chunker.chunk_file", return_value=[mock_chunk]),
             patch("src.pipeline.enricher.enrich_chunks", return_value=[mock_enriched]),

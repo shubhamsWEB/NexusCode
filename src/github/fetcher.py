@@ -188,6 +188,17 @@ async def fetch_full_tree(
     ]
 
 
+async def fetch_blob_shas_bulk(
+    owner: str, repo: str, ref: str, paths: list[str]
+) -> dict[str, str]:
+    """
+    Return {path → blob_sha} for the given paths using a single fetch_full_tree call.
+    """
+    tree = await fetch_full_tree(owner, repo, ref)
+    wanted = set(paths)
+    return {item["path"]: item["sha"] for item in tree if item["path"] in wanted}
+
+
 def filter_indexable_paths(
     paths: list[str],
     supported_extensions: set[str] | None = None,

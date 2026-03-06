@@ -129,6 +129,34 @@ class Settings(BaseSettings):
         description="HNSW ef_search parameter — higher = better recall, slower query (range: 10-200)",
     )
 
+    # ── Query relevance gate ──────────────────────────────────────────────────
+    query_relevance_threshold: float = Field(
+        0.35,
+        description=(
+            "Min cosine similarity for a query to be considered relevant to the indexed codebase. "
+            "Queries scoring below this are rejected before the agent loop runs. "
+            "Range: 0.0-1.0. Lower = more permissive, higher = stricter."
+        ),
+    )
+    query_relevance_soft_threshold: float = Field(
+        0.50,
+        description=(
+            "Cosine similarity above which the query is considered clearly relevant "
+            "and skips the ambiguous zone. Range: must be > query_relevance_threshold."
+        ),
+    )
+    query_relevance_enabled: bool = Field(
+        True,
+        description="Set false to disable the relevance gate entirely (e.g. for testing).",
+    )
+
+    github_api_concurrency: int = Field(
+        10, description="Max concurrent GitHub API file fetch calls during indexing"
+    )
+    search_result_cache_ttl: int = Field(
+        300, description="TTL in seconds for full search result cache in Redis"
+    )
+
     # ── Custom Skills ─────────────────────────────────────────────────────────
     custom_skills_dirs: str = Field(
         "", description="Comma-separated paths to custom skill directories"

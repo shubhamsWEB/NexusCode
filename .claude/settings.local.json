@@ -97,7 +97,8 @@
       "Bash(pip3 list:*)",
       "Bash(python3.11:*)",
       "Bash(ls:*)",
-      "Bash(PYTHONPATH=/Users/shubhamagr/Documents/nexusCode_server /Users/shubhamagr/Documents/nexusCode_server/.venv/bin/python3:*)"
+      "Bash(PYTHONPATH=/Users/shubhamagr/Documents/nexusCode_server /Users/shubhamagr/Documents/nexusCode_server/.venv/bin/python3:*)",
+      "WebFetch(domain:pypi.org)"
     ]
   }
 }

@@ -118,13 +118,24 @@ class ImplementationPlan(BaseModel):
 
     plan_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     query: str
-    response_type: Literal["plan", "answer", "analysis"] = Field(
+    response_type: Literal["plan", "answer", "analysis", "out_of_scope"] = Field(
         "plan",
         description=(
             "'plan' for implementation tasks (files/steps/risks), "
             "'answer' for questions/explanations, "
-            "'analysis' for improvement/review/audit queries (deep analysis + grounded suggestions)"
+            "'analysis' for improvement/review/audit queries (deep analysis + grounded suggestions), "
+            "'out_of_scope' when the query is unrelated to the indexed codebase"
         ),
+    )
+
+    # ── Out-of-scope fields (response_type == "out_of_scope") ─────────────────
+    out_of_scope_reason: str = Field(
+        "",
+        description="Human-readable explanation of why the query was considered out of scope",
+    )
+    relevance_score: float = Field(
+        0.0,
+        description="Best cosine similarity score from the relevance gate check (0.0-1.0)",
     )
 
     # ── Answer fields (response_type == "answer") ──────────────────────────────
@@ -211,6 +222,10 @@ class PlanRequest(BaseModel):
         None,
         description="LLM model to use (e.g. 'gpt-4o', 'claude-opus-4-6'). Defaults to server config.",
     )
+    search_quality: str = Field(
+        "thorough",
+        description="HNSW search quality preset: 'fast', 'balanced', or 'thorough'.",
+    )
 
 
 class AskRequest(BaseModel):
@@ -230,6 +245,10 @@ class AskRequest(BaseModel):
     model: str | None = Field(
         None,
         description="LLM model to use (e.g. 'gpt-4o', 'claude-opus-4-6'). Defaults to server config.",
+    )
+    search_quality: str = Field(
+        "balanced",
+        description="HNSW search quality preset: 'fast', 'balanced', or 'thorough'.",
     )
 
 

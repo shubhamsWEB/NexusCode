@@ -363,6 +363,23 @@ async def get_merkle_hash(file_path: str, repo_owner: str, repo_name: str) -> st
         return row
 
 
+async def batch_get_merkle_hashes(
+    file_paths: list[str], repo_owner: str, repo_name: str
+) -> dict[str, str]:
+    """Return {file_path → blob_sha} for all paths that have a stored merkle hash."""
+    if not file_paths:
+        return {}
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(MerkleNode.file_path, MerkleNode.blob_sha).where(
+                MerkleNode.file_path.in_(file_paths),
+                MerkleNode.repo_owner == repo_owner,
+                MerkleNode.repo_name == repo_name,
+            )
+        )
+        return {row[0]: row[1] for row in result}
+
+
 async def upsert_merkle_node(
     file_path: str, repo_owner: str, repo_name: str, blob_sha: str
 ) -> None:

@@ -302,6 +302,33 @@ async def generate_plan(
     from src.agent.mcp_bridge import get_external_tool_schemas
     from src.agent.tool_schemas import RETRIEVAL_TOOL_SCHEMAS
 
+    # ── Relevance gate: reject off-topic queries before spending any tokens ────
+    if settings.query_relevance_enabled:
+        from src.retrieval.relevance import build_out_of_scope_message, check_query_relevance
+
+        relevance = await check_query_relevance(query, repo_owner, repo_name)
+        if not relevance.is_relevant:
+            msg = build_out_of_scope_message(query, relevance)
+            logger.info(
+                "planning: relevance gate rejected query (score=%.3f, reason=%s)",
+                relevance.best_score,
+                relevance.reason,
+            )
+            plan = ImplementationPlan(
+                query=query,
+                response_type="out_of_scope",
+                out_of_scope_reason=msg,
+                relevance_score=relevance.best_score,
+            )
+            plan.metadata = PlanMetadata(
+                model=model or settings.default_model,
+                context_tokens=0,
+                context_files=0,
+                retrieval_log=f"Relevance gate: score={relevance.best_score:.3f} < threshold={settings.query_relevance_threshold}",
+                elapsed_ms=0.0,
+            )
+            return plan
+
     effective_model = model or settings.default_model
     all_retrieval = RETRIEVAL_TOOL_SCHEMAS + get_external_tool_schemas()
 
@@ -383,6 +410,34 @@ async def stream_generate_plan(
     from src.agent.loop import AgentLoop, AgentLoopConfig
     from src.agent.mcp_bridge import get_external_tool_schemas
     from src.agent.tool_schemas import RETRIEVAL_TOOL_SCHEMAS
+
+    # ── Relevance gate ─────────────────────────────────────────────────────────
+    if settings.query_relevance_enabled:
+        from src.retrieval.relevance import build_out_of_scope_message, check_query_relevance
+
+        relevance = await check_query_relevance(query, repo_owner, repo_name)
+        if not relevance.is_relevant:
+            msg = build_out_of_scope_message(query, relevance)
+            logger.info(
+                "planning: relevance gate rejected query (score=%.3f, reason=%s)",
+                relevance.best_score,
+                relevance.reason,
+            )
+            plan = ImplementationPlan(
+                query=query,
+                response_type="out_of_scope",
+                out_of_scope_reason=msg,
+                relevance_score=relevance.best_score,
+            )
+            plan.metadata = PlanMetadata(
+                model=model or settings.default_model,
+                context_tokens=0,
+                context_files=0,
+                retrieval_log=f"Relevance gate: score={relevance.best_score:.3f} < threshold={settings.query_relevance_threshold}",
+                elapsed_ms=0.0,
+            )
+            yield {"type": "plan_complete", "plan": plan}
+            return
 
     effective_model = model or settings.default_model
     all_retrieval = RETRIEVAL_TOOL_SCHEMAS + get_external_tool_schemas()

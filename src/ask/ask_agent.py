@@ -212,6 +212,29 @@ async def generate_answer(
     from src.agent.mcp_bridge import get_external_tool_schemas
     from src.agent.tool_schemas import ASK_RETRIEVAL_TOOL_SCHEMAS
 
+    # ── Relevance gate ─────────────────────────────────────────────────────────
+    if settings.query_relevance_enabled:
+        from src.retrieval.relevance import build_out_of_scope_message, check_query_relevance
+
+        relevance = await check_query_relevance(query, repo_owner, repo_name)
+        if not relevance.is_relevant:
+            msg = build_out_of_scope_message(query, relevance)
+            logger.info(
+                "ask: relevance gate rejected query (score=%.3f, reason=%s)",
+                relevance.best_score,
+                relevance.reason,
+            )
+            return AskResult(
+                answer=msg,
+                cited_files=[],
+                follow_up_hints=[
+                    "Try asking about a specific function or file in the codebase",
+                    "Search for a symbol name or module you want to understand",
+                ],
+                elapsed_ms=0.0,
+                quality_score=relevance.best_score,
+            )
+
     effective_model = model or settings.default_model
     all_retrieval = ASK_RETRIEVAL_TOOL_SCHEMAS + get_external_tool_schemas()
 
@@ -265,6 +288,31 @@ async def stream_generate_answer(
     from src.agent.loop import AgentLoop, AgentLoopConfig
     from src.agent.mcp_bridge import get_external_tool_schemas
     from src.agent.tool_schemas import ASK_RETRIEVAL_TOOL_SCHEMAS
+
+    # ── Relevance gate ─────────────────────────────────────────────────────────
+    if settings.query_relevance_enabled:
+        from src.retrieval.relevance import build_out_of_scope_message, check_query_relevance
+
+        relevance = await check_query_relevance(query, repo_owner, repo_name)
+        if not relevance.is_relevant:
+            msg = build_out_of_scope_message(query, relevance)
+            logger.info(
+                "ask: relevance gate rejected query (score=%.3f, reason=%s)",
+                relevance.best_score,
+                relevance.reason,
+            )
+            result = AskResult(
+                answer=msg,
+                cited_files=[],
+                follow_up_hints=[
+                    "Try asking about a specific function or file in the codebase",
+                    "Search for a symbol name or module you want to understand",
+                ],
+                elapsed_ms=0.0,
+                quality_score=relevance.best_score,
+            )
+            yield {"type": "answer_complete", "result": result}
+            return
 
     effective_model = model or settings.default_model
     all_retrieval = ASK_RETRIEVAL_TOOL_SCHEMAS + get_external_tool_schemas()

@@ -25,6 +25,7 @@ from typing import Any
 
 import structlog
 
+from src.config import settings
 from src.utils.sanitize import sanitize_log
 
 logger = structlog.get_logger(__name__)
@@ -116,6 +117,14 @@ async def _async_incremental_index(payload: dict[str, Any]) -> dict[str, Any]:
     )
     await update_repo_status(owner, repo, repo_final_status)
 
+    # Invalidate stale search result cache for this repo
+    try:
+        from src.retrieval.embed_cache import invalidate_search_cache
+
+        await invalidate_search_cache(owner, repo)
+    except Exception:
+        pass
+
     # Update webhook event status to "done" (or "error" if all files errored)
     if delivery_id and delivery_id != "manual":
         from src.storage.db import update_webhook_status
@@ -185,9 +194,28 @@ async def _handle_upserts(
     )
 
     BATCH_SIZE = 50  # Process files in batches for rate-limit resilience + progress
-    _sem = asyncio.Semaphore(5)  # max 5 concurrent GitHub API calls
+    _sem = asyncio.Semaphore(settings.github_api_concurrency)
 
-    async def _process_file(path: str) -> dict | None:
+    # ── Pre-filter: bulk blob-SHA check avoids content fetches for unchanged files ──
+    from src.github.fetcher import fetch_blob_shas_bulk
+    from src.storage.db import batch_get_merkle_hashes
+
+    tree_shas = await fetch_blob_shas_bulk(owner, repo, commit_sha, paths)
+    stored_shas = await batch_get_merkle_hashes(paths, owner, repo)
+
+    pre_filtered: list[str] = []
+    for p in paths:
+        tree_sha = tree_shas.get(p)
+        if tree_sha and stored_shas.get(p) == tree_sha:
+            stats["files_skipped_merkle"] += 1
+            log.debug("pipeline.merkle_pre_skip", path=p)
+        else:
+            pre_filtered.append(p)
+
+    paths = pre_filtered
+    total_files = len(paths)
+
+    async def _process_file(path: str, known_blob_sha: str | None = None) -> dict | None:
         async with _sem:
             try:
                 result = await fetch_file(owner, repo, path, ref=commit_sha)
@@ -197,10 +225,14 @@ async def _handle_upserts(
 
                 content, blob_sha = result
 
-                stored_sha = await get_merkle_hash(path, owner, repo)
-                if stored_sha == blob_sha:
-                    log.debug("pipeline.merkle_hit", path=path)
-                    return {"type": "merkle_skip"}
+                if known_blob_sha is not None:
+                    # Pre-filter confirmed this file changed — skip per-file DB query
+                    pass
+                else:
+                    stored_sha = await get_merkle_hash(path, owner, repo)
+                    if stored_sha == blob_sha:
+                        log.debug("pipeline.merkle_hit", path=path)
+                        return {"type": "merkle_skip"}
 
                 parsed = parse_file(path, content)
                 if parsed is None:
@@ -232,7 +264,6 @@ async def _handle_upserts(
                 log.error("pipeline.parse_error", path=path, error=str(exc))
                 return {"type": "error"}
 
-    total_files = len(paths)
     total_batches = (total_files + BATCH_SIZE - 1) // BATCH_SIZE
     files_done = 0
 
@@ -247,7 +278,7 @@ async def _handle_upserts(
         )
 
         # ── Fetch + parse + chunk + enrich this batch ────────────────────
-        results = await asyncio.gather(*[_process_file(p) for p in batch_paths])
+        results = await asyncio.gather(*[_process_file(p, tree_shas.get(p)) for p in batch_paths])
 
         batch_enriched = []
         batch_meta = []
