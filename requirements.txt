@@ -47,6 +47,7 @@ cryptography>=43.0.1
 
 # Admin UI
 streamlit>=1.38.0
+markdown>=3.6             # rich markdown rendering in workflow run history UI
 plotly>=5.0.0
 pyvis>=0.3.2
 

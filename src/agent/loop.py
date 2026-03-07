@@ -318,7 +318,7 @@ class AgentLoop:
             # ── Process tool calls in the response ────────────────────────────
             tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
 
-            # No tool calls at all → text fallback
+            # No tool calls at all
             if not tool_use_blocks:
                 text = " ".join(
                     b.text for b in response.content if hasattr(b, "text") and b.text
@@ -328,6 +328,19 @@ class AgentLoop:
                     iteration,
                     response.stop_reason,
                 )
+                # If search is required and we haven't searched yet, nudge Claude
+                # to use its retrieval tools instead of answering from training data.
+                if config.require_search_before_answer and search_tools_called == 0 and not force_final:
+                    messages.append({"role": "assistant", "content": [{"type": "text", "text": text or "(no response)"}]})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "You must use the search tools to look up relevant code in the codebase "
+                            "before providing your answer. Please call search_codebase or get_symbol now."
+                        ),
+                    })
+                    logger.warning("agent_loop: nudging Claude to search (iter=%d)", iteration)
+                    continue
                 stats = _make_stats(iteration, total_tool_calls, total_context_tokens, t0, search_tools_called)
                 return {"name": "_text_fallback", "input": {"answer": text, "cited_files": [], "follow_up_hints": []}}, stats
 
@@ -579,6 +592,24 @@ class AgentLoop:
                     for b in final_message.content
                     if hasattr(b, "text") and b.text
                 )
+                logger.warning(
+                    "agent_loop stream: no tool calls at iter=%d stop_reason=%s",
+                    iteration,
+                    getattr(final_message, "stop_reason", "?"),
+                )
+                # If search is required and we haven't searched yet, nudge Claude
+                # to use its retrieval tools before bailing out.
+                if config.require_search_before_answer and search_tools_called == 0 and not force_final:
+                    messages.append({"role": "assistant", "content": [{"type": "text", "text": text or "(no response)"}]})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "You must use the search tools to look up relevant code in the codebase "
+                            "before providing your answer. Please call search_codebase or get_symbol now."
+                        ),
+                    })
+                    logger.warning("agent_loop stream: nudging Claude to search (iter=%d)", iteration)
+                    continue
                 stats = _make_stats(iteration, total_tool_calls, total_context_tokens, t0, search_tools_called)
                 yield {
                     "type": "done",

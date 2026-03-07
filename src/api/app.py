@@ -18,6 +18,7 @@ from src.api.mcp_servers import router as mcp_servers_router
 from src.api.plan import router as plan_router
 from src.api.repos import router as repos_router
 from src.api.skills import router as skills_router
+from src.api.workflows import router as workflows_router
 from src.github.webhook import router as webhook_router
 from src.mcp.auth import router as auth_router
 from src.mcp.server import mcp_server
@@ -52,6 +53,11 @@ async def _warmup_models():
 
     await init_bridge()
 
+    # Initialise event bus connection (non-fatal if Redis unavailable)
+    from src.events.bus import EventBus
+
+    await EventBus._get_redis()
+
 
 app.include_router(webhook_router)
 app.include_router(auth_router)
@@ -62,6 +68,7 @@ app.include_router(history_router)
 app.include_router(skills_router)
 app.include_router(mcp_servers_router)
 app.include_router(graph_router)
+app.include_router(workflows_router)
 
 
 # Mount MCP server — exposes /mcp/sse and /mcp/messages/

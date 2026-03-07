@@ -162,6 +162,20 @@ class Settings(BaseSettings):
         "", description="Comma-separated paths to custom skill directories"
     )
 
+    # ── Workflow Automation Engine ────────────────────────────────────────────
+    workflow_max_step_retries: int = Field(
+        2, description="Default max retries per workflow step"
+    )
+    workflow_step_timeout_seconds: int = Field(
+        300, description="Max seconds a single agent step may run"
+    )
+    workflow_human_checkpoint_timeout_hours: int = Field(
+        24, description="Default hours before a human checkpoint times out"
+    )
+    workflow_max_parallel_steps: int = Field(
+        4, description="Max steps that can run in parallel within a single wave"
+    )
+
     # ── Derived helpers ──────────────────────────────────────────────────────
     @property
     def custom_skills_dirs_list(self) -> list[str]:

@@ -60,6 +60,7 @@ PAGES = [
     "💬 Ask Mode",
     "📜 History",
     "🔌 MCP Servers",
+    "⚡ Workflows",
     "📚 Documentation",
 ]
 
@@ -519,6 +520,11 @@ elif page == "📜 History":
 
 elif page == "🔌 MCP Servers":
     from src.ui._pages.mcp_servers import render
+
+    render()
+
+elif page == "⚡ Workflows":
+    from src.ui._pages.workflows import render
 
     render()
 
