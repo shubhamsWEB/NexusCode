@@ -4,7 +4,7 @@ uvicorn[standard]==0.39.0
 
 # Database
 asyncpg==0.31.0
-sqlalchemy[asyncio]==2.0.41
+sqlalchemy[asyncio]==2.0.47
 greenlet==3.2.5             # required by SQLAlchemy async on Python 3.13
 psycopg2-binary==2.9.11
 pgvector==0.3.2
