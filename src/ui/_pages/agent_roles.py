@@ -14,7 +14,8 @@ from __future__ import annotations
 import requests
 import streamlit as st
 
-_BASE = "http://localhost:8000"
+def _base() -> str:
+    return st.session_state.get("api_url", "http://localhost:8000")
 
 _ROLE_ICONS = {
     "searcher":   "🔍",
@@ -31,7 +32,7 @@ _ROLE_ICONS = {
 
 def _api(method: str, path: str, **kwargs):
     try:
-        resp = getattr(requests, method)(f"{_BASE}{path}", timeout=15, **kwargs)
+        resp = getattr(requests, method)(f"{_base()}{path}", timeout=15, **kwargs)
         if resp.ok:
             return True, resp.json()
         return False, resp.json().get("detail", resp.text)
