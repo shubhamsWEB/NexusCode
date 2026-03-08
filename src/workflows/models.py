@@ -43,7 +43,7 @@ class TriggerConfig(BaseModel):
 class StepDef(BaseModel):
     id: str
     type: StepType = StepType.agent
-    role: AgentRole | None = None
+    role: str | None = None
     task: str | None = None
     action: str | None = None
     depends_on: list[str] = Field(default_factory=list)

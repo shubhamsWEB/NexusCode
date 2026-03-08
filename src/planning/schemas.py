@@ -441,12 +441,13 @@ PLAN_TOOL_SCHEMA: dict = {
 ANSWER_TOOL_SCHEMA: dict = {
     "name": "answer_codebase_question",
     "description": (
-        "Use this when the query is a question, explanation request, or analysis task "
-        "that does NOT require making code changes. Examples: 'what does X do?', "
-        "'how does Y work?', 'why is Z failing?', 'where is the rate limiter?', "
-        "'explain the data flow', 'what patterns does this use?'. "
-        "For tasks that require editing/creating/deleting files, use "
-        "output_implementation_plan instead."
+        "Use this to deliver your final answer, analysis, or completed document. "
+        "Call this when you have finished all research, analysis, or content generation "
+        "and are ready to return your complete response. "
+        "Examples: answering questions ('what does X do?', 'how does Y work?'), "
+        "delivering analysis ('why is Z failing?', 'explain the data flow'), "
+        "submitting completed documents (RCA reports, technical summaries, fix plans). "
+        "ALWAYS call this as the last step to return your output to the user."
     ),
     "input_schema": {
         "type": "object",

@@ -9,6 +9,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.utils.logging import get_secure_logger
+
+logger = get_secure_logger(__name__)
+
 _ROLES: dict[str, dict[str, Any]] = {
     "searcher": {
         "system_prompt": (
@@ -111,7 +115,7 @@ _ROLES: dict[str, dict[str, Any]] = {
             "Output format: A clear, integrated synthesis of all agent findings, "
             "with actionable conclusions and next steps."
         ),
-        "default_tools": ["search_codebase", "get_symbol", "ask_codebase"],
+        "default_tools": ["search_codebase", "get_symbol", "ask_codebase", "generate_pdf"],
         "require_search": False,
     },
 }
@@ -130,3 +134,46 @@ def get_role_config(role) -> dict[str, Any]:
 def list_roles() -> list[str]:
     """Return all available role names."""
     return list(_ROLES.keys())
+
+
+async def get_role_config_async(role) -> dict[str, Any]:
+    """
+    Load role config, checking the DB override table first, then falling back
+    to the hardcoded _ROLES dict.  Used by the workflow executor at run time.
+    """
+    role_name = role.value if hasattr(role, "value") else str(role)
+
+    try:
+        from sqlalchemy import text
+        from src.storage.db import AsyncSessionLocal
+
+        async with AsyncSessionLocal() as session:
+            row = (
+                await session.execute(
+                    text("""
+                        SELECT system_prompt, instructions, default_tools,
+                               require_search, max_iterations, token_budget
+                        FROM agent_role_overrides
+                        WHERE name = :name AND is_active = TRUE
+                    """),
+                    {"name": role_name},
+                )
+            ).mappings().first()
+
+        if row:
+            row = dict(row)
+            sp = (row.get("system_prompt") or "").rstrip()
+            inst = (row.get("instructions") or "").strip()
+            if inst:
+                sp = sp + "\n\n## Additional Instructions\n" + inst
+            return {
+                "system_prompt": sp,
+                "default_tools": list(row.get("default_tools") or []),
+                "require_search": bool(row.get("require_search", True)),
+                "max_iterations": int(row.get("max_iterations") or 5),
+                "token_budget": int(row.get("token_budget") or 80_000),
+            }
+    except Exception as exc:
+        logger.warning("get_role_config_async: DB lookup failed for %r: %s", role_name, exc)
+
+    return _ROLES.get(role_name, _ROLES["searcher"])

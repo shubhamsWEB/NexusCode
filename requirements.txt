@@ -55,6 +55,10 @@ pyvis>=0.3.2
 anthropic>=0.40.0
 openai>=1.30.0
 
+# PDF generation
+weasyprint>=60.0
+Pillow>=10.0                  # weasyprint dependency
+
 # Utilities
 python-multipart==0.0.22      # FastAPI form data
 structlog==24.4.0             # structured logging

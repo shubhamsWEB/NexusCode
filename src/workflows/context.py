@@ -83,9 +83,17 @@ class ExecutionContext:
         """
         Render a Jinja2 template string with full execution context.
 
-        Missing trigger/context/step fields render as ``[MISSING: field_name]``
-        (via _MissingMarker) so agents receive a clear signal rather than raw
-        Jinja2 syntax or silent empty strings.
+        Available template variables:
+          - ``{{ trigger.FIELD }}``   — individual field from the trigger payload
+          - ``{{ trigger_json }}``    — entire trigger payload as a pretty-printed JSON
+                                        string; use this when the payload structure is
+                                        unknown (e.g. alerts from different monitoring
+                                        tools with different schemas)
+          - ``{{ context.KEY }}``     — workflow-level context values
+          - ``{{ steps.ID.output }}`` — output of a prior step
+
+        Missing trigger fields render as ``[MISSING: field_name]`` (via _MissingMarker)
+        rather than raw Jinja2 syntax or silent empty strings.
         """
         if not _JINJA_AVAILABLE or "{{" not in template_str:
             return template_str
@@ -93,6 +101,7 @@ class ExecutionContext:
             tmpl = _jinja_env.from_string(template_str)
             return tmpl.render(
                 trigger=self.trigger,
+                trigger_json=json.dumps(self.trigger, indent=2, default=str),
                 context=self.context,
                 steps=_StepProxy(self._step_outputs),
             )

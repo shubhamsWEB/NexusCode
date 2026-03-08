@@ -201,6 +201,7 @@ class AgentLoop:
         config: AgentLoopConfig,
         repo_owner: str | None = None,
         repo_name: str | None = None,
+        extra_context: dict | None = None,
     ) -> tuple[dict, dict]:
         """
         Run the agent loop (non-streaming).
@@ -264,7 +265,7 @@ class AgentLoop:
             # Anthropic forbids thinking + tool_choice:{type:any}, so disable
             # thinking when we force the final answer turn.
             use_thinking = config.thinking_budget > 0 and not force_final
-            max_tokens = config.planning_max_output_tokens + config.thinking_budget if use_thinking else 8192
+            max_tokens = config.planning_max_output_tokens + config.thinking_budget if use_thinking else config.planning_max_output_tokens
             _truncate_prior_tool_results(messages)
             tools_for_turn = (
                 _add_cache_control_to_last(tools_this_turn)
@@ -387,6 +388,7 @@ class AgentLoop:
                     tool_input=block.input,
                     repo_owner=repo_owner,
                     repo_name=repo_name,
+                    extra_context=extra_context,
                 )
 
             tool_pairs = await asyncio.gather(*[_exec_tool_run(b) for b in tool_use_blocks])
@@ -429,6 +431,7 @@ class AgentLoop:
         config: AgentLoopConfig,
         repo_owner: str | None = None,
         repo_name: str | None = None,
+        extra_context: dict | None = None,
     ) -> AsyncIterator[dict]:
         """
         Stream the agent loop.
@@ -486,7 +489,7 @@ class AgentLoop:
             # Anthropic forbids thinking + tool_choice:{type:any}, so disable
             # thinking when we force the final answer turn.
             use_thinking = config.thinking_budget > 0 and not force_final
-            max_tokens = config.planning_max_output_tokens + config.thinking_budget if use_thinking else 8192
+            max_tokens = config.planning_max_output_tokens + config.thinking_budget if use_thinking else config.planning_max_output_tokens
             _truncate_prior_tool_results(messages)
             tools_for_turn = (
                 _add_cache_control_to_last(tools_this_turn)
@@ -668,6 +671,7 @@ class AgentLoop:
                     tool_input=block.input,
                     repo_owner=repo_owner,
                     repo_name=repo_name,
+                    extra_context=extra_context,
                 )
 
             tool_pairs = await asyncio.gather(*[_exec_tool_stream(b) for b in tool_use_blocks])

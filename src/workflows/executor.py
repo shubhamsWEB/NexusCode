@@ -168,7 +168,7 @@ class WorkflowExecutor:
             "run_id": self.run_id,
             "step_id": step.id,
             "step_type": step.type.value,
-            "role": step.role.value if step.role else None,
+            "role": step.role if step.role else None,
         }
 
         await upsert_step(
@@ -176,7 +176,7 @@ class WorkflowExecutor:
             step_id=step.id,
             status="running",
             step_type=step.type.value,
-            agent_role=step.role.value if step.role else None,
+            agent_role=step.role if step.role else None,
         )
 
         for attempt in range(step.max_retries + 1):
@@ -191,11 +191,29 @@ class WorkflowExecutor:
                 elif step.type == StepType.agent:
                     output, tokens = await self._run_agent_step(step)
                     self._total_tokens += tokens
+
+                    # Collect any PDFs generated during this step and attach them
+                    from src.tools.pdf_generator import get_documents_for_step
+                    output_json: dict = {"text": output}
+                    try:
+                        pdf_docs = await get_documents_for_step(self.run_id, step.id)
+                        if pdf_docs:
+                            output_json["documents"] = [
+                                {
+                                    "doc_id": d["id"],
+                                    "filename": d["filename"] + ".pdf",
+                                    "size_bytes": d["size_bytes"],
+                                }
+                                for d in pdf_docs
+                            ]
+                    except Exception as _pdf_exc:
+                        logger.warning("executor: could not fetch pdf docs for step %s: %s", step.id, _pdf_exc)
+
                     await upsert_step(
                         run_id=self.run_id,
                         step_id=step.id,
                         status="completed",
-                        output={"text": output},
+                        output=output_json,
                         tokens_used=tokens,
                     )
                     self.exec_ctx.set_step_output(step.id, output)
@@ -253,12 +271,12 @@ class WorkflowExecutor:
         Returns (output_text, tokens_used).
         """
         from src.agent.loop import AgentLoop, AgentLoopConfig
-        from src.agent.roles import get_role_config
-        from src.agent.tool_schemas import RETRIEVAL_TOOL_SCHEMAS
+        from src.agent.roles import get_role_config_async
+        from src.agent.tool_schemas import ALL_INTERNAL_TOOL_SCHEMAS, RETRIEVAL_TOOL_SCHEMAS
         from src.planning.schemas import ANSWER_TOOL_SCHEMA
         from src.config import settings
 
-        role_config = get_role_config(step.role or AgentRole.searcher)
+        role_config = await get_role_config_async(step.role or "searcher")
 
         # Build the task prompt with injected context
         # Render Jinja2 templates in the task itself ({{ trigger.* }}, {{ steps.*.output }}, etc.)
@@ -276,10 +294,27 @@ class WorkflowExecutor:
         full_task = "\n".join(task_parts)
 
         config = AgentLoopConfig(
-            max_iterations=settings.ask_max_iterations,
-            cumulative_token_budget=settings.agent_token_budget,
+            max_iterations=role_config.get("max_iterations", settings.ask_max_iterations),
+            cumulative_token_budget=role_config.get("token_budget", settings.agent_token_budget),
             require_search_before_answer=role_config.get("require_search", True),
+            planning_max_output_tokens=16000,
         )
+
+        # Build the full tool pool: all 7 internal tools + external MCP tools
+        from src.agent.mcp_bridge import get_external_tool_schemas
+        all_available = ALL_INTERNAL_TOOL_SCHEMAS + get_external_tool_schemas()
+
+        # Apply the role's tool allowlist to BOTH internal and external tools.
+        # If default_tools is empty the role was created before this feature or
+        # intentionally unrestricted — fall back to all internal tools only
+        # (external tools must be explicitly opted-in per role).
+        allowed_tools = set(role_config.get("default_tools") or [])
+        if allowed_tools:
+            all_retrieval = [t for t in all_available if t["name"] in allowed_tools]
+            if not all_retrieval:
+                all_retrieval = RETRIEVAL_TOOL_SCHEMAS  # safety fallback: core 4 tools
+        else:
+            all_retrieval = RETRIEVAL_TOOL_SCHEMAS  # default: core 4 internal tools only
 
         # Extract repo from trigger payload if present
         repo_owner = self.trigger_payload.get("repo_owner")
@@ -290,11 +325,12 @@ class WorkflowExecutor:
             model=settings.default_model,
             system=role_config["system_prompt"],
             initial_message=full_task,
-            retrieval_tools=RETRIEVAL_TOOL_SCHEMAS,
+            retrieval_tools=all_retrieval,
             final_answer_tools=[ANSWER_TOOL_SCHEMA],
             config=config,
             repo_owner=repo_owner,
             repo_name=repo_name,
+            extra_context={"run_id": self.run_id, "step_id": step.id},
         )
 
         # Extract answer text from the final tool call block

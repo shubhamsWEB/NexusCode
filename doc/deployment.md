@@ -132,6 +132,10 @@ sudo apt install postgresql-15-pgvector
 
 # Enable pgvector extension
 sudo -u postgres psql -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+# weasyprint system dependencies (required for PDF generation)
+sudo apt install -y libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b \
+  libcairo2 libffi-dev libglib2.0-0
 ```
 
 ### Process management with systemd
@@ -258,6 +262,12 @@ Current migrations:
 | `005_parent_chunks.sql` | Parent-child chunk relationships |
 | `006_enriched_fts.sql` | Full-text search index on enriched_content |
 | `007_hnsw.sql` | HNSW vector index (replaces ivfflat) |
+| `008_external_mcp_servers.sql` | External MCP server registry |
+| `009_knowledge_graph.sql` | Knowledge graph nodes and edges |
+| `010_workflow_tables.sql` | Workflow definitions, runs, steps, checkpoints |
+| `011_agent_roles.sql` | Custom agent role overrides table |
+| `012_agent_roles.sql` | Agent role additional fields |
+| `013_generated_documents.sql` | PDF document storage (BYTEA) |
 
 ---
 

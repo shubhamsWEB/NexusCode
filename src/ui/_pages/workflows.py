@@ -834,6 +834,34 @@ def _render_step_card(run_id: str, step: dict):
                     f'">{_md_to_html(text)}</div>',
                     unsafe_allow_html=True,
                 )
+
+            # ── PDF download buttons ──────────────────────────────────────────
+            documents = output.get("documents", []) if isinstance(output, dict) else []
+            if documents:
+                st.markdown("")
+                for doc in documents:
+                    doc_id = doc.get("doc_id", "")
+                    filename = doc.get("filename", "document.pdf")
+                    size_kb = (doc.get("size_bytes") or 0) // 1024
+                    size_label = f" ({size_kb} KB)" if size_kb else ""
+                    try:
+                        pdf_resp = requests.get(
+                            f"{_BASE}/documents/{doc_id}/download",
+                            timeout=30,
+                        )
+                        if pdf_resp.ok:
+                            st.download_button(
+                                label=f"📥 Download PDF — {filename}{size_label}",
+                                data=pdf_resp.content,
+                                file_name=filename,
+                                mime="application/pdf",
+                                key=f"dl_{doc_id}",
+                            )
+                        else:
+                            st.warning(f"PDF not available: {filename}")
+                    except Exception as _dl_exc:
+                        st.warning(f"Could not fetch PDF {filename}: {_dl_exc}")
+
         elif s_status == "completed" and not output:
             st.caption("✓ Completed with no text output.")
 

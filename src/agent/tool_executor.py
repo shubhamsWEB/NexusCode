@@ -59,11 +59,13 @@ async def execute_tool(
     tool_input: object,
     repo_owner: str | None = None,
     repo_name: str | None = None,
+    extra_context: dict | None = None,
 ) -> str:
     """
     Execute a retrieval tool by name and return a JSON string result.
 
     repo_owner / repo_name are injected from the request context.
+    extra_context carries run_id / step_id from the workflow executor.
     Returns JSON string — never raises (errors are returned as JSON).
     """
     inp = _normalize_input(tool_input, name)
@@ -86,6 +88,14 @@ async def execute_tool(
             return await _find_callers(inp, repo_owner, repo_name)
         elif name == "get_file_context":
             return await _get_file_context(inp, repo_owner, repo_name)
+        elif name == "get_agent_context":
+            return await _get_agent_context(inp, repo_owner, repo_name)
+        elif name == "plan_implementation":
+            return await _plan_implementation(inp, repo_owner, repo_name)
+        elif name == "ask_codebase":
+            return await _ask_codebase(inp, repo_owner, repo_name)
+        elif name == "generate_pdf":
+            return await _generate_pdf(inp, extra_context)
         else:
             from src.agent.mcp_bridge import call_external_tool, is_external_tool
 
@@ -474,3 +484,303 @@ async def _get_file_context(
         },
         indent=2,
     )
+
+
+# ── get_agent_context ──────────────────────────────────────────────────────────
+
+
+async def _get_agent_context(
+    inp: dict,
+    repo_owner: str | None,
+    repo_name: str | None,
+) -> str:
+    from src.retrieval.assembler import assemble
+    from src.retrieval.reranker import rerank
+    from src.retrieval.searcher import SearchResult, _semantic_search, embed_query
+    from src.storage.db import AsyncSessionLocal
+    from sqlalchemy import text
+
+    task = inp.get("task") or inp.get("query") or inp.get("description") or ""
+    if not task:
+        return json.dumps({
+            "error": "get_agent_context requires a 'task' field. "
+                     "Example: {\"task\": \"Add rate limiting to the auth endpoint\"}",
+            "received_keys": list(inp.keys()),
+        })
+
+    focal_files = inp.get("focal_files") or []
+    token_budget = max(1000, min(32000, int(inp.get("token_budget", 8000))))
+
+    all_results: list[SearchResult] = []
+    seen_ids: set[str] = set()
+
+    # 1. Chunks from focal files (highest priority)
+    for fpath in focal_files[:5]:
+        esc_path = fpath.replace("%", r"\%").replace("_", r"\_")
+        params: dict = {"path": fpath, "path_like": f"%{esc_path}%"}
+        repo_filter = ""
+        if repo_owner:
+            repo_filter += " AND repo_owner = :repo_owner"
+            params["repo_owner"] = repo_owner
+        if repo_name:
+            repo_filter += " AND repo_name = :repo_name"
+            params["repo_name"] = repo_name
+
+        focal_sql = text(f"""
+            SELECT id, file_path, repo_owner, repo_name, language,
+                   symbol_name, symbol_kind, scope_chain,
+                   start_line, end_line, raw_content, enriched_content,
+                   commit_sha, commit_author, token_count
+            FROM chunks
+            WHERE (file_path = :path OR file_path ILIKE :path_like)
+              AND is_deleted = FALSE
+              {repo_filter}
+            ORDER BY start_line
+            LIMIT 20
+        """)
+        async with AsyncSessionLocal() as session:
+            rows = (await session.execute(focal_sql, params)).mappings().all()
+
+        for row in rows:
+            if row["id"] not in seen_ids:
+                seen_ids.add(row["id"])
+                all_results.append(SearchResult(
+                    chunk_id=row["id"],
+                    file_path=row["file_path"],
+                    repo_owner=row["repo_owner"],
+                    repo_name=row["repo_name"],
+                    language=row["language"],
+                    symbol_name=row.get("symbol_name"),
+                    symbol_kind=row.get("symbol_kind"),
+                    scope_chain=row.get("scope_chain"),
+                    start_line=row["start_line"],
+                    end_line=row["end_line"],
+                    raw_content=row["raw_content"],
+                    enriched_content=row.get("enriched_content", ""),
+                    commit_sha=row.get("commit_sha", ""),
+                    commit_author=row.get("commit_author"),
+                    token_count=row.get("token_count", 0),
+                    score=1.0,
+                    rerank_score=10.0,  # focal files get top score
+                ))
+
+    # 2. Semantic search for the task
+    query_vector = await embed_query(task)
+    semantic_results = await _semantic_search(
+        vector=query_vector,
+        limit=15,
+        repo_owner=repo_owner,
+        repo_name=repo_name,
+        language=None,
+    )
+    for r in semantic_results:
+        if r.chunk_id not in seen_ids:
+            seen_ids.add(r.chunk_id)
+            all_results.append(r)
+
+    if not all_results:
+        return json.dumps({
+            "task": task,
+            "context_text": "",
+            "tokens_used": 0,
+            "message": "No relevant context found. Try a different task description or check that repos are indexed.",
+        })
+
+    # 3. Rerank (focal chunks keep top priority, others get reranked)
+    focal_chunks = [r for r in all_results if r.rerank_score == 10.0]
+    search_chunks = [r for r in all_results if r.rerank_score != 10.0]
+    if search_chunks:
+        search_chunks = rerank(task, search_chunks, top_n=10)
+    final_results = focal_chunks + search_chunks
+
+    # 4. Assemble within token budget
+    ctx = assemble(final_results, token_budget=token_budget, query=task)
+
+    return json.dumps({
+        "task": task,
+        "focal_files": focal_files,
+        "context_text": ctx.context_text,
+        "chunks_used": ctx.chunks_used,
+        "tokens_used": ctx.tokens_used,
+    }, indent=2)
+
+
+# ── plan_implementation ────────────────────────────────────────────────────────
+
+
+async def _plan_implementation(
+    inp: dict,
+    repo_owner: str | None,
+    repo_name: str | None,
+) -> str:
+    from src.planning.claude_planner import generate_plan
+
+    query = inp.get("query") or inp.get("task") or inp.get("description") or ""
+    if not query or len(query) < 10:
+        return json.dumps({
+            "error": "plan_implementation requires a 'query' field (min 10 chars). "
+                     "Describe the bug, feature, or refactoring task in detail.",
+            "received_keys": list(inp.keys()),
+        })
+
+    web_research = bool(inp.get("web_research", True))
+    model = inp.get("model") or None
+
+    try:
+        plan = await generate_plan(
+            query=query,
+            repo_owner=repo_owner,
+            repo_name=repo_name,
+            web_research=web_research,
+            model=model,
+        )
+    except RuntimeError as exc:
+        return json.dumps({"error": str(exc)})
+    except Exception as exc:
+        logger.exception("tool_executor: plan_implementation failed")
+        return json.dumps({"error": f"Plan generation failed: {exc}"})
+
+    # Return as JSON so the agent can work with structured data
+    return json.dumps({
+        "query": plan.query,
+        "summary": plan.summary,
+        "files": [
+            {
+                "path": f.path,
+                "action": f.action,
+                "reason": f.reason,
+                "changes": [
+                    {"kind": c.kind, "symbol": c.symbol, "description": c.description}
+                    for c in f.changes
+                ],
+            }
+            for f in (plan.files or [])
+        ],
+        "steps": [
+            {
+                "step": s.step_number,
+                "title": s.title,
+                "description": s.description,
+                "files": s.files_involved,
+                "depends_on": s.depends_on_steps,
+                "verification": s.verification,
+            }
+            for s in (plan.steps or [])
+        ],
+        "risks": [
+            {"severity": r.severity, "description": r.description, "mitigation": r.mitigation}
+            for r in (plan.risks or [])
+        ],
+        "test_plan": plan.test_plan,
+        "key_files": plan.key_files,
+    }, indent=2)
+
+
+# ── ask_codebase ───────────────────────────────────────────────────────────────
+
+
+async def _ask_codebase(
+    inp: dict,
+    repo_owner: str | None,
+    repo_name: str | None,
+) -> str:
+    from src.ask.ask_agent import generate_answer
+
+    question = inp.get("question") or inp.get("query") or inp.get("text") or ""
+    if not question or len(question) < 5:
+        return json.dumps({
+            "error": "ask_codebase requires a 'question' field (min 5 chars). "
+                     "Example: {\"question\": \"How does the webhook pipeline work?\"}",
+            "received_keys": list(inp.keys()),
+        })
+
+    model = inp.get("model") or None
+
+    try:
+        result = await generate_answer(
+            query=question,
+            repo_owner=repo_owner,
+            repo_name=repo_name,
+            model=model,
+        )
+    except RuntimeError as exc:
+        return json.dumps({"error": str(exc)})
+    except Exception as exc:
+        logger.exception("tool_executor: ask_codebase failed")
+        return json.dumps({"error": f"Answer generation failed: {exc}"})
+
+    return json.dumps({
+        "question": question,
+        "answer": result.answer,
+        "cited_files": result.cited_files,
+        "follow_up_hints": result.follow_up_hints,
+        "context_tokens": result.context_tokens,
+        "elapsed_ms": round(result.elapsed_ms),
+    }, indent=2)
+
+
+# ── generate_pdf ───────────────────────────────────────────────────────────────
+
+
+async def _generate_pdf(
+    inp: dict,
+    extra_context: dict | None,
+) -> str:
+    content = inp.get("content") or ""
+    title = inp.get("title") or ""
+
+    if not content:
+        return json.dumps({
+            "error": "generate_pdf requires a 'content' field with the markdown document text.",
+            "received_keys": list(inp.keys()),
+        })
+    if not title:
+        return json.dumps({
+            "error": "generate_pdf requires a 'title' field.",
+            "received_keys": list(inp.keys()),
+        })
+
+    metadata = inp.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    # Derive filename from explicit param or slugify the title
+    from src.tools.pdf_generator import slugify
+    raw_filename = inp.get("filename") or ""
+    filename = (raw_filename.rstrip(".pdf") or slugify(title)) + ".pdf"
+    filename_no_ext = filename[:-4]  # strip .pdf for storage; re-added on download
+
+    run_id = (extra_context or {}).get("run_id") or None
+    step_id = (extra_context or {}).get("step_id") or None
+
+    try:
+        from src.tools import pdf_generator
+
+        pdf_bytes = await _run_in_executor(
+            pdf_generator.generate_pdf_from_markdown, content, title, metadata
+        )
+        doc_id = await pdf_generator.store_document(
+            pdf_bytes=pdf_bytes,
+            title=title,
+            filename=filename_no_ext,
+            run_id=run_id,
+            step_id=step_id,
+            metadata=metadata,
+        )
+    except Exception as exc:
+        logger.exception("tool_executor: generate_pdf failed")
+        return json.dumps({"error": f"PDF generation failed: {exc}"})
+
+    return json.dumps({
+        "doc_id": doc_id,
+        "download_url": f"/documents/{doc_id}/download",
+        "filename": filename,
+        "size_bytes": len(pdf_bytes),
+    })
+
+
+async def _run_in_executor(fn, *args):
+    """Run a synchronous (CPU-bound) function in the default thread pool."""
+    import asyncio
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, fn, *args)

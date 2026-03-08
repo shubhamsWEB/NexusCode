@@ -345,6 +345,18 @@ def get_external_tool_schemas() -> list[dict]:
     return [entry["schema"] for entry in _tool_registry.values()]
 
 
+def get_external_tools_info() -> list[dict]:
+    """Return tool metadata (name, description, server_url) for UI display."""
+    return [
+        {
+            "name": entry["schema"]["name"],
+            "description": entry["schema"].get("description", ""),
+            "server_url": entry["server_url"],
+        }
+        for entry in _tool_registry.values()
+    ]
+
+
 def is_external_tool(name: str) -> bool:
     """Return True if the tool name is registered from an external server."""
     return name in _tool_registry
