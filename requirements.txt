@@ -14,7 +14,7 @@ redis==5.0.8
 rq==2.7.0
 
 # GitHub API client
-httpx==0.27.2
+httpx==0.28.1
 httpx-sse==0.4.0            # MCP SSE transport
 
 # AST parsing
