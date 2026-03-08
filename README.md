@@ -1,5 +1,8 @@
 # 🧠 Codebase Intelligence — MCP Knowledge Server
 
+<img width="2816" height="1536" alt="Gemini_Generated_Image_7kxlab7kxlab7kxl" src="https://github.com/user-attachments/assets/858bfb69-5152-47d4-9619-7c0bbfc94b42" />
+
+
 [![CI](https://github.com/shubhamsWEB/nexusCode_server/actions/workflows/ci.yml/badge.svg)](https://github.com/shubhamsWEB/nexusCode_server/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
