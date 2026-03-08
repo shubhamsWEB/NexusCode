@@ -425,11 +425,12 @@ body { margin: 0; padding: 0; background: #0d1117; overflow: hidden; }
             for k, c in _KIND_COLORS.items()
         )
 
+    _dash_attr = "stroke-dasharray='4,3'"
     edge_legend = "".join(
         f'<div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">'
         f'<svg width="20" height="5" style="flex-shrink:0">'
         f'<line x1="0" y1="2.5" x2="20" y2="2.5" stroke="{c}" stroke-width="{w}" '
-        f'{"stroke-dasharray=\'4,3\'" if d else ""}/></svg>'
+        f'{_dash_attr if d else ""}/></svg>'
         f'<span style="font-size:10.5px;color:#8b949e;text-transform:capitalize">{et}</span></div>'
         for et, (c, d, w) in _EDGE_STYLES.items()
         if any(e.get("type") == et for e in edges)

@@ -16,7 +16,8 @@ import requests
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-_BASE = "http://localhost:8000"
+def _base() -> str:
+    return st.session_state.get("api_url", "http://localhost:8000")
 
 _SAMPLE_YAML = textwrap.dedent("""\
 name: pr-review-workflow
@@ -72,7 +73,7 @@ _STATUS_COLOUR = {
 def _api(method: str, path: str, **kwargs):
     """Thin wrapper around requests; returns (ok, data/error_str)."""
     try:
-        resp = getattr(requests, method)(f"{_BASE}{path}", timeout=15, **kwargs)
+        resp = getattr(requests, method)(f"{_base()}{path}", timeout=15, **kwargs)
         if resp.ok:
             return True, resp.json()
         return False, resp.json().get("detail", resp.text)
@@ -846,7 +847,7 @@ def _render_step_card(run_id: str, step: dict):
                     size_label = f" ({size_kb} KB)" if size_kb else ""
                     try:
                         pdf_resp = requests.get(
-                            f"{_BASE}/documents/{doc_id}/download",
+                            f"{_base()}/documents/{doc_id}/download",
                             timeout=30,
                         )
                         if pdf_resp.ok:
