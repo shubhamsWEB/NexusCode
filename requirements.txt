@@ -61,4 +61,4 @@ Pillow>=10.0                  # weasyprint dependency
 
 # Utilities
 python-multipart==0.0.22      # FastAPI form data
-structlog==24.4.0             # structured logging
+structlog==25.5.0             # structured logging
