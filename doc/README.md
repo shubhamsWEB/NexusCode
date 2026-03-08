@@ -1,77 +1,119 @@
 # NexusCode Documentation
 
-Centralized, always-fresh Codebase Intelligence Server — indexes GitHub repos and exposes them via MCP + REST API.
+**NexusCode** is a centralized, always-on Codebase Intelligence Server. It continuously indexes
+GitHub repositories and exposes the resulting knowledge via MCP, REST API, and a browser dashboard.
+
+**Default ports:** API `http://localhost:8000` · Dashboard `http://localhost:8501`
 
 ---
 
-## Documentation Index
+## Guides
 
-| Page | What it covers |
-|---|---|
-| [Getting Started](./getting-started.md) | Installation, prerequisites, first run, running tests |
-| [Connecting GitHub](./connecting-github.md) | PAT vs GitHub App, registering repos, webhook setup, live updates |
-| [MCP Server & Auth](./mcp-access.md) | Getting tokens, connecting Claude Desktop/Code, all 8 MCP tools |
-| [Search, Ask & Planning](./search-and-ask.md) | Search modes, Ask Mode Q&A, Planning Mode, quality scores, model selection |
-| [Custom Skills](./custom-skills.md) | Creating skills, SKILL.md format, CUSTOM_SKILLS_DIRS, enterprise patterns |
-| [API Reference](./api-reference.md) | Complete REST API — all endpoints, parameters, response schemas |
-| [Configuration](./configuration.md) | Every environment variable with defaults and description |
-| [Deployment](./deployment.md) | Docker Compose, Railway, bare-metal, Nginx, systemd, scaling |
+| Document | Description |
+|----------|-------------|
+| [Getting Started](./getting-started.md) | Install, configure, and run your first query |
+| [Connecting GitHub](./connecting-github.md) | Personal Access Token, GitHub App, webhooks |
+| [Configuration](./configuration.md) | All environment variables and config options |
+| [Deployment](./deployment.md) | Docker Compose, Railway, bare-metal, Nginx |
+
+## Feature Guides
+
+| Document | Description |
+|----------|-------------|
+| [Search, Ask & Planning](./search-and-ask.md) | Search modes, Ask Mode, Planning Mode, SPARC |
+| [Workflows](./workflows.md) | Workflow automation, YAML DSL, human checkpoints |
+| [Agent Roles](./agent-roles.md) | Built-in and custom agent roles |
+| [Knowledge Graph](./knowledge-graph.md) | Codebase knowledge graph visualization |
+| [PDF Generation](./pdf-generation.md) | Generating downloadable PDF reports |
+| [MCP Access](./mcp-access.md) | Tokens, Claude Code/Desktop/Cursor setup |
+| [External MCP Servers](./external-mcp-servers.md) | Connect Context7, Browserbase, etc. |
+| [Custom Skills](./custom-skills.md) | Build and deploy custom agent skills |
+
+## API Reference
+
+| Document | Description |
+|----------|-------------|
+| [API Reference](./api-reference.md) | Complete REST API — all 40+ endpoints |
+
+## Deep-Dive Architecture
+
+See the [`/architecture`](../architecture/README.md) directory:
+
+| Document | Description |
+|----------|-------------|
+| [Overview](../architecture/overview.md) | System components, tech stack, data flow |
+| [Indexing Pipeline](../architecture/indexing-pipeline.md) | GitHub → Parser → Embedder → PostgreSQL |
+| [Retrieval Pipeline](../architecture/retrieval-pipeline.md) | HNSW + RRF + Cross-encoder + Assembly |
+| [Agent System](../architecture/agent-system.md) | AgentLoop, gates, tools, roles |
+| [Workflow Engine](../architecture/workflow-engine.md) | DAG execution, parallel waves, checkpoints |
+| [Database Schema](../architecture/database-schema.md) | All tables, indexes, migrations |
+| [LLM Providers](../architecture/llm-providers.md) | Anthropic, OpenAI, Grok, Ollama |
+| [MCP Integration](../architecture/mcp-integration.md) | MCP protocol, tool registration, bridge |
+| [How to Use](../architecture/how-to-use.md) | End-to-end step-by-step usage guide |
 
 ---
 
 ## 60-Second Quick Start
 
 ```bash
-# 1. Install
-pip install -r requirements.txt
+# 1. Configure
+cp .env.example .env   # fill in DATABASE_URL, VOYAGE_API_KEY, ANTHROPIC_API_KEY, GITHUB_TOKEN
 
-# 2. Configure (minimum)
-export DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/nexus
-export VOYAGE_API_KEY=pa-...
-export ANTHROPIC_API_KEY=sk-ant-...
-export GITHUB_TOKEN=ghp_...
-export GITHUB_WEBHOOK_SECRET=$(openssl rand -hex 32)
-export JWT_SECRET=$(openssl rand -hex 32)
-
-# 3. Initialize DB
+# 2. Initialize DB
 PYTHONPATH=. python scripts/init_db.py
 
-# 4. Start (3 terminals)
+# 3. Start services (3 terminals)
 PYTHONPATH=. uvicorn src.api.app:app --port 8000
 PYTHONPATH=. rq worker indexing
 PYTHONPATH=. streamlit run src/ui/dashboard.py --server.port 8501
 
-# 5. Index a repo
+# 4. Index a repo
 curl -X POST http://localhost:8000/repos \
-  -d '{"owner":"your-org","name":"your-repo","index_now":true}'
+  -H "Content-Type: application/json" \
+  -d '{"owner":"your-org","name":"your-repo"}'
+curl -X POST http://localhost:8000/repos/your-org/your-repo/index
 
-# 6. Ask a question
+# 5. Ask a question
 curl -X POST http://localhost:8000/ask \
   -H "Content-Type: application/json" \
-  -d '{"query":"How does authentication work?","stream":false}'
+  -d '{"query":"How does authentication work?"}'
 ```
 
 ---
 
-## Architecture Summary
+## Architecture in One Diagram
 
 ```
-GitHub push → POST /webhook → HMAC verify → RQ queue
-RQ worker  → fetch files → parse AST → chunk → embed → PostgreSQL
+GitHub Push
+    │ POST /webhook/github (HMAC verified)
+    ▼
+RQ Worker ──► Parser → Chunker → Enricher → Embedder ──► PostgreSQL + pgvector
 
-Query path:
-  POST /search  → embed query → pgvector ANN (HNSW) + tsvector → RRF → cross-encoder → context
-  POST /ask     → retrieve context → LLM (mentor tone) → markdown answer + citations
-  POST /plan    → retrieve context + web research → LLM (structured tool) → ImplementationPlan JSON
-  MCP /mcp/sse  → 8 tools (search, symbol, callers, file, context, plan, ask, skills)
+Query Path:
+  POST /search  → embed → HNSW + tsvector → RRF → cross-encoder → context
+  POST /ask     → AgentLoop → tools → retrieval → LLM → markdown answer + citations
+  POST /plan    → AgentLoop → retrieval + web research → LLM → ImplementationPlan
+  POST /workflows/{id}/run  → DAG executor → multi-agent steps → SSE stream
+  GET  /mcp/sse → 8 MCP tools for Claude Code / Cursor / Claude Desktop
+
+PDF reports, knowledge graphs, workflow automation, and external MCP tools all
+run through the same shared infrastructure.
 ```
 
 ---
 
-## Default Ports
+## What's New (Since Initial Release)
 
-| Service | Port |
-|---|---|
-| API server | `8000` |
-| Admin dashboard | `8501` |
-| MCP SSE endpoint | `8000/mcp` |
+| Feature | Guide |
+|---------|-------|
+| Workflow Automation Engine | [workflows.md](./workflows.md) |
+| Multi-agent orchestration with 6 roles | [agent-roles.md](./agent-roles.md) |
+| Human checkpoint support | [workflows.md](./workflows.md) |
+| PDF report generation | [pdf-generation.md](./pdf-generation.md) |
+| Knowledge Graph visualization | [knowledge-graph.md](./knowledge-graph.md) |
+| External MCP server bridge | [external-mcp-servers.md](./external-mcp-servers.md) |
+| Custom agent role overrides | [agent-roles.md](./agent-roles.md) |
+| Multi-LLM provider support (Claude / GPT-4o / Grok / Ollama) | [configuration.md](./configuration.md) |
+| SPARC-structured implementation plans | [search-and-ask.md](./search-and-ask.md) |
+| Chat history persistence | [search-and-ask.md](./search-and-ask.md) |
+| Search quality presets | [search-and-ask.md](./search-and-ask.md) |

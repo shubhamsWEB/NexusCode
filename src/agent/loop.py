@@ -201,6 +201,7 @@ class AgentLoop:
         config: AgentLoopConfig,
         repo_owner: str | None = None,
         repo_name: str | None = None,
+        extra_context: dict | None = None,
     ) -> tuple[dict, dict]:
         """
         Run the agent loop (non-streaming).
@@ -264,7 +265,7 @@ class AgentLoop:
             # Anthropic forbids thinking + tool_choice:{type:any}, so disable
             # thinking when we force the final answer turn.
             use_thinking = config.thinking_budget > 0 and not force_final
-            max_tokens = config.planning_max_output_tokens + config.thinking_budget if use_thinking else 8192
+            max_tokens = config.planning_max_output_tokens + config.thinking_budget if use_thinking else config.planning_max_output_tokens
             _truncate_prior_tool_results(messages)
             tools_for_turn = (
                 _add_cache_control_to_last(tools_this_turn)
@@ -318,7 +319,7 @@ class AgentLoop:
             # ── Process tool calls in the response ────────────────────────────
             tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
 
-            # No tool calls at all → text fallback
+            # No tool calls at all
             if not tool_use_blocks:
                 text = " ".join(
                     b.text for b in response.content if hasattr(b, "text") and b.text
@@ -328,6 +329,19 @@ class AgentLoop:
                     iteration,
                     response.stop_reason,
                 )
+                # If search is required and we haven't searched yet, nudge Claude
+                # to use its retrieval tools instead of answering from training data.
+                if config.require_search_before_answer and search_tools_called == 0 and not force_final:
+                    messages.append({"role": "assistant", "content": [{"type": "text", "text": text or "(no response)"}]})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "You must use the search tools to look up relevant code in the codebase "
+                            "before providing your answer. Please call search_codebase or get_symbol now."
+                        ),
+                    })
+                    logger.warning("agent_loop: nudging Claude to search (iter=%d)", iteration)
+                    continue
                 stats = _make_stats(iteration, total_tool_calls, total_context_tokens, t0, search_tools_called)
                 return {"name": "_text_fallback", "input": {"answer": text, "cited_files": [], "follow_up_hints": []}}, stats
 
@@ -374,6 +388,7 @@ class AgentLoop:
                     tool_input=block.input,
                     repo_owner=repo_owner,
                     repo_name=repo_name,
+                    extra_context=extra_context,
                 )
 
             tool_pairs = await asyncio.gather(*[_exec_tool_run(b) for b in tool_use_blocks])
@@ -416,6 +431,7 @@ class AgentLoop:
         config: AgentLoopConfig,
         repo_owner: str | None = None,
         repo_name: str | None = None,
+        extra_context: dict | None = None,
     ) -> AsyncIterator[dict]:
         """
         Stream the agent loop.
@@ -473,7 +489,7 @@ class AgentLoop:
             # Anthropic forbids thinking + tool_choice:{type:any}, so disable
             # thinking when we force the final answer turn.
             use_thinking = config.thinking_budget > 0 and not force_final
-            max_tokens = config.planning_max_output_tokens + config.thinking_budget if use_thinking else 8192
+            max_tokens = config.planning_max_output_tokens + config.thinking_budget if use_thinking else config.planning_max_output_tokens
             _truncate_prior_tool_results(messages)
             tools_for_turn = (
                 _add_cache_control_to_last(tools_this_turn)
@@ -579,6 +595,24 @@ class AgentLoop:
                     for b in final_message.content
                     if hasattr(b, "text") and b.text
                 )
+                logger.warning(
+                    "agent_loop stream: no tool calls at iter=%d stop_reason=%s",
+                    iteration,
+                    getattr(final_message, "stop_reason", "?"),
+                )
+                # If search is required and we haven't searched yet, nudge Claude
+                # to use its retrieval tools before bailing out.
+                if config.require_search_before_answer and search_tools_called == 0 and not force_final:
+                    messages.append({"role": "assistant", "content": [{"type": "text", "text": text or "(no response)"}]})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "You must use the search tools to look up relevant code in the codebase "
+                            "before providing your answer. Please call search_codebase or get_symbol now."
+                        ),
+                    })
+                    logger.warning("agent_loop stream: nudging Claude to search (iter=%d)", iteration)
+                    continue
                 stats = _make_stats(iteration, total_tool_calls, total_context_tokens, t0, search_tools_called)
                 yield {
                     "type": "done",
@@ -637,6 +671,7 @@ class AgentLoop:
                     tool_input=block.input,
                     repo_owner=repo_owner,
                     repo_name=repo_name,
+                    extra_context=extra_context,
                 )
 
             tool_pairs = await asyncio.gather(*[_exec_tool_stream(b) for b in tool_use_blocks])

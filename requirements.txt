@@ -47,12 +47,17 @@ cryptography>=43.0.1
 
 # Admin UI
 streamlit>=1.38.0
+markdown>=3.6             # rich markdown rendering in workflow run history UI
 plotly>=5.0.0
 pyvis>=0.3.2
 
 # LLM providers
 anthropic>=0.40.0
 openai>=1.30.0
+
+# PDF generation
+weasyprint>=60.0
+Pillow>=10.0                  # weasyprint dependency
 
 # Utilities
 python-multipart==0.0.22      # FastAPI form data

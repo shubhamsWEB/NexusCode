@@ -1,0 +1,260 @@
+name: rca-automation
+description: 'Automated Root Cause Analysis: raw alert payload → codebase analysis → root cause → fix plan → RCA doc'
+
+trigger:
+  type: webhook
+  webhook_path: /webhooks/alerts
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PAYLOAD CONTRACT
+# ─────────────────────────────────────────────────────────────────────────────
+# This workflow accepts ANY JSON payload — no fixed schema required.
+# The entire trigger payload is injected as {{ trigger_json }} (pretty-printed
+# JSON string) so agents can read whatever structure your monitoring tool emits.
+#
+# Works with Datadog, PagerDuty, Dynatrace, Prometheus AlertManager,
+# custom webhooks, or any other source.
+#
+# The only special fields are:
+#   repo_owner / repo_name  — set these to target a specific repository
+#                             (the UI repo-selector injects them automatically)
+# ─────────────────────────────────────────────────────────────────────────────
+
+steps:
+
+  - id: understand_error
+    type: agent
+    role: searcher
+    task: |
+      A production alert has been received. Below is the raw event payload
+      exactly as emitted by the monitoring system — it may be from Datadog,
+      PagerDuty, Dynatrace, Prometheus, or any other tool.
+
+      === RAW ALERT PAYLOAD ===
+      {{ trigger_json }}
+
+      === YOUR TASK ===
+      Parse the alert above and thoroughly investigate this error in the codebase.
+      Adapt to whatever fields are present in the payload — look for error messages,
+      stack traces, service names, affected endpoints, timestamps, and so on.
+
+      1. Identify the exact file(s) and function(s) where this error originates
+      2. Trace the full call path that leads to the error
+      3. Understand what the code is supposed to do and what is failing
+      4. Look for any related error handling, retry logic, or known issues
+      5. Identify all services or modules that are affected or could be affected
+      6. Note any relevant configuration, environment variables, or feature flags
+
+      Produce a detailed technical breakdown: what the error is, exactly where it
+      occurs (file paths, function names, line numbers), and how execution reaches
+      that point.
+
+  - id: identify_root_cause
+    type: agent
+    role: reviewer
+    depends_on: [understand_error]
+    task: |
+      You are performing root cause analysis for a production incident.
+
+      === CODEBASE ANALYSIS ===
+      {{ steps.understand_error.output }}
+
+      === ORIGINAL ALERT PAYLOAD ===
+      {{ trigger_json }}
+
+      === YOUR TASK ===
+      1. EXACT ROOT CAUSE — pinpoint the precise line(s) or logic that causes the failure
+      2. FAILURE MECHANISM — explain the technical reason (null pointer, race condition,
+         missing validation, type mismatch, resource exhaustion, dependency failure, etc.)
+      3. CONTRIBUTING FACTORS — list secondary conditions that amplified the failure
+      4. BLAST RADIUS — what other components, endpoints, or users are impacted?
+      5. REGRESSION WINDOW — when was this bug likely introduced and why wasn't it caught?
+      6. REPRODUCIBILITY — how reliably does this occur and under what conditions?
+
+      Be ruthlessly specific. Reference exact file paths and function names.
+
+  - id: create_fix_plan
+    type: agent
+    role: planner
+    depends_on: [identify_root_cause]
+    task: |
+      Create a detailed, actionable bug-fixing plan. Do NOT edit any files — output a plan only.
+
+      === ROOT CAUSE ===
+      {{ steps.identify_root_cause.output }}
+
+      === ERROR CONTEXT ===
+      {{ steps.understand_error.output }}
+
+      === ORIGINAL ALERT ===
+      {{ trigger_json }}
+
+      === YOUR TASK ===
+      Produce a prioritized fix plan with these sections:
+
+      OPTION A - IMMEDIATE HOTFIX (under 1 hour)
+      Minimal change to stop the bleeding (guard clause, config change, feature flag).
+      Exact file(s) to change, what to change, and risks of this approach.
+
+      OPTION B - PROPER FIX (recommended, 1-2 days)
+      Correct engineering solution that addresses the root cause.
+      Exact files and changes required, any refactoring needed.
+
+      OPTION C - LONG-TERM IMPROVEMENT (1-2 weeks)
+      Architectural or process improvement to prevent this class of bug entirely.
+
+      RECOMMENDED APPROACH — which option to start with and why, with implementation order.
+
+      TESTING REQUIREMENTS — unit tests, integration tests, and staging verification steps.
+
+      DEPLOYMENT NOTES — deployment strategy, rollback plan, post-deploy validation.
+
+      MONITORING IMPROVEMENTS — new alerts, dashboards, or metrics to add after the fix.
+
+  - id: review_checkpoint
+    type: human_checkpoint
+    depends_on: [create_fix_plan]
+    prompt: 'RCA analysis complete. Review the findings above and approve to generate the final RCA document.'
+    options:
+      - Approve and generate RCA doc
+      - Request more investigation
+      - Cancel
+    timeout_hours: 48
+    on_timeout: continue
+
+  - id: compile_rca_doc
+    type: agent
+    role: supervisor
+    depends_on: [review_checkpoint]
+    tools: [search_codebase, get_symbol, ask_codebase, generate_pdf]
+    task: |
+      Compile the complete, professional Root Cause Analysis document.
+
+      === ORIGINAL ALERT PAYLOAD ===
+      {{ trigger_json }}
+
+      === ERROR ANALYSIS ===
+      {{ steps.understand_error.output }}
+
+      === ROOT CAUSE ===
+      {{ steps.identify_root_cause.output }}
+
+      === FIX PLAN ===
+      {{ steps.create_fix_plan.output }}
+
+      === WRITE THE COMPLETE RCA DOCUMENT ===
+      Use clear markdown. Be precise, technical, and actionable.
+      Derive all incident metadata (service, severity, timestamp, component, etc.)
+      from the alert payload above — adapt to whatever fields are present.
+
+      # RCA: [Derive a clear incident title from the error message]
+
+      **Status:** Document Generated
+
+      ---
+
+      ## Executive Summary
+      2-3 sentences for non-technical stakeholders: what broke, what was the impact,
+      and what is being done to fix it.
+
+      ---
+
+      ## Incident Details
+
+      Summarise the key incident metadata from the alert payload in a markdown table:
+
+      | Field | Value |
+      |---|---|
+      | Detection Source | [from payload] |
+      | Service / Component | [from payload] |
+      | Environment | [from payload] |
+      | Severity | [from payload] |
+      | Timestamp | [from payload] |
+
+      ---
+
+      ## Timeline
+      Chronological sequence of events from first sign of trouble through detection and response.
+      Format as a markdown table with columns: Time (relative to T+0) | Event
+
+      ---
+
+      ## Technical Analysis
+
+      ### What Happened
+      Concise technical description of the failure sequence.
+
+      ### Where It Happened
+      Exact file paths, function names, and line numbers from the codebase analysis.
+
+      ### Why It Happened - Root Cause
+      The definitive root cause. Be specific — reference exact code.
+
+      ### Contributing Factors
+      All secondary conditions that enabled or amplified the failure.
+
+      ---
+
+      ## Impact Assessment
+
+      ### User / Business Impact
+      Who was affected, how many requests/users impacted, any data integrity concerns.
+
+      ### Blast Radius
+      Other systems or components affected or at risk.
+
+      ---
+
+      ## Resolution Plan
+
+      ### Immediate Hotfix
+      Option A details with exact files and changes.
+
+      ### Recommended Fix
+      Option B — the proper engineering solution.
+
+      ### Long-Term Improvements
+      Architectural and process improvements from Option C.
+
+      ---
+
+      ## Prevention
+
+      ### Code Changes
+      Defensive patterns and validations to apply.
+
+      ### Process Improvements
+      PR review, testing, or deployment process changes.
+
+      ### Monitoring and Alerting
+      New alerts, dashboards, and SLOs to add.
+
+      ---
+
+      ## Action Items
+
+      | Priority | Action | Owner | Due |
+      |---|---|---|---|
+      | P1 | Immediate hotfix | Engineering | Immediate |
+      | P2 | Proper fix | Engineering | Within 3 days |
+      | P3 | Long-term improvement | Engineering | Within 2 weeks |
+      | P4 | Monitoring improvements | SRE/Platform | Within 1 week |
+
+      ---
+
+      ## Lessons Learned
+      What went well in detection and response. What could be improved.
+      What process or tooling changes would prevent this class of incident.
+
+      ---
+
+      ## FINAL STEP — GENERATE PDF
+      After completing the full RCA document above, call generate_pdf with:
+        content:  the complete markdown document you just wrote
+        title:    "RCA: [the incident title you derived from the error message]"
+        filename: "rca-[service-name]-[short-description]"
+        metadata: {}
+
+      Your final answer MUST include the complete markdown RCA document (all sections above),
+      followed by a "## PDF Report" section at the end with the download_url from generate_pdf.
+      Do NOT return only the download URL — the full document text must be in your answer.

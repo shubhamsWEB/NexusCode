@@ -83,6 +83,25 @@ curl -X POST http://localhost:8000/search \
 | `mode` | `"hybrid"` | `"semantic"`, `"keyword"`, or `"hybrid"` |
 | `rerank` | `true` | Apply cross-encoder reranking |
 | `token_budget` | 8000 | Max tokens in assembled context string |
+| `preset` | `"balanced"` | Quality preset (see below) |
+
+### Search Quality Presets
+
+Presets let you choose between speed and thoroughness in a single parameter:
+
+| Preset | `top_k` | Reranking | Best for |
+|--------|---------|-----------|----------|
+| `fast` | 5 | Off | IDE autocomplete, quick symbol lookups |
+| `balanced` | 10 | On | Standard queries — default |
+| `thorough` | 20 | On | Deep analysis, comprehensive context gathering |
+
+```bash
+# Thorough search for a comprehensive answer
+curl -X POST http://localhost:8000/search \
+  -d '{"query": "all database connection handling", "preset": "thorough"}'
+```
+
+Presets set `top_k` and `rerank` automatically. Explicitly passing `top_k` or `rerank` overrides the preset values.
 
 ---
 

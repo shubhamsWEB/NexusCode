@@ -132,6 +132,28 @@ These must be set or the server will fail to start:
 
 ---
 
+## Workflows
+
+| Variable | Default | Description |
+|---|---|---|
+| `WORKFLOW_MAX_PARALLEL_STEPS` | `5` | Max concurrent agent steps per workflow run |
+| `WORKFLOW_STEP_TIMEOUT_SECONDS` | `600` | Max time a single agent step can run before timing out |
+| `WORKFLOW_DEFAULT_MAX_RETRIES` | `2` | Default retry count for failed agent steps |
+| `WORKFLOW_DEFAULT_RETRY_DELAY` | `30` | Seconds before first retry (exponential backoff) |
+| `WORKFLOW_CHECKPOINT_TIMEOUT_HOURS` | `24` | Hours before an unanswered human checkpoint auto-expires |
+
+---
+
+## Agent Roles
+
+| Variable | Default | Description |
+|---|---|---|
+| `AGENT_DEFAULT_MAX_ITERATIONS` | `5` | Default max AgentLoop iterations per step |
+| `AGENT_DEFAULT_TOKEN_BUDGET` | `80000` | Default cumulative tool-result token budget |
+| `AGENT_SUPERVISOR_TOKEN_BUDGET` | `80000` | Token budget for supervisor role |
+
+---
+
 ## Custom Skills
 
 | Variable | Default | Description |

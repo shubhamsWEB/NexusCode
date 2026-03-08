@@ -731,8 +731,7 @@ async def ask_codebase(
             lines.append(f"- {hint}")
 
     lines.append(
-        f"\n---\n_Context: {ctx.tokens_used} tokens · "
-        f"{len(ctx.chunks_used)} chunks · {result.elapsed_ms:.0f}ms_"
+        f"\n---\n_{result.context_tokens} tokens · {result.elapsed_ms:.0f}ms_"
     )
 
     return "\n".join(lines)

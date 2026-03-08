@@ -76,14 +76,23 @@ See [configuration.md](./configuration.md) for the full list of settings.
 # Create extensions and tables
 PYTHONPATH=. python scripts/init_db.py
 
-# Optional: run all migrations (idempotent)
-psql $DATABASE_URL -f src/storage/migrations/001_init.sql
-psql $DATABASE_URL -f src/storage/migrations/003_chat_history.sql
-psql $DATABASE_URL -f src/storage/migrations/004_indices.sql
-psql $DATABASE_URL -f src/storage/migrations/005_parent_chunks.sql
-psql $DATABASE_URL -f src/storage/migrations/006_enriched_fts.sql
-psql $DATABASE_URL -f src/storage/migrations/007_hnsw.sql
+# Apply all migrations (idempotent — safe to re-run)
+for f in src/storage/migrations/*.sql; do
+  echo "Applying $f..."
+  psql $DATABASE_URL -f "$f"
+done
 ```
+
+Key migrations applied:
+| File | What it adds |
+|------|-------------|
+| `001_init.sql` | Core schema: chunks, symbols, repos, webhook_events |
+| `003_chat_history.sql` | Chat sessions and plan history |
+| `007_hnsw.sql` | HNSW vector index (replaces ivfflat) |
+| `008_external_mcp_servers.sql` | External MCP server registry |
+| `010_workflow_tables.sql` | Workflow definitions and run history |
+| `011_agent_roles.sql` | Custom agent role overrides |
+| `013_generated_documents.sql` | PDF document storage |
 
 ---
 
@@ -167,5 +176,8 @@ PYTHONPATH=. pytest tests/ -v
 - [Connect GitHub repos and configure webhooks](./connecting-github.md)
 - [Access the MCP server from Claude Desktop](./mcp-access.md)
 - [Use the Planning and Ask modes](./search-and-ask.md)
+- [Build multi-step automations with Workflows](./workflows.md)
+- [Customize agent roles for your team](./agent-roles.md)
+- [Connect external MCP servers (Context7, Browserbase, etc.)](./external-mcp-servers.md)
 - [Add custom skills for your team](./custom-skills.md)
 - [Deploy to production](./deployment.md)
