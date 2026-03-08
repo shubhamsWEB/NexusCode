@@ -27,7 +27,7 @@ tree-sitter-go==0.25.0
 tree-sitter-rust==0.23.0
 
 # Embeddings & ML
-voyageai==0.3.3
+voyageai==0.3.7
 sentence-transformers         # cross-encoder reranker (version pinned by torch)
 
 # Token counting
