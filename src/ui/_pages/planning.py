@@ -276,10 +276,20 @@ def _request_streaming(api_url: str, payload: dict, api_key: str = "") -> tuple[
                 elif etype == "thinking":
                     text = event.get("text", "")
                     if text:
-                        preview = (text[:120] + "…") if len(text) > 120 else text
-                        step = {"type": "thinking", "summary": preview}
-                        plan_steps.append(step)
-                        st.session_state["plan_agent_logs"].append(step)
+                        # Accumulate streaming thinking chunks into a single row.
+                        if plan_steps and plan_steps[-1].get("type") == "thinking":
+                            raw = plan_steps[-1].get("_raw", "") + text
+                            plan_steps[-1]["_raw"] = raw
+                            preview = raw[:120] + ("…" if len(raw) > 120 else "")
+                            plan_steps[-1]["summary"] = preview
+                        else:
+                            step = {
+                                "type": "thinking",
+                                "summary": text[:120] + ("…" if len(text) > 120 else ""),
+                                "_raw": text,
+                            }
+                            plan_steps.append(step)
+                            st.session_state["plan_agent_logs"].append(step)
                         trace_placeholder.markdown(
                             render_agent_timeline_html(plan_steps),
                             unsafe_allow_html=True,

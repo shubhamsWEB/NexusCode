@@ -11,6 +11,7 @@ Tool categories:
   EXTENDED_TOOL_SCHEMAS      — 3 higher-order: agent-context/plan/ask
   ALL_INTERNAL_TOOL_SCHEMAS  — all 7 combined
   ASK_RETRIEVAL_TOOL_SCHEMAS — trimmed set for Ask Mode (drops get_file_context)
+  THINK_TOOL_SCHEMA          — meta-loop self-evaluation scratchpad (injected by AgentLoop)
 """
 
 from __future__ import annotations
@@ -525,6 +526,52 @@ GENERATE_PDF_SCHEMA: dict = {
             },
         },
         "required": ["content", "title"],
+    },
+}
+
+
+# ── Think tool (meta-loop self-evaluation) ────────────────────────────────────
+# Based on Anthropic's "think" tool pattern (engineering blog, 2025):
+# A side-effect-free scratchpad that lets Claude explicitly reason about whether
+# it has enough context to answer before deciding to search more or call the final
+# answer tool. Shown to improve complex multi-step task consistency on τ-bench.
+# Injected by AgentLoop into the retrieval tools list (not a domain retrieval tool).
+
+THINK_TOOL_SCHEMA: dict = {
+    "name": "think",
+    "description": (
+        "A side-effect-free scratchpad for explicit self-evaluation. "
+        "Use this to reason out loud about what you've found and whether it's "
+        "sufficient before deciding to search more or call the final answer tool. "
+        "Your thought is echoed back into the conversation so you can refer to it.\n\n"
+        "WHEN TO USE:\n"
+        "  • After 2+ searches — ask yourself: 'Do I have enough to answer well?'\n"
+        "  • Before repeating a similar query — check if you already have the answer.\n"
+        "  • When you're unsure whether a new search would reveal anything new.\n"
+        "  • Before calling the final answer tool — confirm no critical gap remains.\n\n"
+        "GOOD THOUGHT EXAMPLES:\n"
+        "  'I found the JWT validation logic in auth.py lines 45-89, the middleware "
+        "   in middleware/jwt.py, and the token generation in utils/token.py. "
+        "   I have the complete auth flow. I can answer now.'\n"
+        "  'I found authentication but haven't seen how sessions are managed after "
+        "   login. Let me search for session handling before answering.'\n"
+        "  'My last two searches returned the same auth.py file. Searching more "
+        "   for this topic will likely yield diminishing returns. Time to answer.'"
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "thought": {
+                "type": "string",
+                "description": (
+                    "Your explicit reasoning covering: "
+                    "(1) what relevant code/context you have found so far, "
+                    "(2) whether it is sufficient to answer the question comprehensively, "
+                    "(3) what specific information is still missing, if anything."
+                ),
+            },
+        },
+        "required": ["thought"],
     },
 }
 

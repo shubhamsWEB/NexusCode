@@ -184,13 +184,18 @@ def render_agent_timeline_html(steps: list[dict]) -> str:
             '</div>'
         )
 
+    # Reverse rows so the newest event is the first child in the DOM.
+    # Combined with `flex-direction: column-reverse`, this pins the newest
+    # event to the visual bottom and sets the initial scroll at the bottom —
+    # a pure-CSS auto-scroll-to-latest without any JavaScript.
+    # Visual layout: oldest events scroll off the top; latest always visible.
     css = """<style>
 .tl-wrap{font-family:ui-monospace,'Cascadia Code',Consolas,monospace;
   background:#0d1117;border-radius:8px;padding:6px 10px;
-  border:1px solid #30363d;max-height:300px;overflow-y:auto}
+  border:1px solid #30363d;height:260px;overflow-y:auto;
+  display:flex;flex-direction:column-reverse}
 .tl-row{display:flex;align-items:center;gap:7px;padding:4px 0;
-  border-bottom:1px solid #21262d;min-width:0}
-.tl-row:last-child{border-bottom:none}
+  border-bottom:1px solid #21262d;min-width:0;flex-shrink:0}
 .tl-think{align-items:flex-start}
 .tl-st{font-size:11px;font-weight:700;flex-shrink:0;width:14px;text-align:center}
 .tl-ic{font-size:13px;flex-shrink:0}
@@ -200,7 +205,7 @@ def render_agent_timeline_html(steps: list[dict]) -> str:
 .tl-tok{font-size:11px;color:#6e7681;margin-left:auto;flex-shrink:0}
 .tl-lbl{font-size:12px;color:#8b949e;flex:1}
 </style>"""
-    return f'{css}<div class="tl-wrap">{"".join(rows)}</div>'
+    return f'{css}<div class="tl-wrap">{"".join(reversed(rows))}</div>'
 
 
 def status_badge(status: str) -> str:

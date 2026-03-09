@@ -100,6 +100,10 @@ async def search(
 
     candidates = top_k * settings.retrieval_candidate_multiplier
 
+    # Degrade gracefully: semantic/hybrid without a valid vector → keyword-only
+    if not query_vector and mode in ("semantic", "hybrid"):
+        mode = "keyword"
+
     if mode == "semantic":
         results = await _semantic_search(
             query_vector, candidates, repo_owner, repo_name, language, search_quality
@@ -320,6 +324,9 @@ async def search_cross_repo(
     Returns (results_by_repo, budgets_by_repo).
 
     Algorithm:
+    0. Happy path: if the query explicitly names a known, in-scope repo
+       (e.g. "search myorg/auth-service for login" or "find login in auth-service"),
+       skip the router entirely and go straight to that single repo.
     1. RepoRouter.score_repos() with allowed_repos + current_repo hint.
        Falls back to naive all-repo search if no summaries exist.
     2. Budget allocation via router.allocate_budgets().
@@ -328,9 +335,25 @@ async def search_cross_repo(
     """
     import asyncio
 
-    from src.retrieval.repo_router import RepoRouter, ScoredRepo
+    from src.retrieval.repo_router import RepoRouter, ScoredRepo, detect_repo_mention
     from src.retrieval.reranker import rerank
 
+    # ── Step 0: Happy path — explicit repo mention in query ──────────────────
+    mentioned = await detect_repo_mention(query, allowed_repos)
+    if mentioned:
+        owner, name = mentioned
+        results = await search(
+            query, query_vector,
+            top_k=top_k,
+            repo_owner=owner,
+            repo_name=name,
+            language=language,
+            search_quality=search_quality,
+        )
+        results = rerank(query, results, top_n=top_k)
+        return {(owner, name): results}, {(owner, name): token_budget}
+
+    # ── Step 1: Router scoring ────────────────────────────────────────────────
     router = RepoRouter()
     scored = await router.score_repos(
         query, query_vector,
@@ -340,8 +363,9 @@ async def search_cross_repo(
 
     # Graceful fallback: no summaries yet
     if not scored:
+        fallback_mode = "keyword" if not query_vector else "hybrid"
         results = await search(
-            query, query_vector, top_k=top_k,
+            query, query_vector, top_k=top_k, mode=fallback_mode,
             language=language, search_quality=search_quality,
         )
         results = rerank(query, results, top_n=top_k)

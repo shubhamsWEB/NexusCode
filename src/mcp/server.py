@@ -37,15 +37,29 @@ def _escape_ilike(value: str) -> str:
 mcp_server = FastMCP(
     name="codebase-intelligence",
     instructions=(
-        "A live, always-fresh index of your GitHub codebase. "
-        "Use search_codebase for natural-language or identifier queries. "
-        "Use get_symbol for exact function/class lookup. "
-        "Use find_callers to trace usage of a symbol. "
-        "Use get_file_context for a structural overview of a file. "
-        "Use get_agent_context to get pre-assembled context before starting a task. "
-        "Use plan_implementation to generate a complete implementation plan for a bug/feature/refactor. "
-        "Use ask_codebase to answer any natural-language question about the codebase in a mentor tone. "
-        "Use list_skills to discover available skills and their capabilities."
+        "A live, always-fresh index of one or more GitHub repositories. "
+        "All tools are scope-aware: if an API key is provided it restricts which repos are "
+        "accessible; tools silently enforce this — never try to access repos outside the scope.\n\n"
+        "TOOL SELECTION GUIDE:\n"
+        "• search_codebase   — first choice for any 'find / where is / how does X work' question.\n"
+        "• get_symbol        — when you know the exact function or class name and want its definition.\n"
+        "• find_callers      — when you need to know what calls a function (blast-radius analysis).\n"
+        "• get_file_context  — when you need the complete structure of a specific file.\n"
+        "• get_agent_context — call this FIRST before starting any implementation task; it assembles "
+        "all relevant context in one shot.\n"
+        "• plan_implementation — for generating a full grounded implementation plan.\n"
+        "• ask_codebase      — for conversational questions that need a mentor-style explanation.\n"
+        "• list_skills       — to discover available skills and workflows.\n\n"
+        "REPO TARGETING (in priority order):\n"
+        "1. repo='owner/name' — always use this when you know the target repo. Most reliable.\n"
+        "2. Include 'owner/name' in the query text (e.g. 'search myorg/auth-service for login') "
+        "— unambiguous, auto-detected against the known repos list.\n"
+        "3. Repo name as a word in the query (e.g. 'find login in auth-service') "
+        "— auto-detected by comparing against the actual list of accessible repos "
+        "(from the API key scope if present, otherwise from the Redis-cached index). "
+        "Fires only when exactly one repo name matches — no guessing, no heuristics.\n"
+        "4. Omit both — cross-repo routing searches all accessible repos automatically.\n\n"
+        "Use current_repo='owner/name' to tell the system which repo the user is actively working in."
     ),
     warn_on_duplicate_tools=False,
 )
@@ -56,27 +70,80 @@ mcp_server = FastMCP(
 
 @mcp_server.tool()
 async def search_codebase(
-    query: Annotated[str, "Natural language or identifier query"],
+    query: Annotated[
+        str,
+        "Natural language or identifier query. "
+        "You may embed a repo name directly in the query text to target a specific repo — "
+        "e.g. 'find the login handler in auth-service' or 'search myorg/frontend for useAuth'. "
+        "The system detects the repo name automatically, so you do NOT need to set repo= as well.",
+    ],
     repo: Annotated[
         str | None,
-        "Scope to 'owner/name'. Omit for intelligent cross-repo search.",
+        "Explicitly scope to a single repo in 'owner/name' format (e.g. 'myorg/backend'). "
+        "Use this when you are certain which repo to search. "
+        "Omit to let the system auto-detect a repo from the query text, or to enable "
+        "cross-repo routing across all accessible repos.",
     ] = None,
     current_repo: Annotated[
         str | None,
-        "The repo you are currently working in ('owner/name'). Prioritized in results.",
+        "The repo the user is actively working in, as 'owner/name'. "
+        "When set, this repo is always included first in cross-repo results regardless of its "
+        "relevance score. Useful when the developer is editing code in repo A but also wants "
+        "context from related repos B and C.",
     ] = None,
-    language: Annotated[str | None, "Filter by language: python, typescript, javascript…"] = None,
-    top_k: Annotated[int, "Number of results to return per repo (1-20)"] = 5,
-    mode: Annotated[str, "Search mode: 'semantic', 'keyword', or 'hybrid'"] = "hybrid",
+    language: Annotated[
+        str | None,
+        "Restrict results to a specific language: 'python', 'typescript', 'javascript', 'go', etc. "
+        "Omit to search across all languages.",
+    ] = None,
+    top_k: Annotated[
+        int,
+        "Max results to return per repo (1–20). Default 5. "
+        "Use 10–15 for planning or deep research tasks.",
+    ] = 5,
+    mode: Annotated[
+        str,
+        "Search mode: "
+        "'hybrid' (default) — semantic + keyword merged via RRF, best for most queries; "
+        "'semantic' — vector similarity only, good for conceptual / description queries; "
+        "'keyword' — exact identifiers, error strings, file-path substrings.",
+    ] = "hybrid",
     cross_repo: Annotated[
-        bool, "Enable intelligent multi-repo routing when repo=None (default true)"
+        bool,
+        "Enable cross-repo routing when no specific repo is identified (default true). "
+        "Set to false to restrict to the current scope without routing. "
+        "Ignored when repo= is set or a repo name is detected in the query.",
     ] = True,
 ) -> str:
     """
-    Search the codebase using semantic vector search, keyword search, or both.
-    Returns ranked code chunks with file locations, symbol names, and source previews.
-    Use this for any question like 'where is auth handled?' or 'find the payment logic'.
-    When repo is omitted and cross_repo=True, automatically routes to the most relevant repos.
+    Search the indexed codebase and return ranked code chunks with file locations,
+    symbol names, line ranges, and source previews.
+
+    ROUTING DECISION (automatic, in priority order):
+    1. repo='owner/name' is set          → search that single repo directly. Most reliable.
+    2. 'owner/name' in the query text    → unambiguous; search that repo directly.
+       Example: 'how does myorg/auth-service handle JWT?'
+    3. Repo name as a word in the query  → validated against the actual list of accessible
+       repos (from API key scope if present, otherwise from Redis-cached index).
+       Fires only when exactly one repo name matches the word — no heuristics.
+       Example: 'find the token refresh logic in auth-service'
+       If 'authservice' appears in the query but no repo is named 'authservice',
+       nothing matches and the router decides instead — no false positives.
+    4. Neither                           → cross-repo routing: score all accessible repos
+       by semantic similarity + keyword Jaccard, search the top-N in parallel, assemble
+       results with clear ╔REPO╗ section headers.
+
+    WHEN TO USE:
+    - 'Where is authentication handled?'
+    - 'Find the Stripe webhook handler'
+    - 'Show me how the RQ worker is started'
+    - 'Search myorg/auth-service for the token refresh logic'
+    - Any question whose answer lives in code
+
+    WHEN NOT TO USE:
+    - You need the full file structure → use get_file_context
+    - You know the exact function name → use get_symbol (faster)
+    - You are about to start a task → use get_agent_context first
     """
     from src.config import settings as _settings
     from src.retrieval.assembler import assemble, assemble_multi_repo
@@ -193,14 +260,24 @@ async def search_codebase(
 async def get_symbol(
     name: Annotated[
         str,
-        "Symbol name — exact ('authenticate'), qualified ('UserService.authenticate'), or natural language",
+        "Symbol name to look up — exact ('authenticate'), qualified ('UserService.authenticate'), "
+        "or a partial name ('auth'). Fuzzy matching finds close variants automatically.",
     ],
-    repo: Annotated[str | None, "Scope to 'owner/name' — defaults to all repos"] = None,
+    repo: Annotated[
+        str | None,
+        "Scope to 'owner/name'. Omit to search all accessible repos. "
+        "Respects API key scope automatically.",
+    ] = None,
 ) -> str:
     """
-    Look up a function, class, or method by name (like IDE 'Go to Definition').
-    Returns the symbol's file location, full signature, and docstring.
-    Supports fuzzy matching — 'auth' will find 'authenticate', 'Authorization', etc.
+    Look up a function, class, or method by name — like IDE 'Go to Definition'.
+    Returns the symbol's exact file location, full signature, and docstring.
+    Supports fuzzy matching: 'auth' will match 'authenticate', 'Authorization', etc.
+
+    WHEN TO USE:
+    - You know the function or class name and need its exact location and signature.
+    - You want to see the docstring before deciding whether to read the full file.
+    - Use search_codebase instead if you only have a description ('where is JWT validated?').
     """
     repo_owner = repo_name = None
     if repo and "/" in repo:
@@ -267,23 +344,36 @@ async def get_symbol(
 @mcp_server.tool()
 async def find_callers(
     symbol: Annotated[
-        str, "Symbol name to find callers of (e.g. 'authenticate', 'PaymentService.charge')"
+        str,
+        "Exact or qualified symbol name to trace (e.g. 'authenticate', 'PaymentService.charge'). "
+        "Must be a real symbol name — not a description.",
     ],
-    repo: Annotated[str | None, "Scope to 'owner/name' — defaults to all repos"] = None,
-    depth: Annotated[int, "How many call hops deep (1-3). depth=2 finds callers-of-callers."] = 1,
+    repo: Annotated[
+        str | None,
+        "Scope to 'owner/name'. Omit to trace callers across all accessible repos. "
+        "Respects API key scope automatically.",
+    ] = None,
+    depth: Annotated[
+        int,
+        "Call-graph traversal depth (1–3). "
+        "depth=1: who calls this symbol directly? "
+        "depth=2: who calls the code that calls this symbol? "
+        "depth=3: three hops — use for blast-radius analysis before a signature change.",
+    ] = 1,
 ) -> str:
     """
     Find all code that calls a given function or method, with optional multi-hop traversal.
+    Uses BFS: callers found in hop N become search targets for hop N+1.
+    Returns file locations and call-site code snippets for each hop.
 
-    depth=1: direct callers only (who calls 'authenticate'?)
-    depth=2: callers of callers (who calls the code that calls 'authenticate'?)
-    depth=3: three hops deep — useful for tracing blast radius of a signature change
+    WHEN TO USE:
+    - Before changing a function signature: find everything that will break.
+    - Tracing how a value propagates through the call graph.
+    - 'What calls authenticate()?' or 'What triggers the payment charge?'
 
-    Each hop builds a call graph using BFS: the callers found in hop N become the
-    targets for hop N+1, stopping when no new call sites are found.
-
-    Returns file locations and code snippets for each discovered call site per hop.
-    Answers: 'what breaks if I change this function's signature?'
+    WHEN NOT TO USE:
+    - You want to understand what a function does → use search_codebase or get_symbol.
+    - You want cross-file import relationships → use get_file_context.
     """
     from src.retrieval.searcher import _keyword_search
 
@@ -413,13 +503,36 @@ async def find_callers(
 
 @mcp_server.tool()
 async def get_file_context(
-    path: Annotated[str, "File path relative to repo root (e.g. 'app/shopify.server.ts')"],
-    repo: Annotated[str | None, "Scope to 'owner/name'"] = None,
-    include_deps: Annotated[bool, "Include files this file imports (default true)"] = True,
+    path: Annotated[
+        str,
+        "File path relative to repo root, exact or partial "
+        "(e.g. 'src/auth/service.py' or just 'service.py'). Partial paths use ILIKE matching.",
+    ],
+    repo: Annotated[
+        str | None,
+        "Scope to 'owner/name'. Required when the same filename exists in multiple repos. "
+        "Respects API key scope automatically.",
+    ] = None,
+    include_deps: Annotated[
+        bool,
+        "Also return the list of files that import this file (reverse-dependency graph). "
+        "Default true. Set false to speed up the call when you only need the symbol list.",
+    ] = True,
 ) -> str:
     """
-    Get the complete structural map of a file: all symbols, imports, and what imports it.
-    Answers: 'what is in this file and how does it relate to others?'
+    Return the complete structural map of a file: every symbol defined in it
+    (functions, classes, methods with signatures and docstrings), its imports,
+    and which other files import it.
+
+    WHEN TO USE:
+    - You have a file path and want to understand its full contents without reading raw code.
+    - Before modifying a file: check what it exports and what depends on it.
+    - 'What functions are in src/auth/service.py?'
+    - 'What imports webhook.py?'
+
+    WHEN NOT TO USE:
+    - You don't know the file path → use search_codebase to find it first.
+    - You only need one symbol → use get_symbol (faster).
     """
     repo_owner = repo_name = None
     if repo and "/" in repo:
@@ -538,23 +651,57 @@ async def get_file_context(
 
 @mcp_server.tool()
 async def get_agent_context(
-    task: Annotated[str, "Natural language description of the task you are about to perform"],
+    task: Annotated[
+        str,
+        "Natural language description of the task you are about to perform. "
+        "Be specific: 'Add rate limiting to POST /search' is better than 'rate limiting'. "
+        "You may mention a repo name in the task text to target a specific repo automatically.",
+    ],
     focal_files: Annotated[
-        list[str] | None, "Files you are actively working on — their chunks get priority"
+        list[str] | None,
+        "File paths you are actively editing or reading (up to 5). "
+        "Their full content is included first before semantic search results. "
+        "Example: ['src/api/search.py', 'src/retrieval/searcher.py']",
     ] = None,
-    token_budget: Annotated[int, "Max tokens to return (default 8000)"] = 8000,
-    repo: Annotated[str | None, "Scope to 'owner/name' — defaults to all repos"] = None,
+    token_budget: Annotated[
+        int,
+        "Max tokens to return in the assembled context (default 8000, max 32000). "
+        "Increase to 16000–32000 for complex multi-file tasks.",
+    ] = 8000,
+    repo: Annotated[
+        str | None,
+        "Scope to 'owner/name'. Omit to enable cross-repo routing — the system searches "
+        "all accessible repos and assembles context from the most relevant ones. "
+        "Respects API key scope automatically.",
+    ] = None,
     current_repo: Annotated[
         str | None,
-        "The repo you are currently working in ('owner/name'). Prioritized when doing cross-repo search.",
+        "The repo the user is actively working in ('owner/name'). "
+        "Always included first in cross-repo results. "
+        "Set this whenever you know the user's working repo.",
     ] = None,
 ) -> str:
     """
-    Pre-assembled, token-budget-aware context for a specific coding task.
-    Call this at the START of a task before you begin reasoning.
-    It combines focal file content + semantic search + import graph to give you
-    everything relevant in one shot, deduplicated and ranked.
-    When repo is omitted, intelligently searches across all relevant repos.
+    Assemble a complete, token-budget-aware context package for a coding task.
+    Call this BEFORE starting any non-trivial implementation or analysis.
+
+    What it does in one call:
+    1. Includes the full content of focal_files (files you are editing) — highest priority.
+    2. Runs semantic search for the task description across all relevant repos.
+    3. Deduplicates and reranks all chunks.
+    4. Truncates to token_budget and returns a ready-to-use context block.
+
+    Cross-repo behaviour (same routing rules as search_codebase):
+    - repo= set → single repo only.
+    - Repo name in task text → auto-detected, single repo.
+    - Neither → scores all accessible repos and assembles from the top-N.
+
+    WHEN TO USE:
+    - Always call this at the start of 'implement X', 'fix bug in Y', 'refactor Z' tasks.
+    - It replaces 3–5 individual search_codebase calls with one optimised assembly.
+
+    WHEN NOT TO USE:
+    - Quick lookups ('where is function X?') → use get_symbol or search_codebase instead.
     """
     from sqlalchemy import text
 
@@ -704,34 +851,52 @@ async def get_agent_context(
 @mcp_server.tool()
 async def plan_implementation(
     query: Annotated[
-        str, "Bug report, feature request, or refactoring task description (min 10 chars)"
+        str,
+        "Bug report, feature request, or refactoring task description (min 10 chars). "
+        "Be specific and include relevant context. "
+        "You may mention a repo name in the query to target a specific repo "
+        "(e.g. 'add rate limiting to POST /search in api-gateway').",
     ],
-    repo: Annotated[str | None, "Scope to 'owner/name' — defaults to all repos"] = None,
+    repo: Annotated[
+        str | None,
+        "Scope to 'owner/name'. Omit to let cross-repo routing find the relevant repos "
+        "automatically. Respects API key scope.",
+    ] = None,
     web_research: Annotated[
-        bool, "Search the web for best practices before generating the plan (default true)"
+        bool,
+        "Search the web for current best practices, libraries, and patterns before planning. "
+        "Default true. Set false for speed or offline environments.",
     ] = True,
     model: Annotated[
         str | None,
-        "LLM model to use (e.g. 'gpt-4o', 'claude-opus-4-6'). Defaults to server config.",
+        "LLM model to use (e.g. 'claude-opus-4-6', 'gpt-4o'). "
+        "Defaults to server config. Use a more capable model for complex architectural tasks.",
     ] = None,
 ) -> str:
     """
-    Generate a complete, grounded implementation plan for a coding task.
+    Generate a complete, codebase-grounded implementation plan for a coding task.
 
-    Combines two information sources:
-    1. Web research — searches for the best library, pattern, and current best practices
-    2. Codebase context — retrieves the actual files, symbols, and callers from the index
+    Combines two sources:
+    1. Web research — best library, pattern, and current best practices for the task.
+    2. Codebase retrieval — exact file paths, symbol names, and callers from the index.
 
     Returns a structured plan with:
-    - Exact file paths and symbol names to change (from codebase)
-    - Library/approach recommendation (from web research)
-    - Step-by-step execution order with dependencies
-    - Pseudocode for complex logic
-    - Risk assessment and mitigation strategies
-    - A concrete test plan
+    - Problem statement and clarifying assumptions
+    - Current architecture analysis
+    - Proposed solutions with trade-offs
+    - Step-by-step implementation tasks (exact files, symbols, pseudocode)
+    - Risk assessment and mitigation
+    - Concrete test plan
 
-    Use this BEFORE starting any non-trivial implementation to get a
-    Cursor-style planning overview grounded in your actual codebase.
+    WHEN TO USE:
+    - Before starting any non-trivial feature, bug fix, or refactor.
+    - When you need to understand the full blast radius of a change.
+    - 'Plan adding Redis caching to the embedding step'
+    - 'How should I implement rate limiting on POST /search?'
+
+    WHEN NOT TO USE:
+    - Simple one-line fixes → just do it.
+    - Pure code questions without implementation intent → use ask_codebase.
     """
     from src.planning.claude_planner import generate_plan
 
@@ -762,30 +927,44 @@ async def plan_implementation(
 
 @mcp_server.tool()
 async def ask_codebase(
-    question: Annotated[str, "Natural-language question about the codebase (min 5 chars)"],
-    repo: Annotated[str | None, "Scope to 'owner/name' — defaults to all repos"] = None,
+    question: Annotated[
+        str,
+        "Natural-language question about the codebase (min 5 chars). "
+        "You may mention a repo name to target a specific repo "
+        "(e.g. 'How does auth-service handle token refresh?').",
+    ],
+    repo: Annotated[
+        str | None,
+        "Scope to 'owner/name'. Omit to let cross-repo routing find the relevant repos. "
+        "Respects API key scope.",
+    ] = None,
     model: Annotated[
         str | None,
-        "LLM model to use (e.g. 'gpt-4o', 'claude-opus-4-6'). Defaults to server config.",
+        "LLM model to use (e.g. 'claude-opus-4-6', 'gpt-4o'). Defaults to server config.",
     ] = None,
 ) -> str:
     """
     Answer a natural-language question about the codebase in a mentor tone.
 
-    Unlike plan_implementation (which outputs file changes and steps), this tool
-    answers questions conversationally — explaining how code works, tracing data
-    flows, clarifying architecture decisions, and pointing to real file locations.
+    Unlike plan_implementation (which returns file changes and steps), this tool
+    answers conversationally — explaining how code works, tracing data flows,
+    clarifying architecture decisions, and pointing to real file locations.
 
     Returns a markdown answer with:
-    - Inline file citations (e.g. `src/pipeline/pipeline.py` lines 42-80)
+    - Inline file citations (e.g. `src/pipeline/pipeline.py` lines 42–80)
     - Fenced code snippets for key examples
-    - 2-3 concrete follow-up questions grounded in the codebase
+    - 2–3 concrete follow-up questions grounded in the codebase
 
-    Use this for questions like:
-    - "How does the webhook processing pipeline work?"
-    - "Where is authentication handled?"
-    - "What does the reranker do and when is it called?"
-    - "Explain the chunking algorithm"
+    WHEN TO USE:
+    - 'How does the webhook processing pipeline work?'
+    - 'Where is authentication handled?'
+    - 'What does the reranker do and when is it called?'
+    - 'Explain the chunking algorithm'
+    - Any question whose answer needs explanation, not just a code location.
+
+    WHEN NOT TO USE:
+    - You need code locations only → use search_codebase (faster, lower cost).
+    - You need a full implementation plan → use plan_implementation.
     """
     from src.ask.ask_agent import generate_answer
 

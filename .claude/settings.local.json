@@ -99,7 +99,22 @@
       "Bash(ls:*)",
       "Bash(PYTHONPATH=/Users/shubhamagr/Documents/nexusCode_server /Users/shubhamagr/Documents/nexusCode_server/.venv/bin/python3:*)",
       "WebFetch(domain:pypi.org)",
-      "WebFetch(domain:usenexuscode.vercel.app)"
+      "WebFetch(domain:usenexuscode.vercel.app)",
+      "WebFetch(domain:docs.anthropic.com)",
+      "WebFetch(domain:mlpills.substack.com)",
+      "WebFetch(domain:arxiv.org)",
+      "WebFetch(domain:www.promptingguide.ai)",
+      "WebFetch(domain:agent-patterns.readthedocs.io)",
+      "WebFetch(domain:docs.temporal.io)",
+      "WebFetch(domain:www.anthropic.com)",
+      "WebFetch(domain:www.sitepoint.com)",
+      "WebFetch(domain:openai.com)",
+      "WebFetch(domain:simonwillison.net)",
+      "WebFetch(domain:blog.agentailor.com)",
+      "WebFetch(domain:gist.github.com)",
+      "WebFetch(domain:www.letta.com)",
+      "WebFetch(domain:ai-sdk.dev)",
+      "Bash(python:*)"
     ]
   }
 }

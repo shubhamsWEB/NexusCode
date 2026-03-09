@@ -312,11 +312,22 @@ def _stream_ask(api_url: str, payload: dict, api_key: str = "") -> tuple[str, di
                     elif etype == "thinking":
                         text = event.get("text", "")
                         if text:
-                            preview = text[:120] + ("…" if len(text) > 120 else "")
-                            step = {"type": "thinking", "tool": "_thinking",
-                                    "summary": preview, "state": "done", "tokens": None}
-                            tool_steps.append(step)
-                            st.session_state.ask_agent_logs.append(step)
+                            # Thinking arrives as streaming chunks — accumulate into
+                            # a single row instead of adding one row per packet.
+                            if tool_steps and tool_steps[-1].get("type") == "thinking":
+                                raw = tool_steps[-1].get("_raw", "") + text
+                                tool_steps[-1]["_raw"] = raw
+                                preview = raw[:120] + ("…" if len(raw) > 120 else "")
+                                tool_steps[-1]["summary"] = preview
+                            else:
+                                step = {
+                                    "type": "thinking", "tool": "_thinking",
+                                    "summary": text[:120] + ("…" if len(text) > 120 else ""),
+                                    "_raw": text,
+                                    "state": "done", "tokens": None,
+                                }
+                                tool_steps.append(step)
+                                st.session_state.ask_agent_logs.append(step)
                             trace_placeholder.markdown(
                                 render_agent_timeline_html(tool_steps),
                                 unsafe_allow_html=True,

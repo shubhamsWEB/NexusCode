@@ -35,6 +35,78 @@ _FORCE_ANSWER_MSG = (
     "If some details are uncertain, say so clearly in your answer."
 )
 
+_SOFT_ANSWER_NUDGE = (
+    "You have gathered substantial codebase context. "
+    "If you have enough information to answer comprehensively, please call the answer tool now. "
+    "Only continue searching if critical details are still missing."
+)
+
+_DUPLICATE_QUERY_MSG = (
+    "Note: Your last search query closely matches one you already ran. "
+    "Repeating it will likely return the same results. "
+    "Use the 'think' tool to evaluate whether you already have enough context, "
+    "then either call the answer tool or try a distinctly different query."
+)
+
+# ── Query normalisation (for duplicate detection) ─────────────────────────────
+
+
+def _normalize_query(query: str) -> str:
+    """Produce a canonical form of a search query for duplicate detection.
+
+    Lowercases, splits into words, removes stop words, sorts, and takes the
+    top 8 significant tokens.  Two queries that differ only in word order or
+    minor phrasing will map to the same key.
+    """
+    _STOP = {"the", "a", "an", "in", "of", "to", "how", "does", "do",
+             "is", "are", "what", "where", "why", "which", "for", "and", "or"}
+    tokens = [w for w in query.lower().split() if w not in _STOP and len(w) > 1]
+    return " ".join(sorted(tokens)[:8])
+
+
+# ── Budget status line (BATS paper pattern) ───────────────────────────────────
+
+
+def _budget_line(iteration: int, max_iterations: int, tokens: int, budget: int) -> str:
+    """One-line budget status injected into every tool-result batch.
+
+    Mirrors the BATS paper (arxiv 2511.17006) finding that showing remaining
+    budget produces calibrated stopping: agents answer sooner when confident
+    and search longer only when genuinely uncertain, reducing cost ~31%.
+    """
+    pct = int(100 * tokens / budget) if budget else 0
+    iters_left = max(0, max_iterations - iteration - 1)
+    return (
+        f"[Search budget: iteration {iteration + 1}/{max_iterations} | "
+        f"context {tokens:,}/{budget:,} tokens ({pct}%) | "
+        f"{iters_left} iteration{'s' if iters_left != 1 else ''} remaining before forced answer]"
+    )
+
+
+# ── Final-answer tool description enhancer ────────────────────────────────────
+
+
+def _enhance_final_answer_tools(tools: list[dict]) -> list[dict]:
+    """Append an early-calling invitation to every final-answer tool's description.
+
+    Follows the Vercel AI SDK / pydantic-ai pattern: the tool schema itself
+    explicitly invites Claude to call it early rather than only as a last resort.
+    Applied once at the start of each agent loop.
+    """
+    _SUFFIX = (
+        "\n\nIMPORTANT: Call this tool as soon as you have gathered enough context "
+        "to answer the question well. You do NOT need to exhaust all available searches — "
+        "a thorough answer based on good context is far better than over-searching. "
+        "Use the 'think' tool first if you are unsure whether you have enough."
+    )
+    enhanced = []
+    for t in tools:
+        desc = t.get("description", "")
+        if desc and _SUFFIX.strip()[:30] not in desc:
+            t = {**t, "description": desc.rstrip() + _SUFFIX}
+        enhanced.append(t)
+    return enhanced
+
 
 @dataclass
 class AgentLoopConfig:
@@ -43,6 +115,7 @@ class AgentLoopConfig:
     require_search_before_answer: bool = True
     thinking_budget: int = 0  # 0 = disabled; >0 = extended thinking for plan mode
     planning_max_output_tokens: int = 8000  # base max output tokens per turn
+    soft_answer_threshold: float = 0.60  # fraction of cumulative_token_budget at which to nudge toward answering
 
 
 class AgentGroundingError(RuntimeError):
@@ -224,11 +297,22 @@ class AgentLoop:
             semaphore,
         )
 
+        from src.agent.tool_schemas import THINK_TOOL_SCHEMA
+
         client = get_client_for_model(model)
         _use_caching = not is_ollama_model(model)  # Ollama doesn't support prompt caching
+
+        # Enhance final-answer tool descriptions to invite early calling
+        # (Vercel AI SDK / pydantic-ai pattern).
+        final_answer_tools = _enhance_final_answer_tools(list(final_answer_tools))
+
+        # Inject the "think" tool into retrieval tools (Anthropic engineering pattern).
+        # It is side-effect-free so it must NOT count toward search_tools_called.
+        retrieval_tools_with_think = list(retrieval_tools) + [THINK_TOOL_SCHEMA]
+
         final_tool_names = {t["name"] for t in final_answer_tools}
-        retrieval_tool_names = {t["name"] for t in retrieval_tools}
-        all_tools = retrieval_tools + final_answer_tools
+        retrieval_tool_names = {t["name"] for t in retrieval_tools}  # excludes "think" intentionally
+        all_tools = retrieval_tools_with_think + final_answer_tools
 
         messages: list[dict] = [{"role": "user", "content": initial_message}]
 
@@ -236,6 +320,8 @@ class AgentLoop:
         total_context_tokens = 0
         total_tool_calls = 0
         force_message_added = False
+        soft_nudge_added = False
+        seen_search_queries: set[str] = set()  # duplicate-query detection
         t0 = time.monotonic()
 
         # +2 safety headroom for the forced-final-answer turn
@@ -394,6 +480,7 @@ class AgentLoop:
             tool_pairs = await asyncio.gather(*[_exec_tool_run(b) for b in tool_use_blocks])
 
             tool_results = []
+            duplicate_detected = False
             for block, result_text in tool_pairs:
                 total_tool_calls += 1
                 if block.name in retrieval_tool_names:
@@ -415,6 +502,54 @@ class AgentLoop:
                         "tool_use_id": block.id,
                         "content": result_text,
                     }
+                )
+
+                # ── Duplicate query detection ──────────────────────────────────
+                # If Claude repeats a semantically identical search, the results
+                # will be the same — warn it and suggest answering instead.
+                if block.name == "search_codebase" and not duplicate_detected:
+                    raw_query = _coerce_to_dict(block.input).get("query", "")
+                    if raw_query:
+                        norm = _normalize_query(raw_query)
+                        if norm in seen_search_queries:
+                            tool_results.append({"type": "text", "text": _DUPLICATE_QUERY_MSG})
+                            duplicate_detected = True
+                            logger.info(
+                                "agent_loop: duplicate query detected at iter=%d: %r",
+                                iteration, raw_query[:60],
+                            )
+                        else:
+                            seen_search_queries.add(norm)
+
+            # ── Budget status line (BATS paper pattern) ───────────────────────
+            # Injected into every tool-result batch so Claude always knows its
+            # remaining budget.  Produces calibrated stopping: answer sooner when
+            # confident, search longer only when genuinely uncertain.
+            if not force_final:
+                tool_results.append({
+                    "type": "text",
+                    "text": _budget_line(iteration, config.max_iterations, total_context_tokens, config.cumulative_token_budget),
+                })
+
+            # ── Soft nudge: invite Claude to answer when context is rich enough ──
+            # Triggers on the second-to-last normal iteration OR when token usage
+            # crosses soft_answer_threshold of the budget. This avoids exhausting
+            # all max_iterations when sufficient context was already retrieved.
+            if (
+                not soft_nudge_added
+                and not force_final
+                and search_tools_called >= 1
+                and (
+                    total_context_tokens > config.cumulative_token_budget * config.soft_answer_threshold
+                    or iteration >= config.max_iterations - 1
+                )
+            ):
+                tool_results.append({"type": "text", "text": _SOFT_ANSWER_NUDGE})
+                soft_nudge_added = True
+                logger.info(
+                    "agent_loop: soft nudge at iter=%d tokens=%d",
+                    iteration,
+                    total_context_tokens,
                 )
 
             messages.append({"role": "user", "content": tool_results})
@@ -456,11 +591,20 @@ class AgentLoop:
             semaphore,
         )
 
+        from src.agent.tool_schemas import THINK_TOOL_SCHEMA
+
         client = get_client_for_model(model)
         _use_caching = not is_ollama_model(model)
+
+        # Enhance final-answer tool descriptions to invite early calling.
+        final_answer_tools = _enhance_final_answer_tools(list(final_answer_tools))
+
+        # Inject the "think" tool alongside retrieval tools.
+        retrieval_tools_with_think = list(retrieval_tools) + [THINK_TOOL_SCHEMA]
+
         final_tool_names = {t["name"] for t in final_answer_tools}
-        retrieval_tool_names = {t["name"] for t in retrieval_tools}
-        all_tools = retrieval_tools + final_answer_tools
+        retrieval_tool_names = {t["name"] for t in retrieval_tools}  # excludes "think" intentionally
+        all_tools = retrieval_tools_with_think + final_answer_tools
 
         messages: list[dict] = [{"role": "user", "content": initial_message}]
 
@@ -468,6 +612,8 @@ class AgentLoop:
         total_context_tokens = 0
         total_tool_calls = 0
         force_message_added = False
+        soft_nudge_added = False
+        seen_search_queries: set[str] = set()  # duplicate-query detection
         t0 = time.monotonic()
 
         for iteration in range(config.max_iterations + 2):
@@ -677,6 +823,7 @@ class AgentLoop:
             tool_pairs = await asyncio.gather(*[_exec_tool_stream(b) for b in tool_use_blocks])
 
             tool_results = []
+            duplicate_detected = False
             for block, result_text in tool_pairs:
                 total_tool_calls += 1
                 if block.name in retrieval_tool_names:
@@ -697,6 +844,46 @@ class AgentLoop:
                         "tool_use_id": block.id,
                         "content": result_text,
                     }
+                )
+
+                # ── Duplicate query detection ──────────────────────────────────
+                if block.name == "search_codebase" and not duplicate_detected:
+                    raw_query = _coerce_to_dict(block.input).get("query", "")
+                    if raw_query:
+                        norm = _normalize_query(raw_query)
+                        if norm in seen_search_queries:
+                            tool_results.append({"type": "text", "text": _DUPLICATE_QUERY_MSG})
+                            duplicate_detected = True
+                            logger.info(
+                                "agent_loop stream: duplicate query at iter=%d: %r",
+                                iteration, raw_query[:60],
+                            )
+                        else:
+                            seen_search_queries.add(norm)
+
+            # ── Budget status line (BATS paper pattern) ───────────────────────
+            if not force_final:
+                tool_results.append({
+                    "type": "text",
+                    "text": _budget_line(iteration, config.max_iterations, total_context_tokens, config.cumulative_token_budget),
+                })
+
+            # ── Soft nudge: invite Claude to answer when context is rich enough ──
+            if (
+                not soft_nudge_added
+                and not force_final
+                and search_tools_called >= 1
+                and (
+                    total_context_tokens > config.cumulative_token_budget * config.soft_answer_threshold
+                    or iteration >= config.max_iterations - 1
+                )
+            ):
+                tool_results.append({"type": "text", "text": _SOFT_ANSWER_NUDGE})
+                soft_nudge_added = True
+                logger.info(
+                    "agent_loop stream: soft nudge at iter=%d tokens=%d",
+                    iteration,
+                    total_context_tokens,
                 )
 
             messages.append({"role": "user", "content": tool_results})

@@ -3,11 +3,17 @@ RepoRouter — query-time repo scoring and budget allocation.
 
 Scores repos by semantic similarity (centroid cosine) + keyword Jaccard,
 then allocates token budgets proportionally across the top-N repos.
+
+detect_repo_mention() provides a fast short-circuit path: if the query itself
+explicitly names a repo (e.g. "search myorg/auth-service for login" or just
+"find login in auth-service"), skip the router entirely and go straight to
+that single repo.  The same allowed_repos scope gate applies.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 
 import numpy as np
@@ -17,6 +23,98 @@ from src.storage.db import get_all_repo_summaries
 from src.utils.logging import get_secure_logger
 
 logger = get_secure_logger(__name__)
+
+# ── Explicit repo mention detection ──────────────────────────────────────────
+
+_OWNER_SLASH_NAME = re.compile(
+    r"(?<![a-zA-Z0-9_])([a-zA-Z0-9][a-zA-Z0-9_.-]*)/"
+    r"([a-zA-Z0-9][a-zA-Z0-9_.-]*)(?![a-zA-Z0-9_/])"
+)
+
+
+async def detect_repo_mention(
+    query: str,
+    allowed_repos: list[str] | None,
+) -> tuple[str, str] | None:
+    """
+    Detect an explicit repo reference in the query by comparing against the
+    authoritative list of known repos — no heuristics about naming conventions.
+
+    Candidate list (source of truth, in priority order):
+    - ``allowed_repos`` from the API key when present and non-empty: this is
+      already the exact scoped set the caller can access, so we use it directly
+      without hitting Redis or the DB.
+    - Redis-cached ``repo_router:summaries`` when no API key is present: the
+      full list of all indexed repos.
+
+    Two match strategies (tried in order):
+
+    Strategy 1 — ``owner/name`` format:
+        Scans the query for ``word/word`` tokens and checks each against the
+        candidate list.  Fully unambiguous — file paths like ``src/auth`` won't
+        match unless there is literally a repo named ``src/auth``.
+
+    Strategy 2 — repo-name-only whole-word match:
+        Checks whether any known repo name appears as a standalone word in the
+        query.  Returns a match only when exactly one candidate matches
+        (zero or multiple → fall through to cross-repo router).
+
+        The candidate list IS the disambiguation layer: if the user says
+        "fix bug in authservice" and no indexed repo is named "authservice",
+        nothing matches and the router decides instead.  If a repo IS named
+        "authservice" and they say that word, we treat it as a repo reference —
+        no guessing about PascalCase, file extensions, or context words needed.
+
+    Returns ``(owner, name)`` on an unambiguous match, ``None`` otherwise.
+    """
+    # ── Build candidate list ──────────────────────────────────────────────────
+    if allowed_repos is not None and len(allowed_repos) > 0:
+        # API key present — use its scoped list directly; no Redis/DB call needed.
+        candidates = [
+            {"repo_owner": r.split("/", 1)[0], "repo_name": r.split("/", 1)[1]}
+            for r in allowed_repos
+            if "/" in r
+        ]
+    else:
+        # No API key — load all indexed repos from Redis cache (or DB fallback).
+        router = RepoRouter()
+        candidates = await router._load_summaries()
+
+    if not candidates:
+        return None
+
+    query_lower = query.lower()
+
+    # ── Strategy 1: 'owner/name' token in query ───────────────────────────────
+    for m in _OWNER_SLASH_NAME.finditer(query):
+        owner_q, name_q = m.group(1).lower(), m.group(2).lower()
+        for c in candidates:
+            if c["repo_owner"].lower() == owner_q and c["repo_name"].lower() == name_q:
+                logger.debug(
+                    "detect_repo_mention: owner/name match → %s/%s",
+                    c["repo_owner"], c["repo_name"],
+                )
+                return (c["repo_owner"], c["repo_name"])
+
+    # ── Strategy 2: repo-name-only whole-word match ───────────────────────────
+    # Sort longest name first so "api-gateway" is checked before "api".
+    matches: list[tuple[str, str]] = []
+    for c in sorted(candidates, key=lambda x: len(x["repo_name"]), reverse=True):
+        repo_name_lower = c["repo_name"].lower()
+        pattern = re.compile(
+            r"(?<![a-zA-Z0-9_])" + re.escape(repo_name_lower) + r"(?![a-zA-Z0-9_])"
+        )
+        if pattern.search(query_lower):
+            matches.append((c["repo_owner"], c["repo_name"]))
+
+    if len(matches) == 1:
+        logger.debug(
+            "detect_repo_mention: name-only match → %s/%s", matches[0][0], matches[0][1]
+        )
+        return matches[0]
+
+    # Zero or multiple matches → ambiguous; let the router decide.
+    return None
 
 
 def _get_redis():

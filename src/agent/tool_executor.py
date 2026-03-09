@@ -171,6 +171,11 @@ async def execute_tool(
             return await _ask_codebase(inp, repo_owner, repo_name, allowed_repos)
         elif name == "generate_pdf":
             return await _generate_pdf(inp, extra_context)
+        elif name == "think":
+            # Side-effect-free scratchpad: echo thought back so it appears in conversation history.
+            # Claude uses this to reason about whether it has sufficient context before deciding
+            # to search more or call the final answer tool (Anthropic "think" tool pattern).
+            return json.dumps({"thought": inp.get("thought", ""), "status": "ok"})
         else:
             from src.agent.mcp_bridge import call_external_tool, is_external_tool
 
@@ -211,8 +216,12 @@ async def _search_codebase(
     if mode in ("semantic", "hybrid"):
         query_vector = await embed_query(query)
 
-    # Cross-repo scoped search when no specific repo is pinned but a scope is active
+    # Cross-repo scoped search when no specific repo is pinned but a scope is active.
+    # Always embed the query here — the RepoRouter needs the vector for centroid scoring
+    # even when mode is "keyword".
     if repo_owner is None and allowed_repos and _settings.cross_repo_enabled:
+        if not query_vector:
+            query_vector = await embed_query(query)
         from src.retrieval.assembler import assemble_multi_repo
         from src.retrieval.searcher import search_cross_repo
 
