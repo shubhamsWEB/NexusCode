@@ -4,7 +4,9 @@
 **Interactive docs:** `http://localhost:8000/docs` (Swagger UI)
 **OpenAPI schema:** `http://localhost:8000/openapi.json`
 
-All endpoints return JSON unless noted otherwise. Authentication is only required for the MCP server SSE endpoint (see [mcp-access.md](./mcp-access.md)). All request bodies use `Content-Type: application/json`.
+All endpoints return JSON unless noted otherwise. Request bodies use `Content-Type: application/json`.
+
+**Authentication:** Scoped API keys restrict which repos a request can access. Pass a key via the `X-Api-Key` header or `?api_key=` query param. No key = unrestricted access. See [API Key Scopes](#api-key-scopes) for how to create keys.
 
 ---
 
@@ -12,21 +14,23 @@ All endpoints return JSON unless noted otherwise. Authentication is only require
 
 1. [Health & Status](#health--status)
 2. [Repository Management](#repository-management)
-3. [Search](#search)
-4. [Ask Mode](#ask-mode)
-5. [Planning Mode](#planning-mode)
-6. [Workflows](#workflows)
-7. [Documents (PDF)](#documents-pdf)
-8. [Knowledge Graph](#knowledge-graph)
-9. [Agent Roles](#agent-roles)
-10. [External MCP Servers](#external-mcp-servers)
-11. [Skills](#skills)
-12. [History](#history)
-13. [Webhooks & Events](#webhooks--events)
-14. [Authentication](#authentication)
-15. [Statistics](#statistics)
-16. [Error Responses](#error-responses)
-17. [SSE Streaming Guide](#sse-streaming-guide)
+3. [Cross-Repo Routing](#cross-repo-routing)
+4. [Search](#search)
+5. [Ask Mode](#ask-mode)
+6. [Planning Mode](#planning-mode)
+7. [Workflows](#workflows)
+8. [Documents (PDF)](#documents-pdf)
+9. [Knowledge Graph](#knowledge-graph)
+10. [Agent Roles](#agent-roles)
+11. [API Key Scopes](#api-key-scopes)
+12. [External MCP Servers](#external-mcp-servers)
+13. [Skills](#skills)
+14. [History](#history)
+15. [Webhooks & Events](#webhooks--events)
+16. [Configuration](#configuration)
+17. [Statistics](#statistics)
+18. [Error Responses](#error-responses)
+19. [SSE Streaming Guide](#sse-streaming-guide)
 
 ---
 
@@ -55,7 +59,7 @@ curl http://localhost:8000/health
 
 ### `GET /models`
 
-List LLM models available based on configured API keys.
+List LLM models available based on configured API keys. Returns a flat array with provider info.
 
 ```bash
 curl http://localhost:8000/models
@@ -63,12 +67,15 @@ curl http://localhost:8000/models
 
 **Response:**
 ```json
-{
-  "available": ["claude-sonnet-4-6", "claude-opus-4-6", "gpt-4o", "gpt-4o-mini", "grok-3"]
-}
+[
+  {"model": "claude-sonnet-4-6",         "provider": "anthropic"},
+  {"model": "claude-opus-4-6",           "provider": "anthropic"},
+  {"model": "claude-haiku-4-5-20251001", "provider": "anthropic"},
+  {"model": "my-local-model",            "provider": "ollama"}
+]
 ```
 
-Models only appear if the corresponding API key is set in the environment. See [configuration.md](./configuration.md) for key names.
+Anthropic models appear only if `ANTHROPIC_API_KEY` is set. Ollama models appear if `OLLAMA_BASE_URL` and `OLLAMA_MODELS` are configured.
 
 ---
 
@@ -76,7 +83,7 @@ Models only appear if the corresponding API key is set in the environment. See [
 
 ### `GET /repos`
 
-List all registered repositories with per-repo statistics.
+List all registered repositories with live statistics.
 
 ```bash
 curl http://localhost:8000/repos
@@ -86,15 +93,19 @@ curl http://localhost:8000/repos
 ```json
 [
   {
-    "id": 1,
-    "owner": "myorg",
-    "name": "my-repo",
-    "branch": "main",
-    "status": "indexed",
-    "last_indexed": "2026-03-08T14:30:00Z",
-    "chunks": 4521,
-    "symbols": 312,
-    "files": 89
+    "owner":              "myorg",
+    "name":               "my-repo",
+    "repo":               "myorg/my-repo",
+    "branch":             "main",
+    "status":             "ready",
+    "active_chunks":      4521,
+    "deleted_chunks":     12,
+    "files":              89,
+    "symbols":            312,
+    "webhook_hook_id":    987654,
+    "webhook_registered": true,
+    "registered_at":      "2026-03-01T10:00:00Z",
+    "last_indexed":       "2026-03-08T14:30:00Z"
   }
 ]
 ```
@@ -103,15 +114,15 @@ curl http://localhost:8000/repos
 
 ### `POST /repos`
 
-Register a new repository (and optionally trigger immediate indexing).
+Register a new repository. Auto-attempts GitHub webhook registration if `PUBLIC_BASE_URL` is configured (best-effort — does not fail if webhook creation fails).
 
 **Body:**
 ```json
 {
-  "owner":     "your-org",
-  "name":      "your-repo",
-  "branch":    "main",
-  "index_now": true
+  "owner":       "your-org",
+  "name":        "your-repo",
+  "branch":      "main",
+  "description": "Optional description"
 }
 ```
 
@@ -120,40 +131,38 @@ Register a new repository (and optionally trigger immediate indexing).
 | `owner` | string | yes | GitHub organization or username |
 | `name` | string | yes | Repository name |
 | `branch` | string | no | Branch to index. Default: `"main"` |
-| `index_now` | bool | no | Trigger full index immediately. Default: `false` |
+| `description` | string | no | Optional free-text description |
 
 **Response `201 Created`:**
 ```json
 {
-  "repo":   "your-org/your-repo",
-  "status": "queued",
-  "job_id": "550e8400-e29b-41d4-a716-446655440000"
+  "repo":           "your-org/your-repo",
+  "branch":         "main",
+  "status":         "pending",
+  "registered_at":  "2026-03-10T10:00:00Z",
+  "webhook": {
+    "success":              true,
+    "hook_id":              987654,
+    "message":              "Webhook registered successfully (hook #987654).",
+    "manual_instructions":  null
+  },
+  "message": "Registered your-org/your-repo. Call POST /repos/your-org/your-repo/index to start indexing."
 }
 ```
+
+If webhook auto-registration fails, `webhook.success` is `false` and `webhook.manual_instructions` contains step-by-step GitHub UI instructions.
 
 ---
 
 ### `GET /repos/{owner}/{name}`
 
-Get a single repository's details and statistics.
+Get a single repository's details. Uses `GET /repos` and filters client-side (no dedicated DB query).
 
 ```bash
 curl http://localhost:8000/repos/myorg/my-repo
 ```
 
-**Response:**
-```json
-{
-  "owner": "myorg",
-  "name": "my-repo",
-  "branch": "main",
-  "status": "indexed",
-  "last_indexed": "2026-03-08T14:30:00Z",
-  "chunks": 4521,
-  "symbols": 312,
-  "files": 89
-}
-```
+Returns the same shape as a single entry from `GET /repos`.
 
 **404** if not registered.
 
@@ -161,22 +170,32 @@ curl http://localhost:8000/repos/myorg/my-repo
 
 ### `POST /repos/{owner}/{name}/index`
 
-Trigger a full re-index job for an existing repository.
+Trigger a full re-index job for an already-registered repository. Returns `202 Accepted` immediately; the job runs via RQ.
 
 ```bash
 curl -X POST http://localhost:8000/repos/myorg/my-repo/index
 ```
 
-**Response:**
+**Response `202 Accepted`:**
 ```json
-{"job_id": "uuid", "status": "queued"}
+{
+  "job_id":      "uuid",
+  "repo":        "myorg/my-repo",
+  "branch":      "main",
+  "head_sha":    "a1b2c3d",
+  "files_found": 147,
+  "delivery_id": "full-index-myorg-my-repo-a1b2c3d-ab12ef",
+  "message":     "Full index job enqueued for 147 files. Start the RQ worker to process."
+}
 ```
+
+**404** if the repo is not registered.
 
 ---
 
 ### `DELETE /repos/{owner}/{name}`
 
-Hard-delete a repository and all its indexed chunks, symbols, and merkle nodes.
+Unregister a repository and permanently delete all indexed data (chunks, symbols, merkle nodes). Also deletes the GitHub webhook if one was registered.
 
 ```bash
 curl -X DELETE http://localhost:8000/repos/myorg/my-repo
@@ -184,7 +203,81 @@ curl -X DELETE http://localhost:8000/repos/myorg/my-repo
 
 **Response `200`:**
 ```json
-{"deleted": "myorg/my-repo"}
+{
+  "repo":    "myorg/my-repo",
+  "deleted": true,
+  "message": "All chunks, symbols, merkle nodes, and the repo record for myorg/my-repo have been permanently deleted."
+}
+```
+
+**404** if not registered.
+
+---
+
+### `GET /repos/{owner}/{name}/webhook`
+
+Check the live status of the registered webhook from the GitHub API.
+
+```bash
+curl http://localhost:8000/repos/myorg/my-repo/webhook
+```
+
+**Response (webhook active):**
+```json
+{
+  "registered":    true,
+  "hook_id":       987654,
+  "github_status": {"active": true, "events": ["push"], "url": "https://your-server/webhook"}
+}
+```
+
+**Response (no webhook):**
+```json
+{
+  "registered":          false,
+  "hook_id":             null,
+  "message":             "No webhook registered for this repo.",
+  "manual_instructions": "To manually configure a webhook..."
+}
+```
+
+---
+
+### `POST /repos/{owner}/{name}/webhook`
+
+Register a GitHub webhook for a repository (one-click).
+
+```bash
+curl -X POST http://localhost:8000/repos/myorg/my-repo/webhook
+```
+
+**Response `201 Created`** (success) or **`422`** (failure):
+```json
+{
+  "success":              true,
+  "hook_id":              987654,
+  "message":              "Webhook registered successfully (hook #987654).",
+  "manual_instructions":  null
+}
+```
+
+---
+
+### `DELETE /repos/{owner}/{name}/webhook`
+
+Remove the GitHub webhook and clear the hook ID from the database.
+
+```bash
+curl -X DELETE http://localhost:8000/repos/myorg/my-repo/webhook
+```
+
+**Response:**
+```json
+{
+  "success":             true,
+  "deleted_from_github": true,
+  "message":             "Webhook #987654 removed."
+}
 ```
 
 ---
@@ -202,8 +295,8 @@ curl http://localhost:8000/repos/myorg/my-repo/stats
 {
   "chunks_by_language": {"python": 2100, "typescript": 1800, "go": 621},
   "top_files_by_chunks": [
-    {"file": "src/api/app.py", "chunks": 45},
-    {"file": "src/retrieval/searcher.py", "chunks": 38}
+    {"file": "src/api/app.py",           "chunks": 45},
+    {"file": "src/retrieval/searcher.py","chunks": 38}
   ],
   "total_tokens": 1240000
 }
@@ -211,11 +304,88 @@ curl http://localhost:8000/repos/myorg/my-repo/stats
 
 ---
 
+### `GET /jobs`
+
+List recent RQ indexing jobs (queued, started, finished, failed). Returns the last 20 across all states.
+
+```bash
+curl http://localhost:8000/jobs
+```
+
+**Response:**
+```json
+{
+  "jobs": [
+    {
+      "id":           "rq-job-uuid",
+      "state":        "finished",
+      "enqueued_at":  "2026-03-10T10:00:00Z",
+      "started_at":   "2026-03-10T10:00:05Z",
+      "ended_at":     "2026-03-10T10:02:30Z",
+      "result":       null,
+      "exc_info":     null
+    }
+  ],
+  "queued_count": 0
+}
+```
+
+---
+
+## Cross-Repo Routing
+
+The cross-repo router uses centroid embeddings to intelligently route queries across repositories. These endpoints expose the routing state and allow manual refresh.
+
+### `GET /repo-summaries`
+
+List routing summaries for all indexed repositories (centroid vector omitted for bandwidth).
+
+```bash
+curl http://localhost:8000/repo-summaries
+```
+
+**Response:**
+```json
+{
+  "summaries": [
+    {
+      "repo_owner":            "myorg",
+      "repo_name":             "auth-service",
+      "tech_stack_keywords":   ["jwt", "oauth", "fastapi", "python"],
+      "language_distribution": {"python": 0.85, "yaml": 0.15},
+      "chunk_count":           1240,
+      "updated_at":            "2026-03-10T10:05:00Z"
+    }
+  ]
+}
+```
+
+A repo appears here only after it has been indexed and the post-index centroid computation completed (requires at least `cross_repo_summary_update_min_chunks` chunks, default 10).
+
+---
+
+### `POST /repos/{owner}/{name}/refresh-summary`
+
+Trigger an on-demand recomputation of the routing centroid for a repo. Useful after large incremental updates or if the summary is stale.
+
+```bash
+curl -X POST http://localhost:8000/repos/myorg/auth-service/refresh-summary
+```
+
+**Response:**
+```json
+{"status": "updated", "chunk_count": 1240}
+```
+
+**404** if the repo has no indexed chunks.
+
+---
+
 ## Search
 
 ### `POST /search`
 
-Hybrid semantic + keyword search across indexed repositories, with optional cross-encoder reranking.
+Hybrid semantic + keyword search across indexed repositories with optional cross-encoder reranking.
 
 **Body:**
 ```json
@@ -226,8 +396,7 @@ Hybrid semantic + keyword search across indexed repositories, with optional cros
   "top_k":        5,
   "mode":         "hybrid",
   "rerank":       true,
-  "token_budget": 8000,
-  "preset":       "balanced"
+  "token_budget": 8000
 }
 ```
 
@@ -236,19 +405,12 @@ Hybrid semantic + keyword search across indexed repositories, with optional cros
 | `query` | string | yes | Natural-language or code query |
 | `repo` | string | no | Filter to `"owner/name"`. Omit to search all repos |
 | `language` | string | no | Filter by language (e.g. `"python"`, `"typescript"`) |
-| `top_k` | int | no | Max results to return. Default: `5` |
+| `top_k` | int | no | Max results to return. Range 1–20. Default: `5` |
 | `mode` | string | no | `"hybrid"` (default), `"semantic"`, or `"keyword"` |
 | `rerank` | bool | no | Run cross-encoder reranking. Default: `true` |
 | `token_budget` | int | no | Max tokens for assembled context. Default: `8000` |
-| `preset` | string | no | Quality preset: `"fast"`, `"balanced"` (default), `"thorough"` |
 
-**Search Quality Presets:**
-
-| Preset | top_k | Reranking | Use case |
-|--------|-------|-----------|----------|
-| `fast` | 5 | No | Quick lookups, low latency |
-| `balanced` | 10 | Yes | Standard queries |
-| `thorough` | 20 | Yes | Deep analysis, comprehensive coverage |
+> **Note:** If `mode` is `"semantic"` or `"hybrid"` but embedding fails or returns an empty vector, the request automatically falls back to `"keyword"` mode rather than returning an error.
 
 **Response:**
 ```json
@@ -266,7 +428,6 @@ Hybrid semantic + keyword search across indexed repositories, with optional cros
       "language":      "python",
       "score":         0.8931,
       "rerank_score":  4.2156,
-      "quality_score": 0.9851,
       "commit":        "a1b2c3d",
       "preview":       "async def require_auth(request: Request) -> None:..."
     }
@@ -284,6 +445,8 @@ Hybrid semantic + keyword search across indexed repositories, with optional cros
 ### `POST /ask`
 
 Answer a natural-language question about the indexed codebase using an AI agent with tool access.
+
+**Authentication:** Supports `X-Api-Key` header or `?api_key=` to restrict which repos the agent can search.
 
 **Body:**
 ```json
@@ -309,22 +472,32 @@ Answer a natural-language question about the indexed codebase using an AI agent 
 **Response (sync, `stream: false`):**
 ```json
 {
+  "query":           "How does the webhook processing pipeline work end-to-end?",
   "answer":          "The webhook pipeline starts when GitHub sends a POST to /webhook...",
   "cited_files":     ["src/github/webhook.py:42-80", "src/pipeline/pipeline.py:15-60"],
   "follow_up_hints": ["What is the Merkle diff algorithm?", "How does chunking work?"],
-  "quality_score":   0.87,
   "elapsed_ms":      1840,
-  "session_id":      "3f2a1b9c-uuid"
+  "session_id":      "3f2a1b9c-uuid",
+  "metadata": {
+    "context_tokens":  3840,
+    "context_files":   4,
+    "retrieval_log":   "Agentic: 3 iterations, 4 tool calls",
+    "query_complexity": null
+  }
 }
 ```
 
 **Response (streaming, `stream: true`):**
 
-Server-Sent Events stream:
+Server-Sent Events stream — see [SSE Streaming Guide](#sse-streaming-guide) for full event reference.
+
 ```
-data: {"type": "token",           "text": "The webhook pipeline"}
-data: {"type": "token",           "text": " starts when"}
-data: {"type": "answer_complete", "result": {...full sync response...}, "session_id": "uuid"}
+data: {"type": "status",            "message": "Searching codebase…"}
+data: {"type": "agent_tool_call",   "tool": "search_codebase", "input_summary": "webhook pipeline"}
+data: {"type": "agent_tool_result", "tool": "search_codebase", "tokens": 1240, "cumulative_tokens": 1240}
+data: {"type": "thinking",          "text": "...extended thinking text..."}
+data: {"type": "answer_chunk",      "text": "The webhook pipeline starts when"}
+data: {"type": "answer_complete",   "answer": "...", "cited_files": [...], "follow_up_hints": [...], "elapsed_ms": 1840}
 ```
 
 ---
@@ -334,6 +507,8 @@ data: {"type": "answer_complete", "result": {...full sync response...}, "session
 ### `POST /plan`
 
 Generate a structured, grounded implementation plan for a development task.
+
+**Authentication:** Supports `X-Api-Key` header or `?api_key=` to restrict which repos are retrieved.
 
 **Body:**
 ```json
@@ -364,7 +539,7 @@ Generate a structured, grounded implementation plan for a development task.
     "summary": "Implement a Redis-backed sliding window rate limiter...",
     "sparc": {
       "specification":  "Rate limit: 100 req/min per IP, 429 with Retry-After header...",
-      "pseudocode":     "1. Extract client IP\\n2. Increment Redis counter...",
+      "pseudocode":     "1. Extract client IP\n2. Increment Redis counter...",
       "architecture":   "Middleware layer in FastAPI, Redis ZSET per key...",
       "refinements":    ["Consider X-Forwarded-For for proxied clients..."],
       "completion":     "Add to src/api/middleware.py, mount in app.py..."
@@ -391,9 +566,12 @@ Generate a structured, grounded implementation plan for a development task.
 
 **Streaming events:**
 ```
+data: {"type": "status",        "message": "Searching codebase…"}
+data: {"type": "agent_tool_call",   "tool": "search_codebase", "input_summary": "rate limiting"}
+data: {"type": "agent_tool_result", "tool": "search_codebase", "tokens": 980, "cumulative_tokens": 980}
 data: {"type": "thinking",      "text": "...extended thinking text..."}
-data: {"type": "token",         "text": "...plan token..."}
-data: {"type": "plan_complete", "plan": {...full plan...}, "plan_id": "uuid"}
+data: {"type": "plan_chunk",    "text": "...plan token..."}
+data: {"type": "plan_complete", "plan": {...full plan...}}
 ```
 
 ---
@@ -410,7 +588,7 @@ curl "http://localhost:8000/workflows?active_only=true"
 
 | Param | Description |
 |-------|-------------|
-| `active_only` | If `true`, only return enabled workflows. Default: `false` |
+| `active_only` | If `true`, only return enabled workflows. Default: `true` |
 
 **Response:**
 ```json
@@ -448,7 +626,7 @@ Create or update a workflow. If a workflow with the same `name` already exists, 
 | `description` | string | no | Human-readable description |
 | `yaml_definition` | string | yes | Full YAML workflow definition |
 
-**Response `201 Created`:**
+**Response `201 Created`** (new) or **`201`** (updated in place):
 ```json
 {
   "id":   "uuid",
@@ -456,25 +634,16 @@ Create or update a workflow. If a workflow with the same `name` already exists, 
 }
 ```
 
-**Response `200 OK`** (if name already exists — updated in place):
-```json
-{
-  "id":      "uuid",
-  "name":    "rca-automation",
-  "updated": true
-}
-```
-
-See [workflows.md](./workflows.md) for the full YAML DSL reference.
+**`422`** if the YAML fails to parse. See [workflows.md](./workflows.md) for the full YAML DSL reference.
 
 ---
 
 ### `GET /workflows/{workflow_id}`
 
-Get full workflow definition and its last 10 run summaries.
+Get full workflow definition and its last 10 run summaries. Accepts UUID or name.
 
 ```bash
-curl http://localhost:8000/workflows/uuid-or-name
+curl http://localhost:8000/workflows/rca-automation
 ```
 
 **Response:**
@@ -487,10 +656,10 @@ curl http://localhost:8000/workflows/uuid-or-name
   "is_active":       true,
   "recent_runs": [
     {
-      "run_id":     "run-uuid",
-      "status":     "completed",
-      "started_at": "2026-03-08T14:30:00Z",
-      "ended_at":   "2026-03-08T14:35:12Z",
+      "run_id":      "run-uuid",
+      "status":      "completed",
+      "started_at":  "2026-03-08T14:30:00Z",
+      "ended_at":    "2026-03-08T14:35:12Z",
       "tokens_used": 48920
     }
   ]
@@ -509,14 +678,14 @@ curl -X DELETE http://localhost:8000/workflows/uuid
 
 **Response:**
 ```json
-{"deleted": "rca-automation"}
+{"deleted": true, "id": "uuid"}
 ```
 
 ---
 
 ### `POST /workflows/{workflow_id}/run`
 
-Trigger a workflow run with an optional payload.
+Trigger a workflow run with an optional payload. Returns immediately; execution is async.
 
 ```bash
 curl -X POST http://localhost:8000/workflows/rca-automation/run \
@@ -526,13 +695,12 @@ curl -X POST http://localhost:8000/workflows/rca-automation/run \
       "service":            "payment-api",
       "environment":        "production",
       "severity":           "HIGH",
-      "error_message":      "Connection pool exhausted",
-      "stack_trace":        "at PaymentService.charge (payment.ts:45)",
-      "affected_component": "checkout",
-      "timestamp":          "2026-03-08T14:30:00Z"
+      "error_message":      "Connection pool exhausted"
     }
   }'
 ```
+
+`payload` is accepted as a JSON object **or** a JSON-stringified string — both work.
 
 **Response (returns immediately):**
 ```json
@@ -551,26 +719,27 @@ Watch progress via SSE: `GET /workflows/runs/{run_id}/stream`
 List all workflow runs across all workflows.
 
 ```bash
-curl "http://localhost:8000/workflows/runs?limit=20&workflow_id=uuid"
+curl "http://localhost:8000/workflows/runs?limit=20&offset=0&workflow_id=uuid"
 ```
 
 | Param | Description |
 |-------|-------------|
-| `limit` | Max runs to return. Default: `20` |
+| `limit` | Max runs to return. Max 100. Default: `20` |
+| `offset` | Pagination offset. Default: `0` |
 | `workflow_id` | Filter by workflow UUID |
 
 **Response:**
 ```json
 [
   {
-    "run_id":      "run-uuid",
-    "workflow_id": "wf-uuid",
-    "workflow_name": "rca-automation",
-    "status":      "completed",
-    "started_at":  "2026-03-08T14:30:00Z",
-    "ended_at":    "2026-03-08T14:35:12Z",
-    "tokens_used": 48920,
-    "trigger_payload": {"service": "payment-api", ...}
+    "run_id":          "run-uuid",
+    "workflow_id":     "wf-uuid",
+    "workflow_name":   "rca-automation",
+    "status":          "completed",
+    "started_at":      "2026-03-08T14:30:00Z",
+    "ended_at":        "2026-03-08T14:35:12Z",
+    "tokens_used":     48920,
+    "trigger_payload": {"service": "payment-api"}
   }
 ]
 ```
@@ -588,8 +757,8 @@ curl http://localhost:8000/workflows/runs/run-uuid
 **Response:**
 ```json
 {
-  "run_id":    "run-uuid",
-  "status":    "completed",
+  "run_id":     "run-uuid",
+  "status":     "completed",
   "started_at": "2026-03-08T14:30:00Z",
   "ended_at":   "2026-03-08T14:35:12Z",
   "tokens_used": 48920,
@@ -611,7 +780,7 @@ curl http://localhost:8000/workflows/runs/run-uuid
         ]
       },
       "retries": 0,
-      "error": null
+      "error":   null
     }
   ],
   "pending_checkpoints": [
@@ -630,7 +799,7 @@ curl http://localhost:8000/workflows/runs/run-uuid
 
 ### `GET /workflows/runs/{run_id}/stream`
 
-Stream live progress events for a running (or recently completed) workflow via Server-Sent Events.
+Stream live progress events for a running (or recently completed) workflow via Server-Sent Events. Uses Redis pub/sub; falls back to DB polling if Redis is unavailable.
 
 ```bash
 curl -N http://localhost:8000/workflows/runs/run-uuid/stream
@@ -638,14 +807,14 @@ curl -N http://localhost:8000/workflows/runs/run-uuid/stream
 
 **Events:**
 ```
-data: {"type": "workflow_started",  "run_id": "run-uuid", "workflow": "rca-automation"}
-data: {"type": "step_started",      "step_id": "understand_error", "role": "searcher"}
-data: {"type": "step_token",        "step_id": "understand_error", "text": "..."}
-data: {"type": "step_complete",     "step_id": "understand_error", "tokens": 12480, "output": "..."}
-data: {"type": "checkpoint_created","checkpoint_id": "cp-uuid", "prompt": "Approve?"}
-data: {"type": "checkpoint_resolved","checkpoint_id": "cp-uuid", "response": "Approve"}
-data: {"type": "workflow_complete", "run_id": "run-uuid", "tokens_total": 48920}
-data: {"type": "workflow_failed",   "run_id": "run-uuid", "error": "Step failed: ..."}
+data: {"type": "workflow_started",   "run_id": "run-uuid", "workflow": "rca-automation"}
+data: {"type": "step_started",       "run_id": "run-uuid", "step_id": "understand_error", "role": "searcher"}
+data: {"type": "step_complete",      "run_id": "run-uuid", "step_id": "understand_error", "tokens": 12480}
+data: {"type": "step_failed",        "run_id": "run-uuid", "step_id": "understand_error", "error": "..."}
+data: {"type": "checkpoint_created", "run_id": "run-uuid", "checkpoint_id": "cp-uuid"}
+data: {"type": "checkpoint_resolved","run_id": "run-uuid", "checkpoint_id": "cp-uuid"}
+data: {"type": "workflow_complete",  "run_id": "run-uuid", "tokens_total": 48920}
+data: {"type": "workflow_error",     "run_id": "run-uuid", "error": "Step failed: ..."}
 ```
 
 ---
@@ -665,7 +834,7 @@ curl -X POST http://localhost:8000/workflows/checkpoints/cp-uuid/respond \
 {"response": "Approve"}
 ```
 
-`response` must be one of the options defined in the checkpoint step (`options` list), or any free text if no options were specified.
+`response` must be one of the options defined in the checkpoint step, or any free text if no options were specified.
 
 **Response:**
 ```json
@@ -673,6 +842,25 @@ curl -X POST http://localhost:8000/workflows/checkpoints/cp-uuid/respond \
 ```
 
 **404** if checkpoint not found or already resolved.
+
+---
+
+### `POST /webhooks/{path}`
+
+Inbound webhook trigger: execute a workflow whose `webhook_path` matches `{path}`. Accepts any JSON payload (Datadog, PagerDuty, OpsGenie, custom webhooks).
+
+```bash
+curl -X POST http://localhost:8000/webhooks/rca-automation \
+  -H "Content-Type: application/json" \
+  -d '{"alert_name": "HighErrorRate", "service": "payment-api"}'
+```
+
+**Response:**
+```json
+{"run_id": "run-uuid", "status": "running"}
+```
+
+**404** if no workflow has `webhook_path: {path}` defined.
 
 ---
 
@@ -697,7 +885,7 @@ curl http://localhost:8000/documents/doc-uuid/download -o report.pdf
 ```
 
 `doc_id` values are returned in:
-- Workflow run step output (`steps[].output.documents[].doc_id`)
+- Workflow run step output: `steps[].output.documents[].doc_id`
 - The agent's `generate_pdf` tool response (`download_url` field)
 
 ---
@@ -746,13 +934,6 @@ curl "http://localhost:8000/graph/myorg/my-repo?view=all&max_nodes=200"
       "type":  "file",
       "color": "#4B8BBE",
       "size":  15
-    },
-    {
-      "id":    "sym:AuthService.authenticate",
-      "label": "authenticate",
-      "type":  "symbol",
-      "color": "#28A745",
-      "size":  10
     }
   ],
   "edges": [
@@ -789,9 +970,9 @@ curl http://localhost:8000/agent-roles
 ```json
 [
   {
-    "name":          "supervisor",
-    "system_prompt": "You are a Supervisor agent...",
-    "default_tools": ["search_codebase", "get_symbol", "ask_codebase", "generate_pdf"],
+    "name":           "supervisor",
+    "system_prompt":  "You are a Supervisor agent...",
+    "default_tools":  ["search_codebase", "get_symbol", "ask_codebase", "generate_pdf"],
     "require_search": false,
     "max_iterations": 5,
     "token_budget":   80000,
@@ -800,6 +981,8 @@ curl http://localhost:8000/agent-roles
   }
 ]
 ```
+
+Built-in roles: `searcher`, `planner`, `reviewer`, `coder`, `tester`, `supervisor`.
 
 ---
 
@@ -832,27 +1015,15 @@ Get a specific role's full configuration.
 curl http://localhost:8000/agent-roles/supervisor
 ```
 
-**Response:**
-```json
-{
-  "name":          "supervisor",
-  "system_prompt": "You are a Supervisor agent...",
-  "default_tools": ["search_codebase", "get_symbol", "ask_codebase", "generate_pdf"],
-  "require_search": false,
-  "max_iterations": 5,
-  "token_budget":   80000,
-  "is_builtin":     true,
-  "source":         "hardcoded"
-}
-```
+**Response:** same shape as a single entry from `GET /agent-roles`.
 
-If a DB override exists, `source` is `"database"` and the overridden fields are shown.
+If a DB override exists, `source` is `"database"` and the overridden fields are shown. Otherwise `source` is `"hardcoded"`.
 
 ---
 
 ### `PUT /agent-roles/{name}`
 
-Create or override an agent role. For built-in roles, this saves an override in the DB. For new names, creates a custom role.
+Create or override an agent role. For built-in roles, saves an override in the DB. For new names, creates a custom role.
 
 **Body:**
 ```json
@@ -910,6 +1081,116 @@ curl -X POST http://localhost:8000/agent-roles/supervisor/reset
 **Response:**
 ```json
 {"reset": "supervisor", "message": "Role reset to built-in defaults"}
+```
+
+---
+
+## API Key Scopes
+
+Scoped API keys restrict which repositories a key can search. This is the primary mechanism for multi-team access control: each team gets a key scoped to their repos, and the router never queries repos outside their allowed set.
+
+**How it works:**
+- Pass the raw key via `X-Api-Key` header or `?api_key=` query param on any request.
+- The server hashes the raw key (SHA-256) and looks up the allowed repos list (Redis-cached, 5-minute TTL).
+- Empty `allowed_repos` = admin key (all repos accessible).
+- Invalid key = `401 Unauthorized`.
+- No key = unrestricted (same as admin key; suitable for private deployments).
+
+---
+
+### `POST /api-keys`
+
+Create a new scoped API key. The raw key is returned **once** — it is never stored and cannot be retrieved again.
+
+**Body:**
+```json
+{
+  "name":          "frontend-team",
+  "description":   "Frontend team — frontend, auth-service, user-service",
+  "allowed_repos": ["myorg/frontend", "myorg/auth-service", "myorg/user-service"]
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | yes | Human-readable name, e.g. `"frontend-team"` |
+| `description` | string | no | Optional description |
+| `allowed_repos` | list | no | List of `"owner/name"` strings. Empty list = all repos (admin) |
+
+**Response `201 Created`:**
+```json
+{
+  "id":            1,
+  "raw_key":       "abc123_this_is_shown_once_only",
+  "name":          "frontend-team",
+  "allowed_repos": ["myorg/frontend", "myorg/auth-service", "myorg/user-service"],
+  "created_at":    "2026-03-10T10:00:00Z"
+}
+```
+
+Copy the `raw_key` immediately — it will not be returned again.
+
+---
+
+### `GET /api-keys`
+
+List all API key scopes. Never returns the raw key or its hash.
+
+```bash
+curl http://localhost:8000/api-keys
+```
+
+**Response:**
+```json
+[
+  {
+    "id":            1,
+    "name":          "frontend-team",
+    "description":   "Frontend team",
+    "allowed_repos": ["myorg/frontend", "myorg/auth-service"],
+    "created_at":    "2026-03-10T10:00:00Z",
+    "last_used_at":  "2026-03-10T12:30:00Z"
+  }
+]
+```
+
+---
+
+### `DELETE /api-keys/{id}`
+
+Permanently delete a scoped API key. Any requests using the deleted key will receive `401`.
+
+```bash
+curl -X DELETE http://localhost:8000/api-keys/1
+```
+
+**Response:**
+```json
+{"deleted": 1}
+```
+
+**404** if the scope ID doesn't exist.
+
+---
+
+**Using a scoped key with MCP:**
+
+Configure your MCP client to pass the key via the SSE URL query param (useful for clients that can't set custom headers):
+
+```json
+{
+  "mcpServers": {
+    "nexuscode": {
+      "type": "sse",
+      "url":  "http://nexuscode-server:8000/mcp/sse?api_key=abc123..."
+    }
+  }
+}
+```
+
+Or via header (for HTTP-based clients):
+```
+X-Api-Key: abc123...
 ```
 
 ---
@@ -1130,10 +1411,10 @@ curl "http://localhost:8000/history/ask?limit=20"
 ```json
 [
   {
-    "session_id": "3f2a1b9c-uuid",
-    "repo":       "myorg/my-repo",
-    "created_at": "2026-03-08T14:20:00Z",
-    "turn_count": 3,
+    "session_id":  "3f2a1b9c-uuid",
+    "repo":        "myorg/my-repo",
+    "created_at":  "2026-03-08T14:20:00Z",
+    "turn_count":  3,
     "first_query": "How does authentication work?"
   }
 ]
@@ -1157,9 +1438,9 @@ curl http://localhost:8000/history/ask/3f2a1b9c-uuid
   "created_at": "2026-03-08T14:20:00Z",
   "turns": [
     {
-      "role":        "user",
-      "content":     "How does authentication work?",
-      "created_at":  "2026-03-08T14:20:01Z"
+      "role":       "user",
+      "content":    "How does authentication work?",
+      "created_at": "2026-03-08T14:20:01Z"
     },
     {
       "role":        "assistant",
@@ -1197,7 +1478,7 @@ curl http://localhost:8000/history/plan/plan-uuid
 
 ### `POST /webhook`
 
-Receives GitHub push events. Must be registered as a GitHub webhook URL. Verifies `X-Hub-Signature-256` HMAC header.
+Receives GitHub push events. Must be registered as a GitHub webhook URL. Verifies the `X-Hub-Signature-256` HMAC header.
 
 ```
 POST /webhook
@@ -1205,13 +1486,35 @@ X-GitHub-Event: push
 X-Hub-Signature-256: sha256=<hmac>
 ```
 
-Responds `202 Accepted` on success. Queues a background indexing job via RQ.
+Responds `202 Accepted` on success. Queues a background incremental indexing job via RQ.
 
 **Test with simulation script:**
 ```bash
 PYTHONPATH=. python scripts/simulate_webhook.py \
   --owner myorg --repo my-repo --file src/main.py
 ```
+
+---
+
+### `POST /webhook/ping`
+
+Send a self-test ping to `/webhook` to verify the endpoint is live and HMAC signing is correctly configured.
+
+```bash
+curl -X POST http://localhost:8000/webhook/ping
+```
+
+**Response:**
+```json
+{
+  "ok":          true,
+  "status_code": 200,
+  "delivery_id": "self-test-ab12ef34",
+  "response":    {"status": "ok"}
+}
+```
+
+**503** if the server cannot connect to its own webhook endpoint.
 
 ---
 
@@ -1228,14 +1531,16 @@ curl "http://localhost:8000/events?repo_owner=myorg&repo_name=my-repo"
 ```json
 [
   {
-    "id":           "uuid",
-    "event_type":   "push",
-    "repo":         "myorg/my-repo",
-    "commit_sha":   "a1b2c3d",
+    "delivery_id":   "uuid",
+    "event_type":    "push",
+    "repo_owner":    "myorg",
+    "repo_name":     "my-repo",
+    "commit_sha":    "a1b2c3d",
     "files_changed": 3,
-    "status":       "completed",
-    "received_at":  "2026-03-08T14:00:00Z",
-    "processed_at": "2026-03-08T14:00:05Z"
+    "status":        "completed",
+    "error_message": null,
+    "received_at":   "2026-03-08T14:00:00Z",
+    "processed_at":  "2026-03-08T14:00:05Z"
   }
 ]
 ```
@@ -1246,17 +1551,107 @@ curl "http://localhost:8000/events?repo_owner=myorg&repo_name=my-repo"
 
 ### `GET /events/{event_id}`
 
-Get a single webhook event by ID.
+Get a single webhook event by delivery ID.
 
 ```bash
-curl http://localhost:8000/events/event-uuid
+curl http://localhost:8000/events/delivery-uuid
 ```
 
 ---
 
-## Authentication
+## Configuration
 
-### `POST /auth/token`
+### `GET /config`
+
+Show current server configuration with secrets masked (only first 4 characters shown).
+
+```bash
+curl http://localhost:8000/config
+```
+
+**Response:**
+```json
+{
+  "github": {
+    "token":                  "ghp_***",
+    "app_id":                 "not set",
+    "app_private_key_path":   "not set",
+    "webhook_secret":         "my_s***",
+    "default_branch":         "main"
+  },
+  "database": {
+    "url":          "post***",
+    "pool_size":    5,
+    "max_overflow": 10
+  },
+  "redis":      {"url": "redis://localhost:6379/0"},
+  "embeddings": {
+    "voyage_api_key": "pa-x***",
+    "model":          "voyage-code-2",
+    "dimensions":     1536,
+    "batch_size":     128
+  },
+  "auth": {
+    "jwt_secret":      "secr***",
+    "jwt_expiry_hours": 8,
+    "oauth_client_id": "not set"
+  },
+  "indexing": {
+    "chunk_target_tokens":   400,
+    "chunk_overlap_tokens":  50,
+    "chunk_min_tokens":      30,
+    "context_token_budget":  8000,
+    "supported_extensions":  [".py", ".ts", ".go"],
+    "ignore_patterns":       ["node_modules", ".git"]
+  },
+  "reranker": {
+    "model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+    "top_n": 5
+  },
+  "webhook": {
+    "public_base_url": "https://nexuscode.example.com",
+    "webhook_url":     "https://nexuscode.example.com/webhook"
+  },
+  "optional": {
+    "anthropic_api_key": "sk-a***"
+  }
+}
+```
+
+---
+
+### `POST /config/env`
+
+Write one or more key-value pairs to the `.env` file. Does not restart the server — a restart is required for changes to take effect.
+
+```bash
+curl -X POST http://localhost:8000/config/env \
+  -H "Content-Type: application/json" \
+  -d '{"updates": {"VOYAGE_API_KEY": "pa-xxx", "GITHUB_TOKEN": "ghp-xxx"}}'
+```
+
+**Body:**
+```json
+{
+  "updates": {
+    "VOYAGE_API_KEY":  "pa-xxx",
+    "GITHUB_TOKEN":    "ghp-xxx",
+    "ANTHROPIC_API_KEY": "sk-ant-xxx"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "updated": ["VOYAGE_API_KEY", "GITHUB_TOKEN", "ANTHROPIC_API_KEY"],
+  "message": "Values written to .env. Restart the server for changes to take effect."
+}
+```
+
+---
+
+### `GET /auth/token`
 
 Generate a JWT Bearer token for MCP or API access.
 
@@ -1319,7 +1714,7 @@ curl http://localhost:8000/auth/verify \
 
 ### `GET /stats/repos`
 
-Per-repository breakdown of chunks and files.
+Per-repository breakdown of active/deleted chunks and files.
 
 ```bash
 curl http://localhost:8000/stats/repos
@@ -1329,10 +1724,12 @@ curl http://localhost:8000/stats/repos
 ```json
 [
   {
-    "repo":    "myorg/my-repo",
-    "chunks":  4521,
-    "symbols": 312,
-    "files":   89
+    "repo_owner":     "myorg",
+    "repo_name":      "my-repo",
+    "active_chunks":  4521,
+    "deleted_chunks": 12,
+    "files":          89,
+    "last_indexed":   "2026-03-08T14:00:00Z"
   }
 ]
 ```
@@ -1352,9 +1749,11 @@ curl "http://localhost:8000/stats/recent-files?limit=20"
 [
   {
     "file_path":   "src/api/app.py",
-    "repo":        "myorg/my-repo",
+    "repo_owner":  "myorg",
+    "repo_name":   "my-repo",
     "language":    "python",
-    "chunks":      12,
+    "token_count": 340,
+    "commit_sha":  "a1b2c3d",
     "indexed_at":  "2026-03-08T14:00:00Z"
   }
 ]
@@ -1364,7 +1763,7 @@ curl "http://localhost:8000/stats/recent-files?limit=20"
 
 ### `GET /stats/chunk-distribution`
 
-Token-count bucket distribution for all active chunks — useful for understanding corpus density.
+Token-count bucket distribution for all active chunks.
 
 ```bash
 curl http://localhost:8000/stats/chunk-distribution
@@ -1372,15 +1771,14 @@ curl http://localhost:8000/stats/chunk-distribution
 
 **Response:**
 ```json
-{
-  "buckets": [
-    {"range": "0-128",   "count": 423},
-    {"range": "128-256", "count": 1240},
-    {"range": "256-512", "count": 2100},
-    {"range": "512+",    "count": 758}
-  ],
-  "total_chunks": 4521
-}
+[
+  {"bucket": "<100",    "count": 423},
+  {"bucket": "100-199", "count": 1240},
+  {"bucket": "200-299", "count": 2100},
+  {"bucket": "300-399", "count": 890},
+  {"bucket": "400-511", "count": 456},
+  {"bucket": "512+",    "count": 310}
+]
 ```
 
 ---
@@ -1396,12 +1794,13 @@ All errors use standard HTTP status codes with a JSON body:
 | Code | Meaning |
 |------|---------|
 | `400` | Bad request — invalid parameters or body |
-| `401` | Unauthorized — missing, expired, or invalid Bearer token |
+| `401` | Unauthorized — invalid API key or expired JWT token |
 | `404` | Resource not found (repo, document, skill, session, etc.) |
 | `409` | Conflict — e.g. duplicate URL when registering an MCP server |
-| `422` | Validation error — request body doesn't match schema (FastAPI auto-generated) |
+| `422` | Validation error — request body doesn't match schema (FastAPI auto-generated) or YAML parse failure |
+| `429` | Rate limit reached — see `Retry-After` header |
 | `500` | Internal server error — check server logs |
-| `503` | Service unavailable — database or Redis not reachable |
+| `503` | Service unavailable — database, Redis, or required module not reachable |
 
 **Validation errors (422)** include a detailed `detail` array from FastAPI:
 ```json
@@ -1434,7 +1833,6 @@ curl -N -X POST http://localhost:8000/ask \
 
 **JavaScript (browser/Node.js):**
 ```javascript
-// Using fetch with ReadableStream
 const res = await fetch('http://localhost:8000/ask', {
   method: 'POST',
   headers: {'Content-Type': 'application/json'},
@@ -1451,8 +1849,8 @@ while (true) {
   for (const line of text.split('\n')) {
     if (line.startsWith('data: ')) {
       const event = JSON.parse(line.slice(6));
-      if (event.type === 'token') process.stdout.write(event.text);
-      if (event.type === 'answer_complete') console.log('\nDone:', event.result);
+      if (event.type === 'answer_chunk')    process.stdout.write(event.text);
+      if (event.type === 'answer_complete') console.log('\nDone:', event.answer);
     }
   }
 }
@@ -1467,43 +1865,52 @@ with httpx.stream('POST', 'http://localhost:8000/ask',
     for line in r.iter_lines():
         if line.startswith('data: '):
             event = json.loads(line[6:])
-            if event['type'] == 'token':
+            if event['type'] == 'answer_chunk':
                 print(event['text'], end='', flush=True)
 ```
 
 ### SSE Event Types by Endpoint
 
-**`POST /ask` (stream: true):**
+**`POST /ask` (`stream: true`):**
+
 | Event type | Fields | Description |
 |------------|--------|-------------|
-| `token` | `text` | Incremental answer text |
-| `answer_complete` | `result`, `session_id` | Final answer + metadata |
+| `status` | `message` | Progress status update (e.g. "Searching codebase…") |
+| `agent_tool_call` | `tool`, `input_summary` | Agent is about to call a tool |
+| `agent_tool_result` | `tool`, `tokens`, `cumulative_tokens` | Tool call completed |
+| `thinking` | `text` | Extended thinking text (Anthropic models only) |
+| `answer_chunk` | `text` | Incremental answer text |
+| `answer_complete` | `answer`, `cited_files`, `follow_up_hints`, `elapsed_ms` | Final answer + metadata |
 | `error` | `message` | Stream error |
 
-**`POST /plan` (stream: true):**
+**`POST /plan` (`stream: true`):**
+
 | Event type | Fields | Description |
 |------------|--------|-------------|
-| `thinking` | `text` | Extended thinking text (Anthropic only) |
-| `token` | `text` | Incremental plan text |
-| `plan_complete` | `plan`, `plan_id` | Complete ImplementationPlan object |
+| `status` | `message` | Progress status update |
+| `agent_tool_call` | `tool`, `input_summary` | Agent is about to call a tool |
+| `agent_tool_result` | `tool`, `tokens`, `cumulative_tokens` | Tool call completed |
+| `thinking` | `text` | Extended thinking text (Anthropic models only) |
+| `plan_chunk` | `text` | Incremental plan text |
+| `plan_complete` | `plan` | Complete ImplementationPlan object |
 | `error` | `message` | Stream error |
 
 **`GET /workflows/runs/{run_id}/stream`:**
+
 | Event type | Fields | Description |
 |------------|--------|-------------|
 | `workflow_started` | `run_id`, `workflow` | Workflow execution began |
-| `step_started` | `step_id`, `role` | A step began executing |
-| `step_token` | `step_id`, `text` | Token output from an agent step |
-| `step_complete` | `step_id`, `tokens`, `output` | Step finished successfully |
-| `step_failed` | `step_id`, `error`, `retry` | Step failed (may retry) |
-| `checkpoint_created` | `checkpoint_id`, `prompt`, `options` | Waiting for human |
-| `checkpoint_resolved` | `checkpoint_id`, `response` | Human responded |
+| `step_started` | `run_id`, `step_id`, `role` | A step began executing |
+| `step_complete` | `run_id`, `step_id`, `tokens` | Step finished successfully |
+| `step_failed` | `run_id`, `step_id`, `error` | Step failed (may retry) |
+| `checkpoint_created` | `run_id`, `checkpoint_id` | Waiting for human response |
+| `checkpoint_resolved` | `run_id`, `checkpoint_id` | Human responded, resuming |
 | `workflow_complete` | `run_id`, `tokens_total` | All steps done |
-| `workflow_failed` | `run_id`, `error` | Workflow stopped with error |
+| `workflow_error` | `run_id`, `error` | Workflow stopped with error |
 
 ### Connection Handling
 
-- SSE connections are long-lived HTTP/1.1 connections; configure reverse proxies to not buffer them (Nginx: `proxy_buffering off`)
-- For workflow streams: the connection stays open until `workflow_complete` or `workflow_failed`
+- SSE connections are long-lived HTTP/1.1 connections; configure reverse proxies to not buffer them (Nginx: `proxy_buffering off`, `X-Accel-Buffering: no`)
+- For workflow streams: the connection stays open until `workflow_complete` or `workflow_error`
 - If the client disconnects and reconnects, re-fetch `GET /workflows/runs/{run_id}` to get the current state, then re-subscribe to the stream
 - Events are not replayed on reconnect
