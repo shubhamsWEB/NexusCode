@@ -5,6 +5,7 @@ Mounts: webhook receiver, health check, search endpoint, MCP server (Day 6).
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from typing import Literal
 
 from fastapi import FastAPI
@@ -28,15 +29,8 @@ from src.mcp.auth import router as auth_router
 from src.mcp.server import mcp_server
 from src.storage.db import get_index_stats
 
-app = FastAPI(
-    title="Codebase Intelligence MCP Server",
-    version="0.2.0",
-    description="Centralized, always-fresh codebase knowledge service.",
-)
-
-
-@app.on_event("startup")
-async def _warmup_models():
+@asynccontextmanager
+async def lifespan(application: FastAPI):
     """Pre-load heavy models at startup so the first request isn't slow."""
     import asyncio
 
@@ -61,6 +55,16 @@ async def _warmup_models():
     from src.events.bus import EventBus
 
     await EventBus._get_redis()
+
+    yield
+
+
+app = FastAPI(
+    title="Codebase Intelligence MCP Server",
+    version="0.2.0",
+    description="Centralized, always-fresh codebase knowledge service.",
+    lifespan=lifespan,
+)
 
 
 app.include_router(webhook_router)
