@@ -873,22 +873,101 @@ def _format_plan_markdown(plan) -> str:
         "# Implementation Plan",
         f"**Query:** {plan.query}",
         "",
-        "## Summary",
-        plan.summary,
-        "",
     ]
 
     # NOTE: Stack fingerprint and web research are NOT rendered in the plan output.
     # They are reference-only context for the planner — not user-facing content.
 
+    # ── 1. Problem Statement ──────────────────────────────────────────────────
+    problem = getattr(plan, "problem_statement", "") or ""
+    if problem:
+        lines += ["## 1. Problem Statement", problem, ""]
+    elif plan.summary:
+        # Backward compat: fall back to summary for old plans
+        lines += ["## Summary", plan.summary, ""]
+
     if plan.clarifying_assumptions:
-        lines += ["## Assumptions"]
+        lines += ["### Assumptions"]
         for a in plan.clarifying_assumptions:
             lines.append(f"- {a}")
         lines.append("")
 
+    # ── 2. Current Architecture ───────────────────────────────────────────────
+    arch = getattr(plan, "current_architecture", "") or ""
+    if arch:
+        lines += ["## 2. Current Architecture", arch, ""]
+
+    # ── 3. Proposed Solutions ─────────────────────────────────────────────────
+    solutions = getattr(plan, "proposed_solutions", []) or []
+    if solutions:
+        lines += ["## 3. Proposed Solutions"]
+        for i, sol in enumerate(solutions):
+            name = sol.get("name", f"Option {chr(65 + i)}")
+            recommended = sol.get("is_recommended", False)
+            label = f" (Recommended)" if recommended else ""
+            lines.append(f"### Option {chr(65 + i)}: {name}{label}")
+            lines.append(sol.get("approach", ""))
+            pros = sol.get("pros", [])
+            if pros:
+                lines.append("\n**Pros:**")
+                for p in pros:
+                    lines.append(f"- {p}")
+            cons = sol.get("cons", [])
+            if cons:
+                lines.append("\n**Cons:**")
+                for c in cons:
+                    lines.append(f"- {c}")
+            lines.append("")
+    elif plan.design_alternatives:
+        # Backward compat: render old design_alternatives
+        lines += ["## Design Alternatives"]
+        for alt in plan.design_alternatives:
+            lines.append(f"### {alt.get('approach', 'Alternative')}")
+            for p in alt.get("pros", []):
+                lines.append(f"- ✅ {p}")
+            for c in alt.get("cons", []):
+                lines.append(f"- ❌ {c}")
+            reason = alt.get("rejected_reason", "")
+            if reason:
+                lines.append(f"_Rejected: {reason}_")
+        lines.append("")
+
+    # ── 4. Recommendation ─────────────────────────────────────────────────────
+    rec = getattr(plan, "recommendation", "") or ""
+    if rec:
+        lines += ["## 4. Recommendation", rec, ""]
+
+    # ── 5. Implementation Plan ────────────────────────────────────────────────
+    prereqs = getattr(plan, "prerequisites", []) or []
+    has_impl_section = prereqs or plan.steps
+    if has_impl_section:
+        lines += ["## 5. Implementation Plan"]
+
+    if prereqs:
+        lines += ["### 5.1 Prerequisites"]
+        for p in prereqs:
+            lines.append(f"- [ ] {p}")
+        lines.append("")
+
+    if plan.steps:
+        if prereqs:
+            lines += ["### 5.2 Dev Tasks"]
+        for s in plan.steps:
+            deps = f" _(after steps {s.depends_on_steps})_" if s.depends_on_steps else ""
+            lines.append(f"**Step {s.step_number}: {s.title}**{deps}")
+            lines.append(s.description)
+            if s.files_involved:
+                lines.append(f"_Files: {', '.join(f'`{f}`' for f in s.files_involved)}_")
+            if s.verification:
+                lines.append(f"✅ **Verify:** {s.verification}")
+            lines.append("")
+
+    if has_impl_section:
+        lines.append("")
+
+    # ── 6. Files to Change ────────────────────────────────────────────────────
     if plan.files:
-        lines += ["## Files to Change"]
+        lines += ["## 6. Files to Change"]
         for f in plan.files:
             lines.append(f"### `{f.path}` — {f.action.upper()}")
             lines.append(f"_{f.reason}_")
@@ -899,20 +978,9 @@ def _format_plan_markdown(plan) -> str:
                     lines.append(f"  ```\n  {c.pseudocode}\n  ```")
         lines.append("")
 
-    if plan.steps:
-        lines += ["## Execution Steps"]
-        for s in plan.steps:
-            deps = f" _(after steps {s.depends_on_steps})_" if s.depends_on_steps else ""
-            lines.append(f"### Step {s.step_number}: {s.title}{deps}")
-            lines.append(s.description)
-            if s.files_involved:
-                lines.append(f"_Files: {', '.join(f'`{f}`' for f in s.files_involved)}_")
-            if s.verification:
-                lines.append(f"✅ **Verify:** {s.verification}")
-        lines.append("")
-
+    # ── 7. Risks ──────────────────────────────────────────────────────────────
     if plan.risks:
-        lines += ["## Risks"]
+        lines += ["## 7. Risks"]
         severity_emoji = {"low": "🟡", "medium": "🟠", "high": "🔴"}
         for r in plan.risks:
             emoji = severity_emoji.get(r.severity, "⬜")
@@ -924,6 +992,19 @@ def _format_plan_markdown(plan) -> str:
 
     if plan.test_plan:
         lines += ["## Test Plan", plan.test_plan, ""]
+
+    # ── 8. Open Questions ─────────────────────────────────────────────────────
+    oq = getattr(plan, "open_questions", "") or ""
+    if oq:
+        lines += ["## 8. Open Questions", oq, ""]
+
+    # ── 9. References ─────────────────────────────────────────────────────────
+    refs = getattr(plan, "references", []) or []
+    if refs:
+        lines += ["## 9. References"]
+        for r in refs:
+            lines.append(f"- `{r}`")
+        lines.append("")
 
     if plan.metadata:
         m = plan.metadata

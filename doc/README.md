@@ -21,11 +21,12 @@ GitHub repositories and exposes the resulting knowledge via MCP, REST API, and a
 | Document | Description |
 |----------|-------------|
 | [Search, Ask & Planning](./search-and-ask.md) | Search modes, Ask Mode, Planning Mode, SPARC |
+| [Cross-Repo Search & Scoped Keys](./cross-repo-search.md) | Intelligent multi-repo routing + team access control |
 | [Workflows](./workflows.md) | Workflow automation, YAML DSL, human checkpoints |
 | [Agent Roles](./agent-roles.md) | Built-in and custom agent roles |
 | [Knowledge Graph](./knowledge-graph.md) | Codebase knowledge graph visualization |
 | [PDF Generation](./pdf-generation.md) | Generating downloadable PDF reports |
-| [MCP Access](./mcp-access.md) | Tokens, Claude Code/Desktop/Cursor setup |
+| [MCP Access](./mcp-access.md) | Tokens, Claude Code/Desktop/Cursor setup, scoped API keys |
 | [External MCP Servers](./external-mcp-servers.md) | Connect Context7, Browserbase, etc. |
 | [Custom Skills](./custom-skills.md) | Build and deploy custom agent skills |
 
@@ -106,6 +107,8 @@ run through the same shared infrastructure.
 
 | Feature | Guide |
 |---------|-------|
+| **Cross-repo routing** — intelligent multi-repo search with centroid scoring | [cross-repo-search.md](./cross-repo-search.md) |
+| **Scoped API keys** — per-team repo access control for MCP and REST | [cross-repo-search.md](./cross-repo-search.md) |
 | Workflow Automation Engine | [workflows.md](./workflows.md) |
 | Multi-agent orchestration with 6 roles | [agent-roles.md](./agent-roles.md) |
 | Human checkpoint support | [workflows.md](./workflows.md) |

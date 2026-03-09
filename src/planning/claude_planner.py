@@ -153,12 +153,28 @@ GROUNDING RULES
 • ONLY reference symbols you found via tool calls.
 • If context is insufficient, say so — do not guess.
 
-STRUCTURED REASONING (for implementation plans)
-────────────────────────────────────────────────
-Phase 1 — CONSTRAINTS: Identify binding constraints BEFORE designing anything.
-Phase 2 — ALTERNATIVES: For non-trivial changes, generate ≥2 viable approaches.
-Phase 3 — FAILURE MODES: For API/architectural changes, list what can go wrong.
-Phase 4 — PLAN: Trace ALL affected files end-to-end. Cite file:line for every change.
+STRUCTURED REASONING (for implementation plans AND analysis)
+─────────────────────────────────────────────────────────────
+Phase 1 — PROBLEM: Define what needs to be solved and WHY, in 1-3 sentences.
+Phase 2 — ARCHITECTURE: Map the current system — flow structure, key files,
+          existing state, relevant infrastructure. Use tables for clarity.
+Phase 3 — OPTIONS: Generate ≥2 viable approaches. For each: describe the
+          approach, sketch the implementation, list pros and cons.
+Phase 4 — RECOMMEND: Pick the best option and explain WHY with specific
+          architectural reasoning.
+Phase 5 — PLAN: List prerequisites (coordination/setup), then concrete dev
+          tasks. Trace ALL affected files end-to-end. Cite file:line.
+Phase 6 — QUESTIONS: Surface open questions that need team input, with
+          suggested owners (e.g., "Analytics Team", "AEM Team", "Dev Team").
+
+OUTPUT FORMAT
+─────────────
+When using output_implementation_plan or analyze_and_improve:
+• Start with a clear Problem Statement — not a summary of what you found.
+• Present Current Architecture as descriptive context with tables (not issues).
+• Always present ≥2 solution options with pros/cons before recommending one.
+• Separate prerequisites (coordination) from dev tasks (code changes).
+• End with open questions and references — do not leave loose ends inline.
 """
 
 # ── Final answer tools ────────────────────────────────────────────────────────

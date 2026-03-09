@@ -522,9 +522,16 @@ def _render_plan(plan: dict, elapsed: float):
             st.markdown(stack_fp)
         st.divider()
 
-    # ── Summary ───────────────────────────────────────────────────────────────
-    st.subheader("Summary")
-    st.markdown(plan.get("summary", "_No summary generated._"))
+    # ── 1. Problem Statement ──────────────────────────────────────────────────
+    problem = plan.get("problem_statement", "")
+    summary = plan.get("summary", "")
+    if problem:
+        st.subheader("1. Problem Statement")
+        st.markdown(problem)
+    elif summary:
+        # Backward compat: fall back to summary for old plans
+        st.subheader("Summary")
+        st.markdown(summary)
 
     assumptions = plan.get("clarifying_assumptions") or []
     if assumptions:
@@ -532,20 +539,92 @@ def _render_plan(plan: dict, elapsed: float):
             for a in assumptions:
                 st.markdown(f"- {a}")
 
-    # ── Key Design Decisions ──────────────────────────────────────────────────
-    decisions = plan.get("design_decisions") or []
-    if decisions:
-        st.divider()
-        st.subheader("Key Design Decisions")
-        for d in decisions:
-            st.markdown(f"- {d}")
-
     st.divider()
 
-    # ── Files to Change ───────────────────────────────────────────────────────
+    # ── 2. Current Architecture ───────────────────────────────────────────────
+    arch = plan.get("current_architecture", "")
+    if arch:
+        st.subheader("2. Current Architecture")
+        st.markdown(arch)
+        st.divider()
+
+    # ── 3. Proposed Solutions ─────────────────────────────────────────────────
+    solutions = plan.get("proposed_solutions") or []
+    if solutions:
+        st.subheader(f"3. Proposed Solutions ({len(solutions)})")
+        for i, sol in enumerate(solutions):
+            name = sol.get("name", f"Option {chr(65 + i)}")
+            recommended = sol.get("is_recommended", False)
+            badge = " ⭐" if recommended else ""
+            with st.expander(f"Option {chr(65 + i)}: {name}{badge}", expanded=recommended):
+                st.markdown(sol.get("approach", ""))
+                pros = sol.get("pros") or []
+                cons = sol.get("cons") or []
+                if pros or cons:
+                    pcol, ccol = st.columns(2)
+                    with pcol:
+                        st.markdown("**Pros**")
+                        for p in pros:
+                            st.markdown(f"- ✅ {p}")
+                    with ccol:
+                        st.markdown("**Cons**")
+                        for c in cons:
+                            st.markdown(f"- ❌ {c}")
+        st.divider()
+    else:
+        # Backward compat: render old design_alternatives
+        decisions = plan.get("design_decisions") or []
+        if decisions:
+            st.subheader("Key Design Decisions")
+            for d in decisions:
+                st.markdown(f"- {d}")
+            st.divider()
+
+    # ── 4. Recommendation ─────────────────────────────────────────────────────
+    rec = plan.get("recommendation", "")
+    if rec:
+        st.subheader("4. Recommendation")
+        st.markdown(rec)
+        st.divider()
+
+    # ── 5. Implementation Plan ────────────────────────────────────────────────
+    prereqs = plan.get("prerequisites") or []
+    steps = plan.get("steps") or []
+    if prereqs or steps:
+        st.subheader("5. Implementation Plan")
+
+    if prereqs:
+        st.markdown("### 5.1 Prerequisites")
+        for p in prereqs:
+            st.markdown(f"- [ ] {p}")
+
+    if steps:
+        if prereqs:
+            st.markdown("### 5.2 Dev Tasks")
+        for step in steps:
+            num = step.get("step_number", "?")
+            title = step.get("title", "")
+            desc = step.get("description", "")
+            files_inv = step.get("files_involved") or []
+            deps = step.get("depends_on_steps") or []
+            verify = step.get("verification", "")
+
+            dep_str = f" _(after steps {deps})_" if deps else ""
+            with st.container(border=True):
+                st.markdown(f"**Step {num}: {title}**{dep_str}")
+                st.markdown(desc)
+                if files_inv:
+                    st.caption("Files: " + " · ".join(f"`{f}`" for f in files_inv))
+                if verify:
+                    st.success(f"✅ **Verify:** {verify}")
+
+    if prereqs or steps:
+        st.divider()
+
+    # ── 6. Files to Change ────────────────────────────────────────────────────
     files = plan.get("files") or []
     if files:
-        st.subheader(f"Files to Change ({len(files)})")
+        st.subheader(f"6. Files to Change ({len(files)})")
 
         for file_change in files:
             path = file_change.get("path", "unknown")
@@ -571,36 +650,12 @@ def _render_plan(plan: dict, elapsed: float):
                     if pseudo:
                         st.code(pseudo, language="python")
 
-    st.divider()
+        st.divider()
 
-    # ── Execution Steps ───────────────────────────────────────────────────────
-    steps = plan.get("steps") or []
-    if steps:
-        st.subheader(f"Execution Steps ({len(steps)})")
-
-        for step in steps:
-            num = step.get("step_number", "?")
-            title = step.get("title", "")
-            desc = step.get("description", "")
-            files_inv = step.get("files_involved") or []
-            deps = step.get("depends_on_steps") or []
-            verify = step.get("verification", "")
-
-            dep_str = f" _(after steps {deps})_" if deps else ""
-            with st.container(border=True):
-                st.markdown(f"**Step {num}: {title}**{dep_str}")
-                st.markdown(desc)
-                if files_inv:
-                    st.caption("Files: " + " · ".join(f"`{f}`" for f in files_inv))
-                if verify:
-                    st.success(f"✅ **Verify:** {verify}")
-
-    st.divider()
-
-    # ── Risks ─────────────────────────────────────────────────────────────────
+    # ── 7. Risks ──────────────────────────────────────────────────────────────
     risks = plan.get("risks") or []
     if risks:
-        st.subheader(f"Risks ({len(risks)})")
+        st.subheader(f"7. Risks ({len(risks)})")
 
         for risk in risks:
             sev = risk.get("severity", "low")
@@ -621,6 +676,21 @@ def _render_plan(plan: dict, elapsed: float):
         st.divider()
         st.subheader("Test Plan")
         st.markdown(test_plan)
+
+    # ── 8. Open Questions ─────────────────────────────────────────────────────
+    oq = plan.get("open_questions", "")
+    if oq:
+        st.divider()
+        st.subheader("8. Open Questions")
+        st.markdown(oq)
+
+    # ── 9. References ─────────────────────────────────────────────────────────
+    refs = plan.get("references") or []
+    if refs:
+        st.divider()
+        st.subheader("9. References")
+        for r in refs:
+            st.markdown(f"- `{r}`")
 
     # ── Retrieval log (debug) ─────────────────────────────────────────────────
     if meta.get("retrieval_log"):

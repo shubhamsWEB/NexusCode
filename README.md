@@ -22,6 +22,8 @@ A centralized, always-fresh knowledge service that indexes your GitHub repositor
 | Each agent needs GitHub access | One server, all agents use MCP |
 | "How does X work?" slows down senior engineers | Ask Mode: instant mentor-style answers with code citations |
 | Planning a feature takes hours of reading | Planning Mode: grounded implementation plan in seconds |
+| One query scans every repo — noise drowns signal | Intelligent cross-repo routing: only relevant repos searched |
+| Team A can accidentally see Team B's private repos | Scoped API keys: per-team repo access control |
 
 ---
 
@@ -656,7 +658,38 @@ async with sse_client("http://localhost:8000/mcp/sse") as (read, write):
         print(result.content[0].text)
 ```
 
-### Get an API token
+### Scoped API Keys
+
+For multi-team deployments, create API keys that restrict which repos each team can access:
+
+```bash
+# Create a scoped key for the frontend team
+curl -X POST http://localhost:8000/api-keys \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "frontend-team",
+    "allowed_repos": ["myorg/frontend", "myorg/auth-service"]
+  }'
+# Returns: {"raw_key": "abc123...", ...}  — copy it now, never stored again
+```
+
+Connect with the scoped key by appending it to the SSE URL:
+
+```json
+{
+  "mcpServers": {
+    "nexuscode": {
+      "type": "sse",
+      "url": "http://localhost:8000/mcp/sse?api_key=abc123..."
+    }
+  }
+}
+```
+
+All tools automatically enforce the key's repo scope — out-of-scope repos are never searched.
+See [doc/cross-repo-search.md](doc/cross-repo-search.md) for the full guide.
+
+### Get a JWT token (alternative auth)
 
 ```bash
 curl -s -X POST http://localhost:8000/auth/token \
@@ -671,13 +704,15 @@ curl -s -X POST http://localhost:8000/auth/token \
 
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
-| `search_codebase` | Hybrid semantic+keyword search | `query`, `mode` (hybrid/semantic/keyword), `top_k`, `repo` |
+| `search_codebase` | Hybrid semantic+keyword search with intelligent cross-repo routing | `query`, `mode` (hybrid/semantic/keyword), `top_k`, `repo`, `cross_repo`, `current_repo` |
 | `get_symbol` | Fuzzy symbol lookup (like "Go to Definition") | `name`, `repo` |
 | `find_callers` | Who calls this function? | `symbol`, `depth`, `repo` |
 | `get_file_context` | Full structural map of a file | `path`, `repo`, `include_deps` |
 | `get_agent_context` | Pre-assembled task context (start here!) | `task`, `focal_files`, `token_budget`, `repo` |
 | `plan_implementation` | Web research + codebase → full implementation plan | `query`, `repo`, `web_research` |
 | `ask_codebase` | Answer natural-language questions in mentor tone | `question`, `repo` |
+
+**Cross-repo search:** When `repo` is omitted, `search_codebase` automatically routes the query to the most relevant repos using centroid similarity scoring. Pass `current_repo="owner/name"` to always include the repo you're working in. All tools respect the [scoped API key](#scoped-api-keys) set on the connection.
 
 ---
 
@@ -896,8 +931,10 @@ nexusCode_server/
 │   │   ├── app.py             # FastAPI: router mounts, MCP mount
 │   │   ├── ask.py             # POST /ask  — Ask Mode (sync + SSE)
 │   │   ├── plan.py            # POST /plan — Planning Mode (sync + SSE)
-│   │   ├── repos.py           # GET/POST/DELETE /repos
-│   │   └── search.py          # POST /search
+│   │   ├── repos.py           # GET/POST/DELETE /repos + /repo-summaries
+│   │   ├── search.py          # POST /search
+│   │   ├── api_keys.py        # POST/GET/DELETE /api-keys (scoped access control)
+│   │   └── middleware.py      # get_repo_scope() FastAPI dependency
 │   ├── github/
 │   │   ├── webhook.py         # HMAC-verified webhook receiver
 │   │   ├── fetcher.py         # GitHub REST API client + webhook management
@@ -909,9 +946,10 @@ nexusCode_server/
 │   │   ├── embedder.py        # voyage-code-2 batched embedding
 │   │   └── pipeline.py        # RQ worker orchestrator
 │   ├── retrieval/
-│   │   ├── searcher.py        # Hybrid vector+keyword + RRF merge
+│   │   ├── searcher.py        # Hybrid vector+keyword + RRF merge + cross-repo search
 │   │   ├── reranker.py        # Cross-encoder (ms-marco-MiniLM-L-6-v2)
-│   │   └── assembler.py       # Token-budget context assembly
+│   │   ├── assembler.py       # Token-budget context assembly (single + multi-repo)
+│   │   └── repo_router.py     # Cross-repo centroid scoring + budget allocation
 │   ├── ask/
 │   │   └── ask_agent.py       # Ask Mode LLM agent (mentor tone + citations)
 │   ├── mcp/

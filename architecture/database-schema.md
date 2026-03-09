@@ -14,6 +14,9 @@ repos ────────────────────────�
   ├── merkle_nodes (file change detection)                           │
   └── webhook_events (delivery log)                                  │
                                                                      │
+repo_summaries  (centroid embeddings for cross-repo routing)        │
+api_key_scopes  (team-level repo access control)                    │
+                                                                     │
 chat_sessions ──► chat_turns                                         │
 plan_history_entries                                                 │
 external_mcp_servers                                                 │
@@ -364,6 +367,59 @@ CREATE INDEX idx_kg_edges_source ON knowledge_graph_edges(source_id);
 
 ---
 
+## Cross-Repo Routing Tables
+
+### `repo_summaries` — Routing Index
+
+Stores a semantic centroid embedding for each repo to enable intelligent query-time routing.
+Computed automatically after each indexing job; cached in Redis under `repo_router:summaries`.
+
+```sql
+CREATE TABLE IF NOT EXISTS repo_summaries (
+    repo_owner            TEXT NOT NULL,
+    repo_name             TEXT NOT NULL,
+    centroid_embedding    vector(1536),          -- AVG(embedding) of all active chunks
+    tech_stack_keywords   TEXT[]  DEFAULT '{}',  -- top-50 frequent tokens from enriched_content
+    language_distribution JSONB   DEFAULT '{}',  -- {"python": 0.72, "typescript": 0.28}
+    chunk_count           INTEGER DEFAULT 0,
+    updated_at            TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    PRIMARY KEY (repo_owner, repo_name)
+);
+
+CREATE INDEX IF NOT EXISTS repo_summaries_centroid_idx
+    ON repo_summaries USING hnsw (centroid_embedding vector_cosine_ops)
+    WITH (m = 8, ef_construction = 32);
+```
+
+Updated non-blocking after every successful indexing job. Repos with fewer than
+`CROSS_REPO_SUMMARY_UPDATE_MIN_CHUNKS` (default 10) chunks are skipped — their centroid would
+be unreliable.
+
+---
+
+### `api_key_scopes` — Team-Level Repo Access Control
+
+Stores SHA-256 hashes of scoped API keys. Raw keys are never persisted.
+
+```sql
+CREATE TABLE IF NOT EXISTS api_key_scopes (
+    id            SERIAL PRIMARY KEY,
+    key_hash      TEXT NOT NULL UNIQUE,           -- SHA-256(raw_key); raw key never stored
+    name          TEXT NOT NULL,                  -- e.g. "frontend-team"
+    description   TEXT,
+    allowed_repos TEXT[] DEFAULT '{}',            -- empty = admin (all repos); non-empty = restricted
+    created_at    TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    last_used_at  TIMESTAMP WITH TIME ZONE        -- updated best-effort on each authenticated request
+);
+
+CREATE INDEX IF NOT EXISTS api_key_scopes_hash_idx ON api_key_scopes (key_hash);
+```
+
+`last_used_at` is updated on every authenticated request (non-blocking). The `key_hash` index
+ensures O(1) lookup even with thousands of keys.
+
+---
+
 ## Migrations
 
 | Migration | File | What it adds |
@@ -375,6 +431,7 @@ CREATE INDEX idx_kg_edges_source ON knowledge_graph_edges(source_id);
 | 009 | (workflows) | workflow_definitions, workflow_runs, workflow_step_executions, human_checkpoints |
 | 012 | 012_agent_roles.sql | agent_role_overrides table |
 | 013 | 013_generated_documents.sql | generated_documents table |
+| 014 | 014_repo_summaries.sql | repo_summaries + api_key_scopes tables |
 
 Run all migrations in order:
 ```bash
