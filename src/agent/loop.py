@@ -415,8 +415,7 @@ class AgentLoop:
                     iteration,
                     response.stop_reason,
                 )
-                # If search is required and we haven't searched yet, nudge Claude
-                # to use its retrieval tools instead of answering from training data.
+                # Nudge 1: Haven't searched yet — require search before answering.
                 if config.require_search_before_answer and search_tools_called == 0 and not force_final:
                     messages.append({"role": "assistant", "content": [{"type": "text", "text": text or "(no response)"}]})
                     messages.append({
@@ -427,6 +426,21 @@ class AgentLoop:
                         ),
                     })
                     logger.warning("agent_loop: nudging Claude to search (iter=%d)", iteration)
+                    continue
+                # Nudge 2: Searched but Claude responded with plain text instead of calling the
+                # answer tool. This often happens when Claude uses 'think' to draft an answer and
+                # then confuses the echoed thought with having already called the answer tool.
+                if search_tools_called > 0 and not force_final:
+                    messages.append({"role": "assistant", "content": [{"type": "text", "text": text or "(no response)"}]})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "You did not call the answer tool. Plain text responses are not accepted — "
+                            "you MUST call answer_question to submit your response. "
+                            "Please call the answer tool now with your complete answer."
+                        ),
+                    })
+                    logger.warning("agent_loop: nudging Claude to call answer tool (iter=%d)", iteration)
                     continue
                 stats = _make_stats(iteration, total_tool_calls, total_context_tokens, t0, search_tools_called)
                 return {"name": "_text_fallback", "input": {"answer": text, "cited_files": [], "follow_up_hints": []}}, stats
@@ -746,8 +760,7 @@ class AgentLoop:
                     iteration,
                     getattr(final_message, "stop_reason", "?"),
                 )
-                # If search is required and we haven't searched yet, nudge Claude
-                # to use its retrieval tools before bailing out.
+                # Nudge 1: Haven't searched yet — require search before answering.
                 if config.require_search_before_answer and search_tools_called == 0 and not force_final:
                     messages.append({"role": "assistant", "content": [{"type": "text", "text": text or "(no response)"}]})
                     messages.append({
@@ -758,6 +771,21 @@ class AgentLoop:
                         ),
                     })
                     logger.warning("agent_loop stream: nudging Claude to search (iter=%d)", iteration)
+                    continue
+                # Nudge 2: Searched but Claude responded with plain text instead of calling the
+                # answer tool. This often happens when Claude uses 'think' to draft an answer and
+                # then confuses the echoed thought with having already called the answer tool.
+                if search_tools_called > 0 and not force_final:
+                    messages.append({"role": "assistant", "content": [{"type": "text", "text": text or "(no response)"}]})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "You did not call the answer tool. Plain text responses are not accepted — "
+                            "you MUST call answer_question to submit your response. "
+                            "Please call the answer tool now with your complete answer."
+                        ),
+                    })
+                    logger.warning("agent_loop stream: nudging Claude to call answer tool (iter=%d)", iteration)
                     continue
                 stats = _make_stats(iteration, total_tool_calls, total_context_tokens, t0, search_tools_called)
                 yield {
