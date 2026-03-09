@@ -225,6 +225,59 @@ def assemble(
     )
 
 
+def assemble_multi_repo(
+    results_by_repo: dict[tuple[str, str], list[SearchResult]],
+    budgets_by_repo: dict[tuple[str, str], int],
+    query: str | None = None,
+) -> AssembledContext:
+    """
+    Per-repo assembly with visual repo headers.
+    Repos are ordered by their highest-scored chunk descending.
+
+    Output format:
+    ╔════════════════════════════════════════════════════╗
+    ║  REPO: myorg/auth-service                          ║
+    ╚════════════════════════════════════════════════════╝
+    ══ File: src/auth/routes.py ══
+    [lines 10-45]  POST /users/login  ...
+    """
+
+    def top_score(item: tuple[tuple[str, str], list[SearchResult]]) -> float:
+        _, results = item
+        return max((r.rerank_score or r.score for r in results), default=0.0)
+
+    sorted_repos = sorted(results_by_repo.items(), key=top_score, reverse=True)
+
+    sections: list[str] = []
+    all_chunks: list[dict] = []
+    total_tokens = 0
+
+    for (owner, name), results in sorted_repos:
+        budget = budgets_by_repo.get((owner, name), 2000)
+        repo_ctx = assemble(results, token_budget=budget, query=query)
+        if not repo_ctx.chunks_used:
+            continue
+        header = f"\n╔{'═' * 52}╗\n║  REPO: {owner}/{name}\n╚{'═' * 52}╝\n"
+        sections.append(header + repo_ctx.context_text)
+        all_chunks.extend(repo_ctx.chunks_used)
+        total_tokens += repo_ctx.tokens_used
+
+    quality = (
+        sum(c.get("score", 0) for c in all_chunks) / len(all_chunks)
+        if all_chunks
+        else 0.0
+    )
+    return AssembledContext(
+        context_text="\n".join(sections),
+        chunks_used=all_chunks,
+        tokens_used=total_tokens,
+        retrieval_log=(
+            f"Multi-repo: {len(sections)} repos, {len(all_chunks)} chunks, {total_tokens} tokens"
+        ),
+        quality_score=quality,
+    )
+
+
 # ── Formatting helpers ────────────────────────────────────────────────────────
 
 

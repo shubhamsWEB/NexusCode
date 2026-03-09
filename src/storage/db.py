@@ -813,6 +813,276 @@ async def list_plan_history(
         ]
 
 
+# ── Repo summaries (cross-repo routing) ──────────────────────────────────────
+
+
+async def upsert_repo_summary(
+    repo_owner: str,
+    repo_name: str,
+    centroid_embedding: list[float],
+    tech_stack_keywords: list[str],
+    language_distribution: dict[str, float],
+    chunk_count: int,
+) -> None:
+    """Insert or update the repo summary used for cross-repo routing."""
+    import json as _json
+
+    async with AsyncSessionLocal() as session:
+        await session.execute(
+            text("""
+                INSERT INTO repo_summaries
+                    (repo_owner, repo_name, centroid_embedding, tech_stack_keywords,
+                     language_distribution, chunk_count, updated_at)
+                VALUES
+                    (:owner, :name, :centroid::vector, :keywords, :lang_dist::jsonb,
+                     :chunk_count, NOW())
+                ON CONFLICT (repo_owner, repo_name) DO UPDATE SET
+                    centroid_embedding   = EXCLUDED.centroid_embedding,
+                    tech_stack_keywords  = EXCLUDED.tech_stack_keywords,
+                    language_distribution = EXCLUDED.language_distribution,
+                    chunk_count          = EXCLUDED.chunk_count,
+                    updated_at           = NOW()
+            """),
+            {
+                "owner": repo_owner,
+                "name": repo_name,
+                "centroid": "[" + ",".join(f"{v:.8f}" for v in centroid_embedding) + "]",
+                "keywords": tech_stack_keywords,
+                "lang_dist": _json.dumps(language_distribution),
+                "chunk_count": chunk_count,
+            },
+        )
+        await session.commit()
+
+
+async def get_all_repo_summaries() -> list[dict[str, Any]]:
+    """Return all repo_summaries rows (centroid as list[float])."""
+    async with AsyncSessionLocal() as session:
+        rows = (
+            await session.execute(
+                text("""
+                    SELECT repo_owner, repo_name,
+                           centroid_embedding::text AS centroid_str,
+                           tech_stack_keywords, language_distribution, chunk_count, updated_at
+                    FROM repo_summaries
+                """)
+            )
+        ).mappings().all()
+
+    result = []
+    for row in rows:
+        centroid: list[float] | None = None
+        if row["centroid_str"]:
+            # Parse "[0.1,0.2,...]" string back to list[float]
+            try:
+                centroid = [float(x) for x in row["centroid_str"].strip("[]").split(",")]
+            except Exception:
+                centroid = None
+        result.append(
+            {
+                "repo_owner": row["repo_owner"],
+                "repo_name": row["repo_name"],
+                "centroid_embedding": centroid,
+                "tech_stack_keywords": list(row["tech_stack_keywords"] or []),
+                "language_distribution": dict(row["language_distribution"] or {}),
+                "chunk_count": row["chunk_count"] or 0,
+                "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+            }
+        )
+    return result
+
+
+async def compute_repo_centroid(repo_owner: str, repo_name: str) -> dict[str, Any] | None:
+    """
+    Compute AVG(embedding), dominant keywords, language distribution, and chunk count
+    for a repo. Heavy query — run post-indexing, not at request time.
+    Returns None if no chunks with embeddings exist.
+    """
+    async with AsyncSessionLocal() as session:
+        # Centroid + chunk count
+        centroid_row = (
+            await session.execute(
+                text("""
+                    SELECT AVG(embedding)::vector AS centroid, COUNT(*) AS cnt
+                    FROM chunks
+                    WHERE repo_owner = :owner AND repo_name = :name
+                      AND is_deleted = FALSE AND embedding IS NOT NULL
+                """),
+                {"owner": repo_owner, "name": repo_name},
+            )
+        ).mappings().first()
+
+        if not centroid_row or not centroid_row["centroid"] or centroid_row["cnt"] == 0:
+            return None
+
+        # Language distribution
+        lang_rows = (
+            await session.execute(
+                text("""
+                    SELECT language, COUNT(*) AS cnt
+                    FROM chunks
+                    WHERE repo_owner = :owner AND repo_name = :name
+                      AND is_deleted = FALSE AND language IS NOT NULL
+                    GROUP BY language
+                    ORDER BY cnt DESC
+                    LIMIT 10
+                """),
+                {"owner": repo_owner, "name": repo_name},
+            )
+        ).mappings().all()
+
+        # Top keywords from enriched_content (simple word-frequency approach)
+        kw_rows = (
+            await session.execute(
+                text("""
+                    SELECT word, COUNT(*) AS freq
+                    FROM (
+                        SELECT regexp_split_to_table(lower(enriched_content), '[^a-z]+') AS word
+                        FROM chunks
+                        WHERE repo_owner = :owner AND repo_name = :name
+                          AND is_deleted = FALSE
+                        LIMIT 500
+                    ) t
+                    WHERE length(word) >= 4
+                    GROUP BY word
+                    ORDER BY freq DESC
+                    LIMIT 50
+                """),
+                {"owner": repo_owner, "name": repo_name},
+            )
+        ).mappings().all()
+
+    total_chunks = centroid_row["cnt"]
+    # Parse centroid string
+    centroid_str = str(centroid_row["centroid"])
+    try:
+        centroid = [float(x) for x in centroid_str.strip("[]").split(",")]
+    except Exception:
+        return None
+
+    # Language distribution as fractions
+    total_lang = sum(r["cnt"] for r in lang_rows) or 1
+    lang_dist = {r["language"]: round(r["cnt"] / total_lang, 3) for r in lang_rows}
+
+    keywords = [r["word"] for r in kw_rows]
+
+    return {
+        "centroid": centroid,
+        "keywords": keywords,
+        "language_dist": lang_dist,
+        "chunk_count": total_chunks,
+    }
+
+
+# ── API key scopes ────────────────────────────────────────────────────────────
+
+
+async def create_api_key_scope(
+    name: str,
+    description: str,
+    allowed_repos: list[str],
+) -> dict[str, Any]:
+    """
+    Create a new scoped API key.
+    Returns {id, raw_key, name, allowed_repos}.
+    raw_key is shown ONCE — only its SHA-256 hash is persisted.
+    """
+    import hashlib
+    import secrets
+
+    raw_key = secrets.token_urlsafe(32)
+    key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+
+    async with AsyncSessionLocal() as session:
+        row = (
+            await session.execute(
+                text("""
+                    INSERT INTO api_key_scopes (key_hash, name, description, allowed_repos)
+                    VALUES (:key_hash, :name, :description, :allowed_repos)
+                    RETURNING id, name, description, allowed_repos, created_at
+                """),
+                {
+                    "key_hash": key_hash,
+                    "name": name,
+                    "description": description,
+                    "allowed_repos": allowed_repos,
+                },
+            )
+        ).mappings().first()
+        await session.commit()
+
+    return {
+        "id": row["id"],
+        "raw_key": raw_key,
+        "name": row["name"],
+        "description": row["description"],
+        "allowed_repos": list(row["allowed_repos"] or []),
+        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+    }
+
+
+async def get_scope_by_key_hash(key_hash: str) -> dict[str, Any] | None:
+    """Return scope info for a key hash, and update last_used_at. Returns None if not found."""
+    async with AsyncSessionLocal() as session:
+        row = (
+            await session.execute(
+                text("""
+                    UPDATE api_key_scopes
+                    SET last_used_at = NOW()
+                    WHERE key_hash = :hash
+                    RETURNING id, name, allowed_repos
+                """),
+                {"hash": key_hash},
+            )
+        ).mappings().first()
+        await session.commit()
+
+    if not row:
+        return None
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "allowed_repos": list(row["allowed_repos"] or []),
+    }
+
+
+async def list_api_key_scopes() -> list[dict[str, Any]]:
+    """Return all API key scopes (never returns key_hash)."""
+    async with AsyncSessionLocal() as session:
+        rows = (
+            await session.execute(
+                text("""
+                    SELECT id, name, description, allowed_repos, created_at, last_used_at
+                    FROM api_key_scopes
+                    ORDER BY created_at DESC
+                """)
+            )
+        ).mappings().all()
+
+    return [
+        {
+            "id": r["id"],
+            "name": r["name"],
+            "description": r["description"],
+            "allowed_repos": list(r["allowed_repos"] or []),
+            "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+            "last_used_at": r["last_used_at"].isoformat() if r["last_used_at"] else None,
+        }
+        for r in rows
+    ]
+
+
+async def delete_api_key_scope(scope_id: int) -> bool:
+    """Delete an API key scope. Returns True if deleted, False if not found."""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text("DELETE FROM api_key_scopes WHERE id = :id RETURNING id"),
+            {"id": scope_id},
+        )
+        await session.commit()
+        return result.rowcount > 0
+
+
 async def get_plan_history_entry(plan_id: str) -> dict[str, Any] | None:
     """Return a single plan history entry with plan_json parsed back to dict."""
     import json as _json

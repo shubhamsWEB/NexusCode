@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -133,7 +133,7 @@ async def list_servers() -> JSONResponse:
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
-async def add_server(req: AddMCPServerRequest) -> JSONResponse:
+async def add_server(req: AddMCPServerRequest, background_tasks: BackgroundTasks) -> JSONResponse:
     """Register a new external MCP server."""
     from sqlalchemy import text
     from sqlalchemy.exc import IntegrityError
@@ -175,11 +175,24 @@ async def add_server(req: AddMCPServerRequest) -> JSONResponse:
     for k in ("last_seen_at", "created_at"):
         if d.get(k) is not None:
             d[k] = d[k].isoformat()
+
+    # Load tools into the bridge cache in the background — returns 201 instantly
+    # even if the MCP server is slow to respond.
+    if req.enabled:
+        from src.agent.mcp_bridge import _load_single_server
+        server_spec = {
+            "id": d["id"],
+            "url": d["url"],
+            "auth_header": d.get("auth_header"),
+            "transport": d.get("transport") or "auto",
+        }
+        background_tasks.add_task(_load_single_server, server_spec)
+
     return JSONResponse(d, status_code=status.HTTP_201_CREATED)
 
 
 @router.patch("/{server_id}")
-async def update_server(server_id: int, req: UpdateMCPServerRequest) -> JSONResponse:
+async def update_server(server_id: int, req: UpdateMCPServerRequest, background_tasks: BackgroundTasks) -> JSONResponse:
     """Update fields on an existing server."""
     from sqlalchemy import text
 
@@ -216,6 +229,32 @@ async def update_server(server_id: int, req: UpdateMCPServerRequest) -> JSONResp
             raise HTTPException(status_code=404, detail=f"Server {server_id} not found.")
 
     server = await _get_server_by_id(server_id)
+
+    # Sync bridge cache when connectivity-relevant fields change.
+    # Eviction is immediate (in-process dict mutation); re-load is backgrounded.
+    from src.agent.mcp_bridge import _tool_registry, _load_single_server
+    connectivity_changed = (
+        req.enabled is not None
+        or req.auth_header is not None
+        or req.transport is not None
+    )
+    if connectivity_changed:
+        server_url = server["url"]
+        # Evict stale tool entries synchronously — fast, no I/O
+        stale = [k for k, v in list(_tool_registry.items()) if v["server_url"] == server_url]
+        for k in stale:
+            del _tool_registry[k]
+
+        # Re-load in background so PATCH returns instantly
+        if server.get("enabled"):
+            server_spec = {
+                "id": server["id"],
+                "url": server["url"],
+                "auth_header": server.get("auth_header"),
+                "transport": server.get("transport") or "auto",
+            }
+            background_tasks.add_task(_load_single_server, server_spec)
+
     return JSONResponse(server)
 
 

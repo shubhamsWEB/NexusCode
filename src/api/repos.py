@@ -521,6 +521,51 @@ async def webhook_ping() -> JSONResponse:
 # ── GET /jobs ─────────────────────────────────────────────────────────────────
 
 
+@router.get("/repo-summaries", summary="List all repo summaries used for cross-repo routing")
+async def get_repo_summaries_endpoint() -> JSONResponse:
+    """Return all repo_summaries rows (centroid omitted for bandwidth)."""
+    from src.storage.db import get_all_repo_summaries
+
+    rows = await get_all_repo_summaries()
+    # Strip centroid embeddings from the response (not useful in the UI)
+    for row in rows:
+        row.pop("centroid_embedding", None)
+    return JSONResponse({"summaries": rows})
+
+
+@router.post(
+    "/repos/{owner}/{name}/refresh-summary",
+    summary="Recompute the cross-repo routing summary for a repo",
+)
+async def refresh_repo_summary(owner: str, name: str) -> JSONResponse:
+    """Trigger an on-demand centroid recomputation for a repo."""
+    from src.storage.db import compute_repo_centroid, upsert_repo_summary
+
+    summary = await compute_repo_centroid(owner, name)
+    if not summary:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No indexed chunks found for {owner}/{name}.",
+        )
+    await upsert_repo_summary(
+        repo_owner=owner,
+        repo_name=name,
+        centroid_embedding=summary["centroid"],
+        tech_stack_keywords=summary["keywords"],
+        language_distribution=summary["language_dist"],
+        chunk_count=summary["chunk_count"],
+    )
+    # Invalidate router cache
+    try:
+        import redis.asyncio as redis_async
+
+        r = redis_async.from_url(settings.redis_url)
+        await r.delete("repo_router:summaries")
+    except Exception:
+        pass
+    return JSONResponse({"status": "updated", "chunk_count": summary["chunk_count"]})
+
+
 @router.get("/jobs", summary="List recent RQ indexing jobs and their status")
 async def list_jobs() -> JSONResponse:
     """

@@ -398,6 +398,7 @@ async def retrieve_planning_context(
     repo_name: str | None = None,
     web_research: bool = True,
     model: str | None = None,
+    allowed_repos: list[str] | None = None,
 ) -> PlanningContext:
     """
     Run the retrieval pipeline and return a PlanningContext ready to inject
@@ -414,7 +415,7 @@ async def retrieve_planning_context(
 
     from src.retrieval.assembler import assemble
     from src.retrieval.reranker import rerank
-    from src.retrieval.searcher import embed_queries_batch, embed_query, search
+    from src.retrieval.searcher import embed_queries_batch, embed_query, search, search_cross_repo
 
     # ── Phase 0: analyze query + extract stack fingerprint ──────────────
     analysis = _analyze_query(query)
@@ -478,16 +479,30 @@ async def retrieve_planning_context(
     # queries (e.g. "add rate limiting to endpoints") so the vector represents
     # "what the modified file would look like" rather than just the query text.
     use_hyde = analysis.is_concept or analysis.is_cross_cutting
-    candidates = await search(
-        query=query,
-        query_vector=query_vector,
-        top_k=num_candidates,
-        mode="hybrid",
-        repo_owner=repo_owner,
-        repo_name=repo_name,
-        hyde=use_hyde,
-        search_quality="thorough",
-    )
+
+    if repo_owner is None and settings.cross_repo_enabled:
+        # Cross-repo path: route to the most relevant repos, then flatten results
+        logger.info("planning retriever: using cross-repo routing")
+        cross_results_by_repo, _ = await search_cross_repo(
+            query,
+            query_vector,
+            top_k=num_candidates,
+            token_budget=budgets.get("primary", 10000),
+            allowed_repos=allowed_repos,
+            search_quality="thorough",
+        )
+        candidates = [r for rlist in cross_results_by_repo.values() for r in rlist]
+    else:
+        candidates = await search(
+            query=query,
+            query_vector=query_vector,
+            top_k=num_candidates,
+            mode="hybrid",
+            repo_owner=repo_owner,
+            repo_name=repo_name,
+            hyde=use_hyde,
+            search_quality="thorough",
+        )
 
     # Sub-query searches (parallel) — merge results
     if sub_query_vectors:

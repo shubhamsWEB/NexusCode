@@ -134,11 +134,37 @@ async def get_workflow_by_name(name: str) -> dict[str, Any] | None:
     return _format_wf_row(dict(row))
 
 
+async def get_workflow_by_webhook_path(webhook_path: str) -> dict[str, Any] | None:
+    """Fetch a workflow whose trigger_config.webhook_path matches the given path."""
+    # Normalise: ensure leading slash
+    if not webhook_path.startswith("/"):
+        webhook_path = "/" + webhook_path
+    async with AsyncSessionLocal() as session:
+        row = (
+            await session.execute(
+                text("""
+                    SELECT id, name, description, yaml_definition,
+                           trigger_type, trigger_config, version, is_active,
+                           created_at, updated_at
+                    FROM workflow_definitions
+                    WHERE trigger_type = 'webhook'
+                      AND is_active = TRUE
+                      AND trigger_config->>'webhook_path' = :path
+                """),
+                {"path": webhook_path},
+            )
+        ).mappings().first()
+    if not row:
+        return None
+    return _format_wf_row(dict(row))
+
+
 async def list_workflows(active_only: bool = True) -> list[dict[str, Any]]:
     """List all workflow definitions."""
     async with AsyncSessionLocal() as session:
         sql = """
             SELECT wd.id, wd.name, wd.description, wd.trigger_type,
+                   wd.trigger_config,
                    wd.version, wd.is_active, wd.created_at, wd.updated_at,
                    (SELECT COUNT(*) FROM workflow_runs wr WHERE wr.workflow_id = wd.id) AS total_runs,
                    (SELECT MAX(wr2.started_at) FROM workflow_runs wr2 WHERE wr2.workflow_id = wd.id) AS last_run_at,
@@ -486,11 +512,19 @@ def _format_wf_row(row: dict) -> dict[str, Any]:
 
 
 def _format_wf_list_row(row: dict) -> dict[str, Any]:
+    tc = row.get("trigger_config")
+    if isinstance(tc, str):
+        try:
+            tc = json.loads(tc)
+        except Exception:
+            tc = {}
+    tc = tc or {}
     return {
         "id": str(row["id"]),
         "name": row["name"],
         "description": row.get("description") or "",
         "trigger_type": row["trigger_type"],
+        "webhook_path": tc.get("webhook_path"),
         "version": row["version"],
         "is_active": row["is_active"],
         "total_runs": row.get("total_runs") or 0,

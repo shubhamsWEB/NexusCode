@@ -300,21 +300,25 @@ class WorkflowExecutor:
             planning_max_output_tokens=16000,
         )
 
-        # Build the full tool pool: all 7 internal tools + external MCP tools
+        # Build the full tool pool: all internal tools + any registered external MCP tools
         from src.agent.mcp_bridge import get_external_tool_schemas
-        all_available = ALL_INTERNAL_TOOL_SCHEMAS + get_external_tool_schemas()
+        external_schemas = get_external_tool_schemas()
+        all_available = ALL_INTERNAL_TOOL_SCHEMAS + external_schemas
 
-        # Apply the role's tool allowlist to BOTH internal and external tools.
-        # If default_tools is empty the role was created before this feature or
-        # intentionally unrestricted — fall back to all internal tools only
-        # (external tools must be explicitly opted-in per role).
+        # Apply the role's tool allowlist (internal + external by name).
+        # If a role has no default_tools configured it is "unscoped" — give it
+        # all internal tools plus all external tools so newly-registered MCP
+        # servers are immediately available without requiring role edits.
+        # Scoped roles (default_tools set) must explicitly include external tool
+        # names to use them — this keeps tool lists small and accurate.
         allowed_tools = set(role_config.get("default_tools") or [])
         if allowed_tools:
             all_retrieval = [t for t in all_available if t["name"] in allowed_tools]
             if not all_retrieval:
                 all_retrieval = RETRIEVAL_TOOL_SCHEMAS  # safety fallback: core 4 tools
         else:
-            all_retrieval = RETRIEVAL_TOOL_SCHEMAS  # default: core 4 internal tools only
+            # Unscoped role — all internal + all external tools
+            all_retrieval = all_available
 
         # Extract repo from trigger payload if present
         repo_owner = self.trigger_payload.get("repo_owner")

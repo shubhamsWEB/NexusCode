@@ -156,20 +156,32 @@ def _render_view_mode(role: dict, edit_key: str):
     m2.metric("Token budget",   f"{role.get('token_budget', 80_000):,}")
     m3.metric("Require search", "✅ Yes" if role.get("require_search", True) else "❌ No")
 
+    tools_data  = _fetch_tools()
+    tool_lookup = _tool_lookup(tools_data)
+    external_available = [t["name"] for t in tools_data.get("external", [])]
+
     if tools:
         # Annotate external tools with a server tag
-        tools_data  = _fetch_tools()
-        tool_lookup = _tool_lookup(tools_data)
         badges = []
         for t in tools:
             info = tool_lookup.get(t, {})
             if info.get("source") == "external":
                 badges.append(f"`{t}` 🔌")
+            elif t not in tool_lookup:
+                badges.append(f"`{t}` ⚠️")   # stale/unknown name
             else:
                 badges.append(f"`{t}`")
         st.markdown("**Tools:** " + "  ".join(badges))
     else:
         st.caption("No tools assigned.")
+
+    # Nudge: built-in role with no override + external tools exist
+    if is_builtin and not is_overridden and external_available:
+        st.info(
+            f"🔌 **{len(external_available)} external tool(s) available** from connected MCP servers. "
+            "Click **Edit** to add them to this role's tool list.",
+            icon=None,
+        )
 
     sp = role.get("system_prompt", "")
     if sp:
@@ -230,37 +242,49 @@ def _render_tool_selector(current_tools: set[str], key_prefix: str) -> list[str]
     selected: list[str] = []
 
     # Internal tools
-    st.markdown("**Internal tools** — always available codebase retrieval")
+    st.markdown("**Internal tools** — built-in codebase retrieval")
     if internal:
         icols = st.columns(2)
         for i, t in enumerate(internal):
+            desc = t.get("description") or ""
+            label = f"`{t['name']}`"
             with icols[i % 2]:
                 if st.checkbox(
-                    f"`{t['name']}`",
+                    label,
                     value=(t["name"] in current_tools),
                     key=f"{key_prefix}_{t['name']}",
-                    help=t.get("description", ""),
+                    help=desc,
                 ):
                     selected.append(t["name"])
+                if desc:
+                    st.caption(desc[:80] + ("…" if len(desc) > 80 else ""))
     else:
         st.caption("No internal tools found.")
 
     # External tools
-    st.markdown("**External tools** — MCP servers 🔌")
+    st.markdown("**External tools** — connected MCP servers 🔌")
     if external:
         ecols = st.columns(2)
         for i, t in enumerate(external):
             server_url = t.get("server_url") or ""
             short_url  = server_url.split("//")[-1][:40] if server_url else ""
-            label_help = f"{t.get('description', '')}  \n_Server: {short_url}_" if short_url else t.get("description", "")
+            desc       = t.get("description") or ""
+            help_text  = f"{desc}\n\nServer: {short_url}" if short_url else desc
             with ecols[i % 2]:
                 if st.checkbox(
                     f"`{t['name']}` 🔌",
                     value=(t["name"] in current_tools),
                     key=f"{key_prefix}_{t['name']}",
-                    help=label_help,
+                    help=help_text,
                 ):
                     selected.append(t["name"])
+                caption_parts = []
+                if desc:
+                    caption_parts.append(desc[:60] + ("…" if len(desc) > 60 else ""))
+                if short_url:
+                    caption_parts.append(f"_{short_url}_")
+                if caption_parts:
+                    st.caption("  ·  ".join(caption_parts))
     else:
         st.caption(
             "No external MCP tools connected. "

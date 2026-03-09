@@ -5,6 +5,17 @@ Called from AgentLoop on every tool_use block Claude emits.
 Calls the same underlying functions that power the MCP tools, directly in-process
 (no HTTP round-trip). The repo_owner/repo_name context is always injected from
 the request scope so Claude doesn't need to specify it.
+
+Repo Scoping Pattern
+--------------------
+All tool functions receive (repo_owner, repo_name, allowed_repos) and must
+enforce repo scope via the two helpers at the top of this module:
+
+  * SQL queries       → _build_repo_scope_filter(repo_owner, repo_name, allowed_repos)
+  * In-memory lists   → _filter_results_by_scope(results, repo_owner, repo_name, allowed_repos)
+
+Priority: pinned repo > allowed_repos key scope > unrestricted (all repos).
+Any new tool added here MUST call these helpers — no manual if/elif repo_owner blocks.
 """
 
 from __future__ import annotations
@@ -19,6 +30,68 @@ logger = get_secure_logger(__name__)
 
 def _escape_ilike(v: str) -> str:
     return v.replace("%", r"\%").replace("_", r"\_")
+
+
+# ── Repo scope helpers ────────────────────────────────────────────────────────
+# All tool functions use these two helpers to enforce repo scoping uniformly.
+# Adding a new tool? Call _build_repo_scope_filter() for SQL queries and
+# _filter_results_by_scope() for in-memory SearchResult lists. That's it.
+
+
+def _build_repo_scope_filter(
+    repo_owner: str | None,
+    repo_name: str | None,
+    allowed_repos: list[str] | None,
+    *,
+    prefix: str = "",
+) -> tuple[str, dict]:
+    """
+    Return (sql_fragment, params) that constrains a query to the correct repo scope.
+
+    Priority:
+      1. repo_owner set  → pin to specific repo (+ optional repo_name)
+      2. allowed_repos   → restrict to the allowed set via SQL ANY()
+      3. neither         → no restriction (all repos)
+
+    sql_fragment starts with " AND " so it can be appended directly to a WHERE clause.
+    prefix: optional table alias, e.g. "c." → "c.repo_owner".
+    """
+    p = prefix
+    if repo_owner:
+        sql = f" AND {p}repo_owner = :scope_repo_owner"
+        params: dict = {"scope_repo_owner": repo_owner}
+        if repo_name:
+            sql += f" AND {p}repo_name = :scope_repo_name"
+            params["scope_repo_name"] = repo_name
+        return sql, params
+    if allowed_repos:
+        return (
+            f" AND ({p}repo_owner || '/' || {p}repo_name) = ANY(:scope_allowed_repos)",
+            {"scope_allowed_repos": allowed_repos},
+        )
+    return "", {}
+
+
+def _filter_results_by_scope(
+    results: list,
+    repo_owner: str | None,
+    repo_name: str | None,
+    allowed_repos: list[str] | None,
+) -> list:
+    """
+    Post-filter a list of SearchResult (or similar) objects by repo scope.
+    Use when SQL-level filtering isn't practical (e.g. _keyword_search).
+    Objects must have .repo_owner and .repo_name attributes.
+    """
+    if repo_owner:
+        results = [r for r in results if r.repo_owner == repo_owner]
+        if repo_name:
+            results = [r for r in results if r.repo_name == repo_name]
+        return results
+    if allowed_repos:
+        allowed_set = set(allowed_repos)
+        return [r for r in results if f"{r.repo_owner}/{r.repo_name}" in allowed_set]
+    return results
 
 
 def _normalize_input(raw: object, tool_name: str) -> dict:
@@ -79,21 +152,23 @@ async def execute_tool(
             name, tool_input,
         )
 
+    allowed_repos = (extra_context or {}).get("allowed_repos")
+
     try:
         if name == "search_codebase":
-            return await _search_codebase(inp, repo_owner, repo_name)
+            return await _search_codebase(inp, repo_owner, repo_name, allowed_repos)
         elif name == "get_symbol":
-            return await _get_symbol(inp, repo_owner, repo_name)
+            return await _get_symbol(inp, repo_owner, repo_name, allowed_repos)
         elif name == "find_callers":
-            return await _find_callers(inp, repo_owner, repo_name)
+            return await _find_callers(inp, repo_owner, repo_name, allowed_repos)
         elif name == "get_file_context":
-            return await _get_file_context(inp, repo_owner, repo_name)
+            return await _get_file_context(inp, repo_owner, repo_name, allowed_repos)
         elif name == "get_agent_context":
-            return await _get_agent_context(inp, repo_owner, repo_name)
+            return await _get_agent_context(inp, repo_owner, repo_name, allowed_repos)
         elif name == "plan_implementation":
-            return await _plan_implementation(inp, repo_owner, repo_name)
+            return await _plan_implementation(inp, repo_owner, repo_name, allowed_repos)
         elif name == "ask_codebase":
-            return await _ask_codebase(inp, repo_owner, repo_name)
+            return await _ask_codebase(inp, repo_owner, repo_name, allowed_repos)
         elif name == "generate_pdf":
             return await _generate_pdf(inp, extra_context)
         else:
@@ -114,7 +189,9 @@ async def _search_codebase(
     inp: dict,
     repo_owner: str | None,
     repo_name: str | None,
+    allowed_repos: list[str] | None = None,
 ) -> str:
+    from src.config import settings as _settings
     from src.retrieval.assembler import assemble
     from src.retrieval.reranker import rerank
     from src.retrieval.searcher import embed_query, search
@@ -133,6 +210,46 @@ async def _search_codebase(
     query_vector: list[float] = []
     if mode in ("semantic", "hybrid"):
         query_vector = await embed_query(query)
+
+    # Cross-repo scoped search when no specific repo is pinned but a scope is active
+    if repo_owner is None and allowed_repos and _settings.cross_repo_enabled:
+        from src.retrieval.assembler import assemble_multi_repo
+        from src.retrieval.searcher import search_cross_repo
+
+        results_by_repo, budgets = await search_cross_repo(
+            query=query,
+            query_vector=query_vector,
+            top_k=top_k,
+            token_budget=6000,
+            allowed_repos=allowed_repos,
+            language=language,
+        )
+        if results_by_repo:
+            ctx = assemble_multi_repo(results_by_repo, budgets, query=query)
+            all_results = [r for rlist in results_by_repo.values() for r in rlist]
+            return json.dumps(
+                {
+                    "query": query,
+                    "results_count": len(all_results),
+                    "repos_searched": [f"{o}/{n}" for o, n in results_by_repo],
+                    "results": [
+                        {
+                            "file": r.file_path,
+                            "repo": f"{r.repo_owner}/{r.repo_name}",
+                            "symbol": r.symbol_name,
+                            "kind": r.symbol_kind,
+                            "lines": f"{r.start_line}-{r.end_line}",
+                            "language": r.language,
+                            "score": round(r.rerank_score or r.score, 4),
+                            "preview": r.raw_content[:400],
+                        }
+                        for r in all_results
+                    ],
+                    "context": ctx.context_text,
+                    "tokens_used": ctx.tokens_used,
+                },
+                indent=2,
+            )
 
     results = await search(
         query=query,
@@ -191,6 +308,7 @@ async def _get_symbol(
     inp: dict,
     repo_owner: str | None,
     repo_name: str | None,
+    allowed_repos: list[str] | None = None,
 ) -> str:
     from sqlalchemy import text
 
@@ -208,12 +326,10 @@ async def _get_symbol(
         "similarity(name, :name) > 0.1 OR name ILIKE :name_like OR qualified_name ILIKE :name_like"
     ]
 
-    if repo_owner:
-        where_clauses.append("repo_owner = :repo_owner")
-        params["repo_owner"] = repo_owner
-    if repo_name:
-        where_clauses.append("repo_name = :repo_name")
-        params["repo_name"] = repo_name
+    scope_sql, scope_params = _build_repo_scope_filter(repo_owner, repo_name, allowed_repos)
+    if scope_sql:
+        where_clauses.append(scope_sql.removeprefix(" AND "))
+        params.update(scope_params)
 
     where = " AND ".join(where_clauses)
 
@@ -267,6 +383,7 @@ async def _find_callers(
     inp: dict,
     repo_owner: str | None,
     repo_name: str | None,
+    allowed_repos: list[str] | None = None,
 ) -> str:
     from src.retrieval.searcher import _keyword_search
 
@@ -331,6 +448,7 @@ async def _find_callers(
                     repo_name=repo_name,
                     language=None,
                 )
+                results = _filter_results_by_scope(results, repo_owner, repo_name, allowed_repos)
             except Exception as exc:
                 logger.warning(
                     "find_callers: keyword search failed for %r: %s",
@@ -379,6 +497,7 @@ async def _get_file_context(
     inp: dict,
     repo_owner: str | None,
     repo_name: str | None,
+    allowed_repos: list[str] | None = None,
 ) -> str:
     from sqlalchemy import text
 
@@ -395,13 +514,8 @@ async def _get_file_context(
 
     params: dict = {"path": path, "path_like": f"%{_escape_ilike(path)}%"}
     file_where = "file_path = :path OR file_path ILIKE :path_like"
-    repo_filter = ""
-    if repo_owner:
-        repo_filter += " AND repo_owner = :repo_owner"
-        params["repo_owner"] = repo_owner
-    if repo_name:
-        repo_filter += " AND repo_name = :repo_name"
-        params["repo_name"] = repo_name
+    repo_filter, scope_params = _build_repo_scope_filter(repo_owner, repo_name, allowed_repos)
+    params.update(scope_params)
 
     async with AsyncSessionLocal() as session:
         sym_sql = text(f"""
@@ -493,6 +607,7 @@ async def _get_agent_context(
     inp: dict,
     repo_owner: str | None,
     repo_name: str | None,
+    allowed_repos: list[str] | None = None,
 ) -> str:
     from src.retrieval.assembler import assemble
     from src.retrieval.reranker import rerank
@@ -518,13 +633,8 @@ async def _get_agent_context(
     for fpath in focal_files[:5]:
         esc_path = fpath.replace("%", r"\%").replace("_", r"\_")
         params: dict = {"path": fpath, "path_like": f"%{esc_path}%"}
-        repo_filter = ""
-        if repo_owner:
-            repo_filter += " AND repo_owner = :repo_owner"
-            params["repo_owner"] = repo_owner
-        if repo_name:
-            repo_filter += " AND repo_name = :repo_name"
-            params["repo_name"] = repo_name
+        repo_filter, scope_params = _build_repo_scope_filter(repo_owner, repo_name, allowed_repos)
+        params.update(scope_params)
 
         focal_sql = text(f"""
             SELECT id, file_path, repo_owner, repo_name, language,
@@ -573,6 +683,7 @@ async def _get_agent_context(
         repo_name=repo_name,
         language=None,
     )
+    semantic_results = _filter_results_by_scope(semantic_results, repo_owner, repo_name, allowed_repos)
     for r in semantic_results:
         if r.chunk_id not in seen_ids:
             seen_ids.add(r.chunk_id)
@@ -612,6 +723,7 @@ async def _plan_implementation(
     inp: dict,
     repo_owner: str | None,
     repo_name: str | None,
+    allowed_repos: list[str] | None = None,
 ) -> str:
     from src.planning.claude_planner import generate_plan
 
@@ -633,6 +745,7 @@ async def _plan_implementation(
             repo_name=repo_name,
             web_research=web_research,
             model=model,
+            allowed_repos=allowed_repos,
         )
     except RuntimeError as exc:
         return json.dumps({"error": str(exc)})
@@ -683,6 +796,7 @@ async def _ask_codebase(
     inp: dict,
     repo_owner: str | None,
     repo_name: str | None,
+    allowed_repos: list[str] | None = None,
 ) -> str:
     from src.ask.ask_agent import generate_answer
 
@@ -702,6 +816,7 @@ async def _ask_codebase(
             repo_owner=repo_owner,
             repo_name=repo_name,
             model=model,
+            allowed_repos=allowed_repos,
         )
     except RuntimeError as exc:
         return json.dumps({"error": str(exc)})

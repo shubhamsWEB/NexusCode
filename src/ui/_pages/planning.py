@@ -69,6 +69,8 @@ def render():
             model_options.append(label)
             model_map[label] = m["model"]
 
+    key_is_set = bool(st.session_state.get("api_key", "").strip())
+
     with st.form("plan_form"):
         query = st.text_area(
             "Describe your task",
@@ -82,7 +84,14 @@ def render():
 
         col1, col2, col3, col4, col5 = st.columns([2, 1.5, 1, 1, 1])
         with col1:
-            repo_label = st.selectbox("Scope to repository (optional)", options=repo_options)
+            repo_label = st.selectbox(
+                "Scope to repository (optional)",
+                options=repo_options,
+                disabled=key_is_set,
+                help="Disabled — scope is determined by the API key." if key_is_set else None,
+            )
+            if key_is_set:
+                st.caption("🔑 Repo scope set by API key")
         with col2:
             model_label = st.selectbox("LLM Model", options=model_options)
         with col3:
@@ -123,21 +132,22 @@ def render():
         }
         if model_label != "Default":
             payload["model"] = model_map.get(model_label)
-        if repo_label != "All repos":
+        if not key_is_set and repo_label != "All repos":
             owner, name = repo_map.get(repo_label, (None, None))
             if owner and name:
                 payload["repo_owner"] = owner
                 payload["repo_name"] = name
 
-        api_url = os.getenv("API_URL", "http://localhost:8000")
+        api_url = st.session_state.get("api_url", os.getenv("API_URL", "http://localhost:8000"))
+        api_key = st.session_state.get("api_key", "").strip()
 
         # Reset execution timeline for this new plan
         st.session_state["plan_agent_logs"] = []
 
         if stream_enabled:
-            plan_data, elapsed = _request_streaming(api_url, payload)
+            plan_data, elapsed = _request_streaming(api_url, payload, api_key=api_key)
         else:
-            plan_data, elapsed = _request_sync(api_url, payload)
+            plan_data, elapsed = _request_sync(api_url, payload, api_key=api_key)
 
         if not plan_data:
             st.error("Received an empty response from the server.")
@@ -156,16 +166,17 @@ def render():
 # ── Sync request (default) ────────────────────────────────────────────────────
 
 
-def _request_sync(api_url: str, payload: dict) -> tuple[dict | None, float]:
+def _request_sync(api_url: str, payload: dict, api_key: str = "") -> tuple[dict | None, float]:
     """POST /plan with stream=false, wait for the full JSON response."""
     status_box = st.empty()
     web_label = " + web research" if payload.get("web_research") else ""
     status_box.info(f"⏳ Generating plan{web_label}… this may take 20–60 seconds.")
+    _headers = {"X-Api-Key": api_key} if api_key else {}
 
     t0 = time.monotonic()
     try:
         with httpx.Client(timeout=180) as client:
-            resp = client.post(f"{api_url}/plan", json=payload)
+            resp = client.post(f"{api_url}/plan", json=payload, headers=_headers)
     except httpx.ConnectError:
         status_box.empty()
         st.error("Cannot connect to the API server. Is it running on `localhost:8000`?")
@@ -206,7 +217,7 @@ def _request_sync(api_url: str, payload: dict) -> tuple[dict | None, float]:
 # ── Streaming request ──────────────────────────────────────────────────────────
 
 
-def _request_streaming(api_url: str, payload: dict) -> tuple[dict | None, float]:
+def _request_streaming(api_url: str, payload: dict, api_key: str = "") -> tuple[dict | None, float]:
     """
     POST /plan with stream=true, render SSE events as a Cursor-style timeline.
 
@@ -234,10 +245,11 @@ def _request_streaming(api_url: str, payload: dict) -> tuple[dict | None, float]
     # Progress counter for partial JSON (plan_chunk) — rendered below trace
     progress_box = st.empty()
 
+    _headers = {"X-Api-Key": api_key} if api_key else {}
     try:
         with (
             httpx.Client(timeout=180) as client,
-            client.stream("POST", f"{api_url}/plan", json=payload) as resp,
+            client.stream("POST", f"{api_url}/plan", json=payload, headers=_headers) as resp,
         ):
             if resp.status_code != 200:
                 trace_status.update(label="❌ Request failed", state="error")

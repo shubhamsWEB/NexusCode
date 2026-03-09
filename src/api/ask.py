@@ -24,9 +24,10 @@ import asyncio
 import json
 import uuid as _uuid
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from src.api.middleware import get_repo_scope
 from src.planning.schemas import AskRequest
 from src.utils.logging import get_secure_logger
 
@@ -65,17 +66,17 @@ async def _save_ask_turn(session_id: str, query: str, result, repo_owner, repo_n
 
 
 @router.post("", response_model=None)
-async def ask_question(req: AskRequest):
+async def ask_question(req: AskRequest, allowed_repos: list[str] | None = Depends(get_repo_scope)):
     """
     Answer a natural-language question about the codebase.
     Set `stream=true` to receive a server-sent-events stream.
     """
     if req.stream:
-        return _sse_response(req)
-    return await _sync_ask(req)
+        return _sse_response(req, allowed_repos)
+    return await _sync_ask(req, allowed_repos)
 
 
-async def _sync_ask(req: AskRequest) -> JSONResponse:
+async def _sync_ask(req: AskRequest, allowed_repos: list[str] | None = None) -> JSONResponse:
     effective_session_id = req.session_id or str(_uuid.uuid4())
 
     try:
@@ -91,6 +92,7 @@ async def _sync_ask(req: AskRequest) -> JSONResponse:
             repo_owner=req.repo_owner,
             repo_name=req.repo_name,
             model=req.model,
+            allowed_repos=allowed_repos,
         )
     except RuntimeError as exc:
         status = getattr(exc, "status_code", None)
@@ -137,9 +139,9 @@ async def _sync_ask(req: AskRequest) -> JSONResponse:
 # ── SSE streaming endpoint ─────────────────────────────────────────────────────
 
 
-def _sse_response(req: AskRequest) -> StreamingResponse:
+def _sse_response(req: AskRequest, allowed_repos: list[str] | None = None) -> StreamingResponse:
     return StreamingResponse(
-        _sse_generator(req),
+        _sse_generator(req, allowed_repos),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -148,7 +150,7 @@ def _sse_response(req: AskRequest) -> StreamingResponse:
     )
 
 
-async def _sse_generator(req: AskRequest):
+async def _sse_generator(req: AskRequest, allowed_repos: list[str] | None = None):
     def _event(data: dict) -> str:
         return f"data: {json.dumps(data)}\n\n"
 
@@ -170,6 +172,7 @@ async def _sse_generator(req: AskRequest):
             repo_owner=req.repo_owner,
             repo_name=req.repo_name,
             model=req.model,
+            allowed_repos=allowed_repos,
         ):
             etype = chunk.get("type")
 

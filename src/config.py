@@ -162,6 +162,21 @@ class Settings(BaseSettings):
         "", description="Comma-separated paths to custom skill directories"
     )
 
+    # ── Cross-Repo Routing ────────────────────────────────────────────────────
+    cross_repo_enabled: bool = Field(True, description="Enable intelligent cross-repo search routing")
+    cross_repo_max_repos: int = Field(5, description="Max repos searched per query within scope")
+    cross_repo_min_score: float = Field(0.20, description="Min combined score to include a repo")
+    cross_repo_keyword_weight: float = Field(0.25, description="Weight of keyword Jaccard in combined score")
+    cross_repo_semantic_weight: float = Field(0.75, description="Weight of centroid cosine in combined score")
+    cross_repo_primary_budget_fraction: float = Field(0.60, description="Fraction of token budget for primary repo")
+    cross_repo_router_cache_ttl: int = Field(120, description="Redis TTL for router summaries cache (seconds)")
+    cross_repo_summary_update_min_chunks: int = Field(10, description="Min chunks before centroid is computed")
+
+    # ── API Key Scoping ───────────────────────────────────────────────────────
+    api_key_header: str = Field("X-Api-Key", description="HTTP header name for API key")
+    api_key_query_param: str = Field("api_key", description="URL query param fallback for MCP SSE URL")
+    api_key_cache_ttl: int = Field(300, description="Redis TTL for key→scope cache (seconds)")
+
     # ── Workflow Automation Engine ────────────────────────────────────────────
     workflow_max_step_retries: int = Field(
         2, description="Default max retries per workflow step"

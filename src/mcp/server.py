@@ -57,19 +57,31 @@ mcp_server = FastMCP(
 @mcp_server.tool()
 async def search_codebase(
     query: Annotated[str, "Natural language or identifier query"],
-    repo: Annotated[str | None, "Scope to 'owner/name' — defaults to all repos"] = None,
+    repo: Annotated[
+        str | None,
+        "Scope to 'owner/name'. Omit for intelligent cross-repo search.",
+    ] = None,
+    current_repo: Annotated[
+        str | None,
+        "The repo you are currently working in ('owner/name'). Prioritized in results.",
+    ] = None,
     language: Annotated[str | None, "Filter by language: python, typescript, javascript…"] = None,
-    top_k: Annotated[int, "Number of results to return (1-20)"] = 5,
+    top_k: Annotated[int, "Number of results to return per repo (1-20)"] = 5,
     mode: Annotated[str, "Search mode: 'semantic', 'keyword', or 'hybrid'"] = "hybrid",
+    cross_repo: Annotated[
+        bool, "Enable intelligent multi-repo routing when repo=None (default true)"
+    ] = True,
 ) -> str:
     """
     Search the codebase using semantic vector search, keyword search, or both.
     Returns ranked code chunks with file locations, symbol names, and source previews.
     Use this for any question like 'where is auth handled?' or 'find the payment logic'.
+    When repo is omitted and cross_repo=True, automatically routes to the most relevant repos.
     """
-    from src.retrieval.assembler import assemble
+    from src.config import settings as _settings
+    from src.retrieval.assembler import assemble, assemble_multi_repo
     from src.retrieval.reranker import rerank
-    from src.retrieval.searcher import embed_query, search
+    from src.retrieval.searcher import embed_query, search, search_cross_repo
 
     top_k = max(1, min(20, top_k))
 
@@ -81,6 +93,56 @@ async def search_codebase(
     if mode in ("semantic", "hybrid"):
         query_vector = await embed_query(query)
 
+    # ── Cross-repo path ───────────────────────────────────────────────────────
+    if repo is None and cross_repo and _settings.cross_repo_enabled:
+        current: tuple[str, str] | None = None
+        if current_repo and "/" in current_repo:
+            parts = current_repo.split("/", 1)
+            current = (parts[0], parts[1])
+
+        results_by_repo, budgets = await search_cross_repo(
+            query,
+            query_vector,
+            top_k=top_k,
+            token_budget=_settings.context_token_budget,
+            allowed_repos=None,  # unrestricted from MCP (no auth context available here)
+            current_repo=current,
+            language=language,
+            search_quality="balanced",
+        )
+
+        if not results_by_repo:
+            return json.dumps({"results": [], "context": "", "tokens_used": 0})
+
+        ctx = assemble_multi_repo(results_by_repo, budgets, query=query)
+        all_results = [r for rlist in results_by_repo.values() for r in rlist]
+        output = {
+            "query": query,
+            "mode": mode,
+            "repos_searched": [f"{o}/{n}" for o, n in results_by_repo],
+            "results": [
+                {
+                    "file": r.file_path,
+                    "repo": f"{r.repo_owner}/{r.repo_name}",
+                    "symbol": r.symbol_name,
+                    "kind": r.symbol_kind,
+                    "scope": r.scope_chain,
+                    "lines": f"{r.start_line}-{r.end_line}",
+                    "language": r.language,
+                    "score": round(r.rerank_score or r.score, 4),
+                    "commit": r.commit_sha[:7] if r.commit_sha else "",
+                    "preview": r.raw_content[:400],
+                }
+                for r in all_results
+            ],
+            "context": ctx.context_text,
+            "tokens_used": ctx.tokens_used,
+            "quality_score": round(ctx.quality_score, 4),
+            "retrieval_log": ctx.retrieval_log,
+        }
+        return json.dumps(output, indent=2)
+
+    # ── Single-repo path (unchanged) ─────────────────────────────────────────
     results = await search(
         query=query,
         query_vector=query_vector,
@@ -482,18 +544,24 @@ async def get_agent_context(
     ] = None,
     token_budget: Annotated[int, "Max tokens to return (default 8000)"] = 8000,
     repo: Annotated[str | None, "Scope to 'owner/name' — defaults to all repos"] = None,
+    current_repo: Annotated[
+        str | None,
+        "The repo you are currently working in ('owner/name'). Prioritized when doing cross-repo search.",
+    ] = None,
 ) -> str:
     """
     Pre-assembled, token-budget-aware context for a specific coding task.
     Call this at the START of a task before you begin reasoning.
     It combines focal file content + semantic search + import graph to give you
     everything relevant in one shot, deduplicated and ranked.
+    When repo is omitted, intelligently searches across all relevant repos.
     """
     from sqlalchemy import text
 
-    from src.retrieval.assembler import assemble
+    from src.config import settings as _settings
+    from src.retrieval.assembler import assemble, assemble_multi_repo
     from src.retrieval.reranker import rerank
-    from src.retrieval.searcher import SearchResult, _semantic_search, embed_query
+    from src.retrieval.searcher import SearchResult, _semantic_search, embed_query, search_cross_repo
     from src.storage.db import AsyncSessionLocal
 
     repo_owner = repo_name = None
@@ -563,17 +631,37 @@ async def get_agent_context(
 
     # 2. Semantic search for the task description
     query_vector = await embed_query(task)
-    semantic_results = await _semantic_search(
-        vector=query_vector,
-        limit=15,
-        repo_owner=repo_owner,
-        repo_name=repo_name,
-        language=None,
-    )
-    for r in semantic_results:
-        if r.chunk_id not in seen_ids:
-            seen_ids.add(r.chunk_id)
-            all_results.append(r)
+
+    if repo is None and _settings.cross_repo_enabled:
+        # Cross-repo semantic search
+        current: tuple[str, str] | None = None
+        if current_repo and "/" in current_repo:
+            parts = current_repo.split("/", 1)
+            current = (parts[0], parts[1])
+        cross_results_by_repo, _ = await search_cross_repo(
+            task, query_vector,
+            top_k=15,
+            token_budget=token_budget,
+            current_repo=current,
+            search_quality="balanced",
+        )
+        for rlist in cross_results_by_repo.values():
+            for r in rlist:
+                if r.chunk_id not in seen_ids:
+                    seen_ids.add(r.chunk_id)
+                    all_results.append(r)
+    else:
+        semantic_results = await _semantic_search(
+            vector=query_vector,
+            limit=15,
+            repo_owner=repo_owner,
+            repo_name=repo_name,
+            language=None,
+        )
+        for r in semantic_results:
+            if r.chunk_id not in seen_ids:
+                seen_ids.add(r.chunk_id)
+                all_results.append(r)
 
     if not all_results:
         return json.dumps(

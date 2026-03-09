@@ -90,13 +90,19 @@ def render():
             model_options.append(label)
             model_map[label] = m["model"]
 
+    key_is_set = bool(st.session_state.get("api_key", "").strip())
+
     col_repo, col_model, col_clear = st.columns([3, 2, 1])
     with col_repo:
         repo_label = st.selectbox(
             "Scope to repository (optional)",
             options=repo_options,
             key="ask_repo",
+            disabled=key_is_set,
+            help="Disabled — scope is determined by the API key." if key_is_set else None,
         )
+        if key_is_set:
+            st.caption("🔑 Repo scope set by API key")
     with col_model:
         model_label = st.selectbox(
             "LLM Model",
@@ -180,21 +186,23 @@ def _handle_query(
         model_val = model_map.get(model_label)
         if model_val:
             payload["model"] = model_val
-    if repo_label != "All repos":
+    api_key = st.session_state.get("api_key", "").strip()
+    # Only pin repo when no API key is active (key scope overrides manual selection)
+    if not api_key and repo_label != "All repos":
         owner, name = repo_map.get(repo_label, (None, None))
         if owner and name:
             payload["repo_owner"] = owner
             payload["repo_name"]  = name
 
-    api_url = os.getenv("API_URL", "http://localhost:8000")
-    answer, meta = _stream_ask(api_url, payload)
+    api_url = st.session_state.get("api_url", os.getenv("API_URL", "http://localhost:8000"))
+    answer, meta = _stream_ask(api_url, payload, api_key=api_key)
     st.session_state.ask_messages.append({"role": "assistant", "content": answer, "meta": meta})
 
 
 # ── Streaming request ──────────────────────────────────────────────────────────
 
 
-def _stream_ask(api_url: str, payload: dict) -> tuple[str, dict]:
+def _stream_ask(api_url: str, payload: dict, api_key: str = "") -> tuple[str, dict]:
     """
     POST /ask with stream=true.
 
@@ -228,10 +236,11 @@ def _stream_ask(api_url: str, payload: dict) -> tuple[str, dict]:
         accumulated  = ""
         final_meta: dict = {}
 
+        _headers = {"X-Api-Key": api_key} if api_key else {}
         try:
             with (
                 httpx.Client(timeout=180) as client,
-                client.stream("POST", f"{api_url}/ask", json=payload) as resp,
+                client.stream("POST", f"{api_url}/ask", json=payload, headers=_headers) as resp,
             ):
                 if resp.status_code != 200:
                     trace_status.update(label="❌ Request failed", state="error")

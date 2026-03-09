@@ -11,11 +11,19 @@ import httpx
 import streamlit as st
 
 
+def _api_headers() -> dict[str, str]:
+    """Build request headers, including X-Api-Key if one is configured in the sidebar."""
+    key = st.session_state.get("api_key", "").strip()
+    if key:
+        return {"X-Api-Key": key}
+    return {}
+
+
 def api_get(path: str, timeout: int = 15):
     """GET request to the API server. Returns (data, error)."""
     url = f"{st.session_state.get('api_url', 'http://localhost:8000')}{path}"
     try:
-        resp = httpx.get(url, timeout=timeout)
+        resp = httpx.get(url, headers=_api_headers(), timeout=timeout)
         resp.raise_for_status()
         return resp.json(), None
     except httpx.TimeoutException:
@@ -30,7 +38,7 @@ def api_post(path: str, json=None, timeout: int = 30):
     """POST request to the API server. Returns (data, error)."""
     url = f"{st.session_state.get('api_url', 'http://localhost:8000')}{path}"
     try:
-        resp = httpx.post(url, json=json, timeout=timeout)
+        resp = httpx.post(url, json=json, headers=_api_headers(), timeout=timeout)
         resp.raise_for_status()
         return resp.json(), None
     except httpx.TimeoutException:
@@ -45,7 +53,7 @@ def api_patch(path: str, json=None, timeout: int = 15):
     """PATCH request to the API server. Returns (data, error)."""
     url = f"{st.session_state.get('api_url', 'http://localhost:8000')}{path}"
     try:
-        resp = httpx.patch(url, json=json, timeout=timeout)
+        resp = httpx.patch(url, json=json, headers=_api_headers(), timeout=timeout)
         resp.raise_for_status()
         return resp.json(), None
     except httpx.TimeoutException:
@@ -60,7 +68,7 @@ def api_delete(path: str, timeout: int = 15):
     """DELETE request to the API server. Returns (data, error)."""
     url = f"{st.session_state.get('api_url', 'http://localhost:8000')}{path}"
     try:
-        resp = httpx.delete(url, timeout=timeout)
+        resp = httpx.delete(url, headers=_api_headers(), timeout=timeout)
         resp.raise_for_status()
         return resp.json(), None
     except httpx.HTTPStatusError as e:
