@@ -10,7 +10,7 @@ psycopg2-binary==2.9.11
 pgvector==0.4.2
 
 # Job queue
-redis==7.2.1
+redis==7.3.0
 rq==2.7.0
 
 # GitHub API client
