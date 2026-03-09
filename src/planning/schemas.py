@@ -159,6 +159,22 @@ class ImplementationPlan(BaseModel):
     )
 
     # ── Plan fields (response_type == "plan") ─────────────────────────────────
+    problem_statement: str = Field(
+        "",
+        description="What needs to be solved and why (1-3 sentences)",
+    )
+    current_architecture: str = Field(
+        "",
+        description="Markdown describing flow structure, key files, current state, and infrastructure",
+    )
+    proposed_solutions: list[dict] = Field(
+        default_factory=list,
+        description="Viable solution options, each with name/approach/pros/cons/is_recommended",
+    )
+    recommendation: str = Field(
+        "",
+        description="Which solution option is recommended and why (architectural reasoning)",
+    )
     summary: str = Field(
         "",
         description="2-3 sentence high-level summary of the implementation approach",
@@ -175,13 +191,18 @@ class ImplementationPlan(BaseModel):
         default_factory=list,
         description="Identified constraints (framework, runtime, API contract, backward compat, performance)",
     )
+    prerequisites: list[str] = Field(
+        default_factory=list,
+        description="Coordination/setup tasks before dev work",
+    )
+    # Kept for backward compatibility with old plans
     design_alternatives: list[dict] = Field(
         default_factory=list,
-        description="Alternative approaches considered, each with approach/pros/cons/rejected_reason",
+        description="(Deprecated — use proposed_solutions) Alternative approaches considered",
     )
     failure_modes: list[dict] = Field(
         default_factory=list,
-        description="Potential failure cases with scenario, cause, and mitigation",
+        description="(Deprecated) Potential failure cases with scenario, cause, and mitigation",
     )
     files: list[FileChange] = Field(
         default_factory=list,
@@ -189,15 +210,24 @@ class ImplementationPlan(BaseModel):
     )
     steps: list[Step] = Field(
         default_factory=list,
-        description="Ordered execution steps with dependencies",
+        description="Ordered dev tasks with dependencies",
     )
     risks: list[Risk] = Field(
         default_factory=list,
         description="Risks and mitigations",
     )
     test_plan: str = Field("", description="What to test and how after implementation")
+    open_questions: str = Field(
+        "",
+        description="Markdown table of open questions (# | Question | Owner | Status)",
+    )
+    references: list[str] = Field(
+        default_factory=list,
+        description="Key file paths referenced throughout the plan",
+    )
+    # Kept for backward compatibility with old plans
     sparc: SPARCSummary | None = Field(
-        None, description="SPARC methodology summary (populated for response_type='plan')"
+        None, description="(Deprecated) SPARC methodology summary"
     )
     metadata: PlanMetadata | None = None
 
@@ -222,10 +252,6 @@ class PlanRequest(BaseModel):
         None,
         description="LLM model to use (e.g. 'gpt-4o', 'claude-opus-4-6'). Defaults to server config.",
     )
-    search_quality: str = Field(
-        "thorough",
-        description="HNSW search quality preset: 'fast', 'balanced', or 'thorough'.",
-    )
 
 
 class AskRequest(BaseModel):
@@ -246,10 +272,6 @@ class AskRequest(BaseModel):
         None,
         description="LLM model to use (e.g. 'gpt-4o', 'claude-opus-4-6'). Defaults to server config.",
     )
-    search_quality: str = Field(
-        "balanced",
-        description="HNSW search quality preset: 'fast', 'balanced', or 'thorough'.",
-    )
 
 
 # ── JSON Schema used as Claude's tool input ───────────────────────────────────
@@ -258,16 +280,59 @@ class AskRequest(BaseModel):
 PLAN_TOOL_SCHEMA: dict = {
     "name": "output_implementation_plan",
     "description": (
-        "Output a concise, actionable implementation plan. A coding agent will execute "
-        "this directly — be precise and skip explanations. Reference only real file paths "
-        "and symbols from the context. NEVER include stack inventories, web research, "
-        "or concept explanations in any field."
+        "Output a structured implementation plan as a discovery/solutioning document. "
+        "A coding agent will execute this directly — be precise and skip explanations. "
+        "Reference only real file paths and symbols from the context. "
+        "NEVER include stack inventories, web research, or concept explanations in any field. "
+        "Always present ≥2 solution options with pros/cons before recommending one."
     ),
     "input_schema": {
         "type": "object",
-        "required": ["query", "summary", "design_decisions", "files", "steps", "sparc_summary"],
+        "required": [
+            "query", "problem_statement", "proposed_solutions",
+            "recommendation", "files", "steps",
+        ],
         "properties": {
             "query": {"type": "string"},
+            "problem_statement": {
+                "type": "string",
+                "description": "What needs to be solved and why. 1-3 sentences. Not a summary of what you found.",
+            },
+            "current_architecture": {
+                "type": "string",
+                "description": (
+                    "Markdown describing the current system relevant to this task. Use sub-sections:\n"
+                    "### Flow Structure — table or tree of component/module hierarchy\n"
+                    "### Key Files — table (File | Purpose) with file paths from context\n"
+                    "### Current State — how the feature works today with file:line citations\n"
+                    "### Infrastructure — relevant shared patterns/utilities already in the codebase"
+                ),
+            },
+            "proposed_solutions": {
+                "type": "array",
+                "description": "≥2 viable solution options. Mark exactly one as recommended.",
+                "items": {
+                    "type": "object",
+                    "required": ["name", "approach", "pros", "cons"],
+                    "properties": {
+                        "name": {"type": "string", "description": "Short name for the option (e.g. 'OnLoadAnalytics per Step')"},
+                        "approach": {
+                            "type": "string",
+                            "description": "How this approach works. Include implementation sketch (pseudocode, not full code).",
+                        },
+                        "pros": {"type": "array", "items": {"type": "string"}},
+                        "cons": {"type": "array", "items": {"type": "string"}},
+                        "is_recommended": {
+                            "type": "boolean",
+                            "description": "True for exactly one option — the recommended approach.",
+                        },
+                    },
+                },
+            },
+            "recommendation": {
+                "type": "string",
+                "description": "Which option is recommended and WHY, citing specific architectural reasons.",
+            },
             "summary": {
                 "type": "string",
                 "description": "2-4 sentences on data/control flow and affected layers. No package lists or web research.",
@@ -287,35 +352,10 @@ PLAN_TOOL_SCHEMA: dict = {
                 "items": {"type": "string"},
                 "description": "Binding constraints (framework, runtime, API, backward compat, performance).",
             },
-            "design_alternatives": {
+            "prerequisites": {
                 "type": "array",
-                "description": "≥2 viable approaches for non-trivial changes (selected + rejected with justification).",
-                "items": {
-                    "type": "object",
-                    "required": ["approach", "pros", "cons"],
-                    "properties": {
-                        "approach": {"type": "string", "description": "Core idea of this approach"},
-                        "pros": {"type": "array", "items": {"type": "string"}},
-                        "cons": {"type": "array", "items": {"type": "string"}},
-                        "rejected_reason": {
-                            "type": "string",
-                            "description": "Why this approach was rejected (empty for the selected approach)",
-                        },
-                    },
-                },
-            },
-            "failure_modes": {
-                "type": "array",
-                "description": "Failure modes for API/architectural changes (assume adversarial inputs).",
-                "items": {
-                    "type": "object",
-                    "required": ["scenario", "cause", "mitigation"],
-                    "properties": {
-                        "scenario": {"type": "string", "description": "What can go wrong"},
-                        "cause": {"type": "string", "description": "Why it would happen"},
-                        "mitigation": {"type": "string", "description": "Guard or fallback"},
-                    },
-                },
+                "items": {"type": "string"},
+                "description": "Coordination/setup tasks before dev work (e.g., 'Coordinate with Analytics team on rule setup').",
             },
             "files": {
                 "type": "array",
@@ -364,7 +404,7 @@ PLAN_TOOL_SCHEMA: dict = {
             },
             "steps": {
                 "type": "array",
-                "description": "Ordered execution steps. Concrete actions, not explanations.",
+                "description": "Ordered dev tasks. Concrete actions, not explanations.",
                 "items": {
                     "type": "object",
                     "required": ["step_number", "title", "description"],
@@ -405,31 +445,18 @@ PLAN_TOOL_SCHEMA: dict = {
                 "type": "string",
                 "description": "Specific test commands or assertions. Not generic advice.",
             },
-            "sparc_summary": {
-                "type": "object",
-                "description": "SPARC methodology (1-3 sentences per phase).",
-                "properties": {
-                    "specification": {
-                        "type": "string",
-                        "description": "S: What needs to be built — requirements and acceptance criteria",
-                    },
-                    "pseudocode": {
-                        "type": "string",
-                        "description": "P: High-level pseudocode for key non-trivial logic. Skip for simple field additions.",
-                    },
-                    "architecture": {
-                        "type": "string",
-                        "description": "A: How the change flows through the system.",
-                    },
-                    "refinement": {
-                        "type": "string",
-                        "description": "R: Edge cases and trade-offs.",
-                    },
-                    "completion": {
-                        "type": "string",
-                        "description": "C: Verification approach.",
-                    },
-                },
+            "open_questions": {
+                "type": "string",
+                "description": (
+                    "Markdown table of open questions needing team input. "
+                    "Format: # | Question | Owner | Status (all TBD). "
+                    "e.g., '1 | Should step 1 share the existing page-level event? | Analytics Team | TBD'"
+                ),
+            },
+            "references": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Key file paths referenced throughout the plan",
             },
         },
     },
@@ -441,13 +468,12 @@ PLAN_TOOL_SCHEMA: dict = {
 ANSWER_TOOL_SCHEMA: dict = {
     "name": "answer_codebase_question",
     "description": (
-        "Use this to deliver your final answer, analysis, or completed document. "
-        "Call this when you have finished all research, analysis, or content generation "
-        "and are ready to return your complete response. "
-        "Examples: answering questions ('what does X do?', 'how does Y work?'), "
-        "delivering analysis ('why is Z failing?', 'explain the data flow'), "
-        "submitting completed documents (RCA reports, technical summaries, fix plans). "
-        "ALWAYS call this as the last step to return your output to the user."
+        "Use this when the query is a question, explanation request, or analysis task "
+        "that does NOT require making code changes. Examples: 'what does X do?', "
+        "'how does Y work?', 'why is Z failing?', 'where is the rate limiter?', "
+        "'explain the data flow', 'what patterns does this use?'. "
+        "For tasks that require editing/creating/deleting files, use "
+        "output_implementation_plan instead."
     ),
     "input_schema": {
         "type": "object",
@@ -476,10 +502,11 @@ ANSWER_TOOL_SCHEMA: dict = {
 ANALYZE_IMPROVE_TOOL_SCHEMA: dict = {
     "name": "analyze_and_improve",
     "description": (
-        "Use for queries asking to IMPROVE, ENHANCE, REVIEW, AUDIT, or OPTIMIZE existing code. "
-        "Examples: 'improve the retriever', 'review the chunker', 'optimize the search pipeline'. "
-        "Respond with deep grounded analysis of the CURRENT implementation, then specific "
-        "improvements citing real file paths and symbols."
+        "Use for queries asking to IMPROVE, ENHANCE, REVIEW, AUDIT, OPTIMIZE, or DISCOVER/SOLUTION "
+        "existing code or features. Examples: 'improve the retriever', 'review the chunker', "
+        "'add analytics to rebates flow', 'optimize the search pipeline'. Respond with a "
+        "structured discovery document covering problem, architecture, multiple solution options, "
+        "recommendation, implementation plan, open questions, and references."
     ),
     "input_schema": {
         "type": "object",
@@ -488,12 +515,40 @@ ANALYZE_IMPROVE_TOOL_SCHEMA: dict = {
             "analysis": {
                 "type": "string",
                 "description": (
-                    "Deep markdown analysis with sections (in order):\n"
-                    "## Current Implementation — file:line citations\n"
-                    "## What Works Well — evidence from code\n"
-                    "## Issues & Gaps — cite file:line for each\n"
-                    "## Concrete Improvements — file/function specific\n"
-                    "## Implementation Guidance — pseudocode if needed"
+                    "Deep markdown discovery document with sections (in order):\n"
+                    "## 1. Problem Statement\n"
+                    "What needs to be solved and why. 1-3 sentences.\n\n"
+                    "## 2. Current Architecture\n"
+                    "### 2.1 Flow Structure\n"
+                    "Table (Step | Label | Component Key | Component) or equivalent structural view.\n"
+                    "### 2.2 Key Files\n"
+                    "Table (File | Purpose) — cite file paths from the codebase.\n"
+                    "### 2.3 Current State\n"
+                    "How the feature works today with file:line citations.\n"
+                    "### 2.4 Infrastructure\n"
+                    "Relevant shared infrastructure and patterns already in the codebase.\n\n"
+                    "## 3. Proposed Solutions\n"
+                    "Present ≥2 viable approaches. For each:\n"
+                    "### Option A: {Name} (Recommended)\n"
+                    "Approach description. Implementation sketch (pseudocode, not full code).\n"
+                    "**Pros:** bullet list\n"
+                    "**Cons:** bullet list\n"
+                    "### Option B: {Name}\n"
+                    "Same structure. Mark one as recommended.\n\n"
+                    "## 4. Recommendation\n"
+                    "Which option is recommended and WHY, citing architectural reasons.\n\n"
+                    "## 5. Implementation Plan\n"
+                    "### 5.1 Prerequisites\n"
+                    "Checklist of coordination/setup tasks before dev work (e.g., team alignment, config).\n"
+                    "### 5.2 Dev Tasks\n"
+                    "Numbered list of concrete development tasks with file:line references.\n"
+                    "### 5.3 Estimated Scope\n"
+                    "Files to modify count, new files count, dependencies.\n\n"
+                    "## 6. Open Questions\n"
+                    "Table: # | Question | Owner | Status (all TBD).\n"
+                    "Surface decisions that need team input (e.g., Analytics Team, AEM Team).\n\n"
+                    "## 7. References\n"
+                    "Bullet list of key files referenced throughout the document."
                 ),
             },
             "key_files": {

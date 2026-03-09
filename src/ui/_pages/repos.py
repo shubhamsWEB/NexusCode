@@ -347,3 +347,66 @@ def render():
                 )
 
             st.markdown("\n".join(rows_md), unsafe_allow_html=True)
+
+    st.divider()
+
+    # -------------------------------------------------------------------------
+    # Section 4 — Cross-Repo Routing Status
+    # -------------------------------------------------------------------------
+    with st.expander("🗺️ Cross-Repo Routing Status", expanded=False):
+        st.caption(
+            "Repo summaries are used by the intelligent cross-repo router to decide "
+            "which repos to search for a given query. They are auto-updated after indexing."
+        )
+
+        summaries_data, summaries_err = api_get("/repo-summaries", timeout=10)
+
+        if summaries_err:
+            st.error(f"Failed to load summaries: {summaries_err}")
+        else:
+            summaries_list = (summaries_data or {}).get("summaries", [])
+            if not summaries_list:
+                st.info(
+                    "No repo summaries yet. Run indexing on a repo with at least 10 chunks "
+                    "and a summary will be computed automatically."
+                )
+            else:
+                for s in summaries_list:
+                    owner_s = s.get("repo_owner", "")
+                    name_s = s.get("repo_name", "")
+                    chunk_count = s.get("chunk_count", 0)
+                    lang_dist = s.get("language_distribution") or {}
+                    keywords = s.get("tech_stack_keywords") or []
+                    updated_at = s.get("updated_at", "—")
+
+                    lang_str = ", ".join(
+                        f"{lang} ({int(frac * 100)}%)" for lang, frac in list(lang_dist.items())[:3]
+                    ) or "—"
+                    kw_str = ", ".join(keywords[:10]) or "—"
+
+                    with st.container(border=True):
+                        left_c, right_c = st.columns([4, 1])
+                        with left_c:
+                            st.markdown(f"**{owner_s}/{name_s}**")
+                            st.caption(
+                                f"Chunks: {chunk_count}  |  Languages: {lang_str}  |  "
+                                f"Updated: {updated_at[:19] if updated_at else '—'}"
+                            )
+                            st.caption(f"Keywords: {kw_str}")
+                        with right_c:
+                            if st.button(
+                                "🔄 Refresh",
+                                key=f"refresh_summary_{owner_s}_{name_s}",
+                                help="Recompute centroid for this repo",
+                            ):
+                                with st.spinner("Recomputing summary…"):
+                                    _, err = api_post(
+                                        f"/repos/{owner_s}/{name_s}/refresh-summary",
+                                        json={},
+                                        timeout=60,
+                                    )
+                                if err:
+                                    st.error(f"Failed: {err}")
+                                else:
+                                    st.success("Summary updated.")
+                                    st.rerun()

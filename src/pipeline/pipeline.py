@@ -125,6 +125,9 @@ async def _async_incremental_index(payload: dict[str, Any]) -> dict[str, Any]:
     except Exception:
         pass
 
+    # Update repo summary for cross-repo routing (non-blocking)
+    asyncio.create_task(_update_repo_summary(owner, repo))
+
     # Update webhook event status to "done" (or "error" if all files errored)
     if delivery_id and delivery_id != "manual":
         from src.storage.db import update_webhook_status
@@ -134,6 +137,45 @@ async def _async_incremental_index(payload: dict[str, Any]) -> dict[str, Any]:
         await update_webhook_status(delivery_id, webhook_final, error=err_msg)
 
     return stats
+
+
+# ── Repo summary helper ───────────────────────────────────────────────────────
+
+
+async def _update_repo_summary(owner: str, name: str) -> None:
+    """Compute and store repo centroid for cross-repo routing. Non-blocking helper."""
+    try:
+        from src.storage.db import compute_repo_centroid, upsert_repo_summary
+
+        summary = await compute_repo_centroid(owner, name)
+        if summary and summary["chunk_count"] >= settings.cross_repo_summary_update_min_chunks:
+            await upsert_repo_summary(
+                repo_owner=owner,
+                repo_name=name,
+                centroid_embedding=summary["centroid"],
+                tech_stack_keywords=summary["keywords"],
+                language_distribution=summary["language_dist"],
+                chunk_count=summary["chunk_count"],
+            )
+            # Invalidate router cache so next query gets fresh centroids
+            try:
+                import redis.asyncio as redis_async
+
+                r = redis_async.from_url(settings.redis_url)
+                await r.delete("repo_router:summaries")
+            except Exception:
+                pass
+            logger.info(
+                "repo_summary.updated",
+                repo=f"{owner}/{name}",
+                chunks=summary["chunk_count"],
+            )
+    except Exception as exc:
+        logger.warning(
+            "repo_summary.update_failed",
+            repo=f"{owner}/{name}",
+            error=str(exc),
+        )
 
 
 # ── Deletion handler ──────────────────────────────────────────────────────────

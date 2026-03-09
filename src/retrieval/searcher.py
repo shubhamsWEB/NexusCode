@@ -100,6 +100,10 @@ async def search(
 
     candidates = top_k * settings.retrieval_candidate_multiplier
 
+    # Degrade gracefully: semantic/hybrid without a valid vector → keyword-only
+    if not query_vector and mode in ("semantic", "hybrid"):
+        mode = "keyword"
+
     if mode == "semantic":
         results = await _semantic_search(
             query_vector, candidates, repo_owner, repo_name, language, search_quality
@@ -302,6 +306,94 @@ async def _execute_search(
 
 
 # ── Embed query (convenience wrapper) ────────────────────────────────────────
+
+
+async def search_cross_repo(
+    query: str,
+    query_vector: list[float],
+    top_k: int = 10,
+    token_budget: int = 8000,
+    allowed_repos: list[str] | None = None,
+    current_repo: tuple[str, str] | None = None,
+    language: str | None = None,
+    search_quality: str = "balanced",
+) -> tuple[dict[tuple[str, str], list[SearchResult]], dict[tuple[str, str], int]]:
+    """
+    Intelligent cross-repo search using RepoRouter.
+
+    Returns (results_by_repo, budgets_by_repo).
+
+    Algorithm:
+    0. Happy path: if the query explicitly names a known, in-scope repo
+       (e.g. "search myorg/auth-service for login" or "find login in auth-service"),
+       skip the router entirely and go straight to that single repo.
+    1. RepoRouter.score_repos() with allowed_repos + current_repo hint.
+       Falls back to naive all-repo search if no summaries exist.
+    2. Budget allocation via router.allocate_budgets().
+    3. Parallel search across top repos (asyncio.gather).
+    4. Per-repo cross-encoder rerank.
+    """
+    import asyncio
+
+    from src.retrieval.repo_router import RepoRouter, ScoredRepo, detect_repo_mention
+    from src.retrieval.reranker import rerank
+
+    # ── Step 0: Happy path — explicit repo mention in query ──────────────────
+    mentioned = await detect_repo_mention(query, allowed_repos)
+    if mentioned:
+        owner, name = mentioned
+        results = await search(
+            query, query_vector,
+            top_k=top_k,
+            repo_owner=owner,
+            repo_name=name,
+            language=language,
+            search_quality=search_quality,
+        )
+        results = rerank(query, results, top_n=top_k)
+        return {(owner, name): results}, {(owner, name): token_budget}
+
+    # ── Step 1: Router scoring ────────────────────────────────────────────────
+    router = RepoRouter()
+    scored = await router.score_repos(
+        query, query_vector,
+        allowed_repos=allowed_repos,
+        current_repo=current_repo,
+    )
+
+    # Graceful fallback: no summaries yet
+    if not scored:
+        fallback_mode = "keyword" if not query_vector else "hybrid"
+        results = await search(
+            query, query_vector, top_k=top_k, mode=fallback_mode,
+            language=language, search_quality=search_quality,
+        )
+        results = rerank(query, results, top_n=top_k)
+        by_repo: dict[tuple[str, str], list[SearchResult]] = {}
+        for r in results:
+            by_repo.setdefault((r.repo_owner, r.repo_name), []).append(r)
+        budgets: dict[tuple[str, str], int] = {
+            k: token_budget // max(len(by_repo), 1) for k in by_repo
+        }
+        return by_repo, budgets
+
+    budgets = router.allocate_budgets(scored, token_budget)
+    top_k_each = max(3, top_k // len(scored))
+
+    async def _search_one(repo: ScoredRepo) -> tuple[tuple[str, str], list[SearchResult]]:
+        candidates = await search(
+            query, query_vector,
+            top_k=top_k_each * settings.retrieval_candidate_multiplier,
+            repo_owner=repo.owner,
+            repo_name=repo.name,
+            language=language,
+            search_quality=search_quality,
+        )
+        reranked = rerank(query, candidates, top_n=top_k_each)
+        return (repo.owner, repo.name), reranked
+
+    pairs = await asyncio.gather(*[_search_one(r) for r in scored])
+    return dict(pairs), budgets
 
 
 async def embed_query(query: str) -> list[float]:

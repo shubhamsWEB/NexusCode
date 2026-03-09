@@ -19,8 +19,24 @@
 {
   plan_id:                 string      // UUID
   query:                   string
-  summary:                 string      // 2-3 sentence approach summary
+  response_type:           "plan" | "answer" | "analysis"
+
+  // ── Plan fields (response_type="plan") ──────────────────────
+  problem_statement:       string      // what needs to be solved and why (1-3 sentences)
+  current_architecture:    string      // markdown: flow structure, key files, current state
+  proposed_solutions: Array<{
+    name:                  string      // short option name
+    approach:              string      // how this approach works (with implementation sketch)
+    pros:                  string[]
+    cons:                  string[]
+    is_recommended:        boolean     // true for exactly one option
+  }>
+  recommendation:          string      // which option and WHY (architectural reasoning)
+  summary:                 string      // 2-3 sentence approach summary (legacy/optional)
   clarifying_assumptions:  string[]    // assumptions made for ambiguous queries
+  design_decisions:        string[]    // non-obvious decisions with rationale
+  constraints:             string[]    // binding constraints
+  prerequisites:           string[]    // coordination/setup tasks before dev work
 
   files: Array<{
     path:    string                    // file path relative to repo root
@@ -51,10 +67,12 @@
     mitigation:        string
   }>
 
-  test_plan:  string                   // specific assertions and test strategy
+  test_plan:               string      // specific assertions and test strategy
+  open_questions:          string      // markdown table (# | Question | Owner | Status)
+  references:              string[]    // key file paths referenced throughout
 
   metadata?: {
-    model:           string            // Claude model used
+    model:           string            // LLM model used
     context_tokens:  number            // tokens in retrieval context
     context_files:   number            // code chunks in context
     retrieval_log:   string            // what was retrieved

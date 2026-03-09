@@ -176,4 +176,14 @@ async def get_role_config_async(role) -> dict[str, Any]:
     except Exception as exc:
         logger.warning("get_role_config_async: DB lookup failed for %r: %s", role_name, exc)
 
-    return _ROLES.get(role_name, _ROLES["searcher"])
+    # Normalise hardcoded fallback to the same shape as the DB path so callers
+    # never have to deal with missing keys or un-appended instructions.
+    base = _ROLES.get(role_name, _ROLES["searcher"])
+    sp = base["system_prompt"].rstrip()
+    return {
+        "system_prompt": sp,
+        "default_tools": list(base.get("default_tools") or []),
+        "require_search": bool(base.get("require_search", True)),
+        "max_iterations": 5,
+        "token_budget": 80_000,
+    }

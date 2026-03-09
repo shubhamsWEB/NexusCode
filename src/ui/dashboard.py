@@ -38,9 +38,11 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── API URL (shared via session_state so page modules can read it) ─────────────
+# ── API URL + key (shared via session_state so page modules can read them) ──────
 if "api_url" not in st.session_state:
     st.session_state["api_url"] = os.environ.get("API_URL", "http://localhost:8000")
+if "api_key" not in st.session_state:
+    st.session_state["api_key"] = ""
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 st.sidebar.title("🧠 Codebase Intelligence")
@@ -62,6 +64,7 @@ PAGES = [
     "🔌 MCP Servers",
     "🤖 Agent Roles",
     "⚡ Workflows",
+    "🗝️ API Key Scopes",
     "📚 Documentation",
 ]
 
@@ -74,6 +77,12 @@ st.session_state["api_url"] = st.sidebar.text_input(
     value=st.session_state["api_url"],
 )
 st.sidebar.caption(f"MCP: `{st.session_state['api_url']}/mcp`")
+st.session_state["api_key"] = st.sidebar.text_input(
+    "API Key (optional)",
+    value=st.session_state["api_key"],
+    type="password",
+    help="Scoped API key — restricts which repos are searched. Leave blank for unrestricted access.",
+)
 
 # Mini status bar in sidebar
 try:
@@ -531,6 +540,11 @@ elif page == "🤖 Agent Roles":
 
 elif page == "⚡ Workflows":
     from src.ui._pages.workflows import render
+
+    render()
+
+elif page == "🗝️ API Key Scopes":
+    from src.ui._pages.api_keys import render
 
     render()
 

@@ -10,6 +10,7 @@ Endpoints:
   GET  /workflows/runs/{run_id}           — Get run status + step breakdown
   GET  /workflows/runs/{run_id}/stream    — SSE live stream of run progress
   POST /workflows/checkpoints/{cp_id}/respond — Human responds to a checkpoint
+  POST /webhooks/{path}                       — Inbound webhook: trigger workflow by webhook_path
 
 SSE event types (for /stream endpoint):
   {"type": "workflow_started",   "run_id": "...", "workflow": "..."}
@@ -26,7 +27,7 @@ import asyncio
 import json
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -35,6 +36,7 @@ from src.workflows.parser import WorkflowParseError
 
 logger = get_secure_logger(__name__)
 router = APIRouter(prefix="/workflows", tags=["workflows"])
+webhook_router = APIRouter(prefix="/webhooks", tags=["workflow-webhooks"])
 
 # Background tasks set to prevent GC
 _background_tasks: set[asyncio.Task] = set()
@@ -286,3 +288,94 @@ async def _run_sse_generator(run_id: str):
         run = await get_run(run_id)
         if run:
             yield _event({"type": "run_snapshot", "run": run})
+
+
+# ── Webhook Trigger Router ─────────────────────────────────────────────────────
+
+
+@webhook_router.post("/{webhook_path:path}", response_model=None)
+async def receive_webhook(webhook_path: str, request: Request) -> JSONResponse:
+    """
+    Receive an inbound webhook and trigger the matching workflow.
+
+    The entire request body (JSON or raw) is forwarded as the trigger payload.
+    Workflows are matched by the ``webhook_path`` field in their trigger config,
+    e.g. a workflow with ``trigger.webhook_path: /webhooks/alerts`` is reached at
+    ``POST /webhooks/alerts``.
+
+    Returns HTTP 202 immediately with run_id — use
+    ``GET /workflows/runs/{run_id}/stream`` for live progress.
+    """
+    from src.workflows.registry import get_workflow_by_webhook_path
+
+    # Normalise path
+    path = "/" + webhook_path.lstrip("/")
+
+    wf = await get_workflow_by_webhook_path(path)
+    if not wf:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No active webhook workflow found for path {path!r}",
+        )
+
+    # Parse body — accept JSON object, JSON array (wrapped), or raw text
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            parsed_payload: dict[str, Any] = body
+        else:
+            parsed_payload = {"value": body}
+    except Exception:
+        raw = await request.body()
+        parsed_payload = {"raw": raw.decode("utf-8", errors="replace")}
+
+    # Reuse existing trigger logic
+    from src.workflows.parser import parse_workflow
+    from src.workflows.executor import WorkflowExecutor
+    from src.workflows.registry import create_run
+
+    try:
+        wf_def = parse_workflow(wf["yaml_definition"])
+    except WorkflowParseError as exc:
+        raise HTTPException(status_code=422, detail=f"Workflow parse error: {exc}")
+
+    run_id = await create_run(
+        workflow_id=wf["id"],
+        workflow_name=wf["name"],
+        trigger_payload=parsed_payload,
+    )
+
+    executor = WorkflowExecutor(
+        wf_def,
+        parsed_payload,
+        workflow_id=wf["id"],
+        pre_created_run_id=run_id,
+    )
+
+    async def _run_bg():
+        from src.events.bus import EventBus
+        try:
+            async for event in executor.stream():
+                await EventBus.publish("nexus:workflow:updates", {"run_id": run_id, **event})
+        except Exception as exc:
+            logger.exception("webhook workflow run failed: %s", exc)
+
+    task = asyncio.create_task(_run_bg())
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+    logger.info(
+        "webhook triggered workflow=%r run_id=%s path=%s",
+        wf["name"], run_id, path,
+    )
+
+    return JSONResponse(
+        {
+            "run_id": run_id,
+            "workflow_id": wf["id"],
+            "workflow_name": wf["name"],
+            "status": "pending",
+            "stream_url": f"/workflows/runs/{run_id}/stream",
+        },
+        status_code=202,
+    )

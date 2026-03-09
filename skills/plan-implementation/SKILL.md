@@ -52,10 +52,15 @@ plan_implementation(
 ```
 
 The tool returns formatted markdown with:
-- **Summary** — the overall approach
+- **Problem Statement** — what needs to be solved and why
+- **Current Architecture** — flow structure, key files, current state, infrastructure
+- **Proposed Solutions** — ≥2 viable approaches with pros/cons, one recommended
+- **Recommendation** — which option and why (architectural reasoning)
+- **Implementation Plan** — prerequisites (coordination tasks) + ordered dev tasks
 - **Files to change** — exact paths + per-symbol changes with pseudocode
-- **Execution steps** — ordered, with step dependencies
 - **Risks** — severity-tagged with mitigation
+- **Open Questions** — decisions needing team input (with suggested owners)
+- **References** — key files referenced throughout
 - **Test plan** — specific assertions
 
 ## How to use — REST API
@@ -94,19 +99,27 @@ Key fields to act on:
 
 | Field | What to do |
 |---|---|
+| `problem_statement` | Verify this matches your intent; if not, refine the query |
+| `proposed_solutions[]` | Review all options — the recommended one is marked |
+| `recommendation` | Confirm you agree with the architectural reasoning |
+| `prerequisites[]` | Complete coordination tasks before starting dev work |
 | `files[].path` + `files[].changes[]` | Edit these files in this order |
 | `steps[]` ordered by `step_number` | Follow steps; check `depends_on_steps` before each |
 | `risks[]` with `severity: "high"` | Address these explicitly before marking done |
+| `open_questions` | Resolve these with the relevant teams |
+| `references[]` | Key files for quick navigation |
 | `test_plan` | Run or write these tests after each step |
 
 ## Step-by-step workflow
 
 1. **Call the tool** with your query and optional repo scope
-2. **Read the summary** — verify it matches your intent; if not, refine the query
-3. **Check assumptions** — the plan may list clarifying assumptions; confirm they are correct
-4. **Follow the steps in order** — do not skip or reorder; dependencies are computed
-5. **After each step**: run the listed verification (test, linter, type-check)
-6. **Address all high-severity risks** before considering the task done
+2. **Read the problem statement** — verify it matches your intent; if not, refine the query
+3. **Review proposed solutions** — understand all options, confirm the recommendation
+4. **Check prerequisites** — complete coordination tasks first (team alignment, config, etc.)
+5. **Follow the dev tasks in order** — do not skip or reorder; dependencies are computed
+6. **After each step**: run the listed verification (test, linter, type-check)
+7. **Address all high-severity risks** before considering the task done
+8. **Resolve open questions** with the relevant teams
 
 ## Refining a poor plan
 

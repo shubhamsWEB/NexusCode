@@ -203,6 +203,7 @@ async def generate_answer(
     repo_owner: str | None = None,
     repo_name: str | None = None,
     model: str | None = None,
+    allowed_repos: list[str] | None = None,
 ) -> AskResult:
     """
     Run the Ask Mode agent loop (non-streaming).
@@ -252,6 +253,7 @@ async def generate_answer(
         ),
         repo_owner=repo_owner,
         repo_name=repo_name,
+        extra_context={"allowed_repos": allowed_repos} if allowed_repos is not None else None,
     )
 
     result = _parse_tool_block(tool_block, stats)
@@ -274,6 +276,7 @@ async def stream_generate_answer(
     repo_owner: str | None = None,
     repo_name: str | None = None,
     model: str | None = None,
+    allowed_repos: list[str] | None = None,
 ) -> AsyncIterator[dict]:
     """
     Stream the Ask Mode agent loop.
@@ -331,6 +334,7 @@ async def stream_generate_answer(
         ),
         repo_owner=repo_owner,
         repo_name=repo_name,
+        extra_context={"allowed_repos": allowed_repos} if allowed_repos is not None else None,
     ):
         if event["type"] == "done":
             result = _parse_tool_block(event["tool_block"], event["stats"])

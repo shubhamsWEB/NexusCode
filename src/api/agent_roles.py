@@ -187,6 +187,24 @@ async def get_role(name: str) -> JSONResponse:
 @router.put("/{name}", response_model=None)
 async def upsert_role(name: str, req: UpsertRoleRequest) -> JSONResponse:
     """Create or update an agent role. Built-in roles are overridden, not replaced."""
+    # Validate tool names against all currently-known tools (internal + external MCP).
+    # Unknown names cause silent misconfiguration — agents silently get no tools.
+    if req.default_tools:
+        from src.agent.mcp_bridge import get_external_tool_schemas
+        from src.agent.tool_schemas import ALL_INTERNAL_TOOL_SCHEMAS
+
+        valid_tools: set[str] = {t["name"] for t in ALL_INTERNAL_TOOL_SCHEMAS}
+        valid_tools |= {t["name"] for t in get_external_tool_schemas()}
+        unknown = [t for t in req.default_tools if t not in valid_tools]
+        if unknown:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": f"Unknown tool name(s): {unknown}",
+                    "valid_tools": sorted(valid_tools),
+                },
+            )
+
     is_builtin = name in _BUILTIN_NAMES
 
     async with AsyncSessionLocal() as session:

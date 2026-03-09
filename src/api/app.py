@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from src.api.agent_roles import router as agent_roles_router
+from src.api.api_keys import router as api_keys_router
 from src.api.ask import router as ask_router
 from src.api.documents import router as documents_router
 from src.api.graph import router as graph_router
@@ -21,6 +22,7 @@ from src.api.plan import router as plan_router
 from src.api.repos import router as repos_router
 from src.api.skills import router as skills_router
 from src.api.workflows import router as workflows_router
+from src.api.workflows import webhook_router as workflow_webhook_router
 from src.github.webhook import router as webhook_router
 from src.mcp.auth import router as auth_router
 from src.mcp.server import mcp_server
@@ -71,8 +73,10 @@ app.include_router(skills_router)
 app.include_router(mcp_servers_router)
 app.include_router(graph_router)
 app.include_router(workflows_router)
+app.include_router(workflow_webhook_router)
 app.include_router(agent_roles_router)
 app.include_router(documents_router)
+app.include_router(api_keys_router)
 
 
 # Mount MCP server — exposes /mcp/sse and /mcp/messages/

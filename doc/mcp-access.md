@@ -17,9 +17,97 @@ The MCP server uses **SSE (Server-Sent Events)** transport — the same protocol
 
 ---
 
-## Getting an MCP Token
+## Authentication Options
 
-NexusCode uses **JWT Bearer tokens** to authenticate MCP connections.
+NexusCode supports two authentication mechanisms for MCP connections:
+
+| Method | Best for | Scope enforcement |
+|--------|----------|-------------------|
+| **Scoped API key** (recommended) | Multi-team deployments, long-lived agent configs | Per-team allowed repos — persisted in DB |
+| **JWT Bearer token** | Dev/CI access, short-lived sessions | Per-request repo claim |
+
+---
+
+## Scoped API Keys (Recommended)
+
+Scoped API keys permanently bind a credential to a set of allowed repos. All retrieval tools
+enforce the scope automatically — out-of-scope repos are never searched.
+
+### Create a key
+
+```bash
+# Admin key — access to all repos
+curl -X POST http://localhost:8000/api-keys \
+  -H "Content-Type: application/json" \
+  -d '{"name": "admin", "description": "Full access"}'
+
+# Scoped key — frontend team sees only their repos
+curl -X POST http://localhost:8000/api-keys \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "frontend-team",
+    "description": "Frontend squad",
+    "allowed_repos": ["myorg/frontend", "myorg/auth-service", "myorg/user-service"]
+  }'
+```
+
+**Response** — raw key shown **once only**:
+```json
+{
+  "id": 3,
+  "raw_key": "abc123xyz...",
+  "name": "frontend-team",
+  "allowed_repos": ["myorg/frontend", "myorg/auth-service", "myorg/user-service"]
+}
+```
+
+> **Copy `raw_key` immediately.** It is never stored and cannot be retrieved again.
+
+### Connect MCP client with a scoped key
+
+Append `?api_key=<key>` to the SSE URL:
+
+```json
+{
+  "mcpServers": {
+    "nexuscode": {
+      "type": "sse",
+      "url": "http://localhost:8000/mcp/sse?api_key=abc123xyz..."
+    }
+  }
+}
+```
+
+For REST calls, use the `X-Api-Key` header:
+
+```bash
+curl -X POST http://localhost:8000/ask \
+  -H "X-Api-Key: abc123xyz..." \
+  -H "Content-Type: application/json" \
+  -d '{"query": "How does the login flow work?"}'
+```
+
+### Manage keys
+
+```bash
+# List keys (hashes never returned)
+curl http://localhost:8000/api-keys
+
+# Delete a key by ID
+curl -X DELETE http://localhost:8000/api-keys/3
+```
+
+The **🗝️ API Key Scopes** page in the Streamlit dashboard provides a full UI for key management,
+including the one-time key reveal banner and copy-paste MCP config snippets.
+
+See [cross-repo-search.md](./cross-repo-search.md) for the complete cross-repo routing and scoped
+key guide.
+
+---
+
+## Getting an MCP Token (JWT)
+
+NexusCode also supports **JWT Bearer tokens** for authenticated MCP connections.
 
 ### Generate a token (dev/local)
 
@@ -84,17 +172,23 @@ Messages:     POST /mcp/messages/ (Authorization: Bearer <token>)
 ## Available MCP Tools (8 total)
 
 ### 1. `search_codebase`
-Hybrid semantic + keyword search across indexed repos.
+Hybrid semantic + keyword search with intelligent cross-repo routing.
 
 ```
 search_codebase(
-  query:    "authentication middleware"
-  repo:     "owner/name"    # optional
-  language: "python"        # optional filter
-  top_k:    5               # 1-20, default 5
-  mode:     "hybrid"        # "semantic" | "keyword" | "hybrid"
+  query:        "authentication middleware"
+  repo:         "owner/name"    # optional — omit for automatic cross-repo routing
+  current_repo: "owner/name"    # optional — always included first when cross-repo routing
+  language:     "python"        # optional filter
+  top_k:        5               # 1-20, default 5 per repo
+  mode:         "hybrid"        # "semantic" | "keyword" | "hybrid"
+  cross_repo:   true            # default true — enable intelligent multi-repo routing
 )
 ```
+
+When `repo` is omitted and `cross_repo=true`, the router scores all allowed repos by semantic
+similarity to the query (centroid cosine + keyword Jaccard) and searches only the top-N. Results
+from different repos are assembled into a single context with clear repo headers.
 
 ### 2. `get_symbol`
 Fuzzy symbol lookup — like IDE "Go to Definition".
@@ -221,8 +315,10 @@ See [api-reference.md](./api-reference.md) for the full REST API.
 
 | Problem | Fix |
 |---|---|
-| `401 Unauthorized` from MCP | Token expired or wrong — regenerate with `POST /auth/token` |
+| `401 Unauthorized` from MCP | JWT expired — regenerate with `POST /auth/token`; or API key is wrong — check `?api_key=` value |
 | Tools not appearing in Claude Desktop | Restart Claude Desktop after editing `claude_desktop_config.json` |
 | `Connection refused` | Server not running — `uvicorn src.api.app:app --port 8000` |
-| SSE connection drops immediately | Check the `Authorization` header is present in the config |
+| SSE connection drops immediately | Check the `Authorization` header or `?api_key=` param is present |
 | Tools return empty results | No repos indexed yet — see [connecting-github.md](./connecting-github.md) |
+| Search ignores scoped repos | Ensure `api_key` is in the SSE URL query param (not a header) for SSE connections |
+| Cross-repo search returns one repo only | Repo summaries not yet computed — trigger with `POST /repos/{owner}/{name}/refresh-summary` |

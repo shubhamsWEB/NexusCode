@@ -56,6 +56,7 @@ async def main() -> None:
         await conn.run_sync(Base.metadata.create_all)
         print("ORM tables created (or already exist).")
 
+        await conn.execute(text("SET maintenance_work_mem = '256MB';"))
         # Run SQL migration files (idempotent — safe to re-run)
         print("\nRunning SQL migrations …")
         await run_migrations(conn)

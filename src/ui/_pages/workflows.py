@@ -94,6 +94,107 @@ def _status_badge(status: str) -> str:
     return f"{icon} {status.replace('_', ' ').title()}"
 
 
+def _render_webhook_config(wf: dict) -> None:
+    """Render webhook / API call config for a workflow."""
+    import textwrap as _tw
+    api_url = st.session_state.get("api_url", "http://localhost:8000")
+    trigger_type = wf.get("trigger_type", "manual")
+    wf_id = wf["id"]
+    wf_name = wf["name"]
+
+    if trigger_type == "webhook":
+        webhook_path = wf.get("webhook_path") or f"/webhooks/{wf_name}"
+        # Ensure leading slash
+        if not webhook_path.startswith("/"):
+            webhook_path = "/" + webhook_path
+        full_url = f"{api_url}{webhook_path}"
+
+        st.markdown("**Webhook endpoint**")
+        st.code(full_url, language="text")
+        st.caption(
+            "Send a `POST` request to this URL with your JSON payload. "
+            "The entire body is available as `{{ trigger.FIELD }}` in your workflow steps."
+        )
+
+        st.markdown("**curl**")
+        st.code(
+            _tw.dedent(f"""\
+                curl -X POST '{full_url}' \\
+                  -H 'Content-Type: application/json' \\
+                  -d '{{
+                    "service": "my-api",
+                    "error_message": "Timeout in /plan",
+                    "repo_owner": "my-org",
+                    "repo_name": "my-repo"
+                  }}'
+            """),
+            language="bash",
+        )
+
+        st.markdown("**Python (requests)**")
+        st.code(
+            _tw.dedent(f"""\
+                import requests
+
+                resp = requests.post(
+                    "{full_url}",
+                    json={{
+                        "service": "my-api",
+                        "error_message": "Timeout in /plan",
+                        "repo_owner": "my-org",
+                        "repo_name": "my-repo",
+                    }},
+                )
+                data = resp.json()   # {{"run_id": "...", "status": "pending", ...}}
+                print("Run ID:", data["run_id"])
+                print("Stream:", "{api_url}" + data["stream_url"])
+            """),
+            language="python",
+        )
+
+    else:
+        # Non-webhook workflows: show REST API endpoint
+        full_url = f"{api_url}/workflows/{wf_id}/run"
+        st.markdown("**REST API trigger**")
+        st.code(full_url, language="text")
+        st.caption(f"Trigger type: `{trigger_type}` — use `POST` with a JSON payload.")
+
+        st.markdown("**curl**")
+        st.code(
+            _tw.dedent(f"""\
+                curl -X POST '{full_url}' \\
+                  -H 'Content-Type: application/json' \\
+                  -d '{{"payload": {{"repo_owner": "my-org", "repo_name": "my-repo"}}}}'
+            """),
+            language="bash",
+        )
+
+        st.markdown("**Python (requests)**")
+        st.code(
+            _tw.dedent(f"""\
+                import requests
+
+                resp = requests.post(
+                    "{full_url}",
+                    json={{"payload": {{
+                        "repo_owner": "my-org",
+                        "repo_name": "my-repo",
+                    }}}},
+                )
+                data = resp.json()
+                print("Run ID:", data["run_id"])
+                print("Stream:", "{api_url}" + data["stream_url"])
+            """),
+            language="python",
+        )
+
+    st.divider()
+    st.markdown("**Poll run status**")
+    st.code(f"GET {api_url}/workflows/runs/{{run_id}}", language="text")
+    st.markdown("**Live stream (SSE)**")
+    st.code(f"GET {api_url}/workflows/runs/{{run_id}}/stream", language="text")
+
+
 # ── Main render ───────────────────────────────────────────────────────────────
 
 def render():
@@ -145,7 +246,7 @@ def _render_workflow_list():
             cols[2].caption(f"v{wf.get('version', 1)}")
             cols[3].caption("Active" if wf.get("is_active") else "Inactive")
 
-            run_col, edit_col, del_col = st.columns(3)
+            run_col, edit_col, del_col, hook_col = st.columns(4)
 
             # ── Run this workflow ──────────────────────────────────────────
             with run_col:
@@ -245,6 +346,11 @@ def _render_workflow_list():
                             st.rerun()
                         else:
                             st.error("Delete failed.")
+
+            # ── Webhook Config ─────────────────────────────────────────────
+            with hook_col:
+                with st.popover("🔗 Webhook", use_container_width=True):
+                    _render_webhook_config(wf)
 
     # ── Inline edit panel (shown when an Edit button was clicked) ─────────────
     if "edit_wf_id" in st.session_state:

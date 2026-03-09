@@ -24,9 +24,10 @@ from __future__ import annotations
 import asyncio
 import json
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from src.api.middleware import get_repo_scope
 from src.planning.schemas import PlanRequest
 from src.utils.logging import get_secure_logger
 
@@ -65,17 +66,17 @@ async def _save_plan(plan, repo_owner, repo_name):
 
 
 @router.post("", response_model=None)
-async def create_plan(req: PlanRequest):
+async def create_plan(req: PlanRequest, allowed_repos: list[str] | None = Depends(get_repo_scope)):
     """
     Generate a complete implementation plan for a query.
     Set `stream=true` to receive a server-sent-events stream.
     """
     if req.stream:
-        return _sse_response(req)
-    return await _sync_plan(req)
+        return _sse_response(req, allowed_repos)
+    return await _sync_plan(req, allowed_repos)
 
 
-async def _sync_plan(req: PlanRequest) -> JSONResponse:
+async def _sync_plan(req: PlanRequest, allowed_repos: list[str] | None = None) -> JSONResponse:
     try:
         from src.planning.claude_planner import generate_plan
     except ImportError:
@@ -90,6 +91,7 @@ async def _sync_plan(req: PlanRequest) -> JSONResponse:
             repo_name=req.repo_name,
             web_research=req.web_research,
             model=req.model,
+            allowed_repos=allowed_repos,
         )
     except RuntimeError as exc:
         status = getattr(exc, "status_code", None)
@@ -113,9 +115,9 @@ async def _sync_plan(req: PlanRequest) -> JSONResponse:
 # ── SSE streaming endpoint ────────────────────────────────────────────────────
 
 
-def _sse_response(req: PlanRequest) -> StreamingResponse:
+def _sse_response(req: PlanRequest, allowed_repos: list[str] | None = None) -> StreamingResponse:
     return StreamingResponse(
-        _sse_generator(req),
+        _sse_generator(req, allowed_repos),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -124,7 +126,7 @@ def _sse_response(req: PlanRequest) -> StreamingResponse:
     )
 
 
-async def _sse_generator(req: PlanRequest):
+async def _sse_generator(req: PlanRequest, allowed_repos: list[str] | None = None):
     def _event(data: dict) -> str:
         return f"data: {json.dumps(data)}\n\n"
 
@@ -145,6 +147,7 @@ async def _sse_generator(req: PlanRequest):
             repo_name=req.repo_name,
             web_research=req.web_research,
             model=req.model,
+            allowed_repos=allowed_repos,
         ):
             etype = chunk.get("type")
 

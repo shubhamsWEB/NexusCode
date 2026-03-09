@@ -9,9 +9,18 @@ context assembly.
 ## Pipeline Overview
 
 ```
-User Query
+User Query  +  API Key Scope (optional)
     │
     ▼
+┌──────────────────────────────────────────────────────────┐
+│  STAGE 0: REPO SCOPE GATE  (src/api/middleware.py)       │
+│  ● Extract API key from X-Api-Key header / ?api_key=     │
+│  ● Hash → Redis cache → DB lookup → allowed_repos list   │
+│  ● No key: unrestricted (all repos)                      │
+│  ● Invalid key: HTTP 401 immediately                     │
+└─────────────────────────────┬────────────────────────────┘
+                              │  allowed_repos list
+                              ▼
 ┌──────────────────────────────────────────────────────────┐
 │  STAGE 1: QUERY EMBEDDING                                │
 │  ● voyage-code-2 (input_type="query")                    │
@@ -19,9 +28,28 @@ User Query
 │  ● 1536-dim vector                                       │
 └─────────────────────────────┬────────────────────────────┘
                               │
-                  ┌───────────┴──────────┐
-                  │                      │
-                  ▼                      ▼
+              ┌───────────────┴──────────────┐
+              │  repo=None                   │  repo specified
+              ▼                              ▼
+┌─────────────────────────┐   ┌─────────────────────────────┐
+│  STAGE 1b: REPO ROUTER  │   │  SINGLE-REPO PATH           │
+│  (repo_router.py)        │   │  Skip router; search the    │
+│  ● Load repo_summaries  │   │  specified repo only        │
+│    (Redis cached)        │   └──────────────┬──────────────┘
+│  ● Filter to allowed    │                  │
+│    repos (scope gate)    │                  │
+│  ● Score each repo:     │                  │
+│    0.75×cosine(centroid) │                  │
+│  + 0.25×jaccard(keywords)│                  │
+│  ● Keep top-N repos     │                  │
+│  ● Allocate token budgets│                  │
+└───────────┬─────────────┘                  │
+            │  top-N repos + budgets          │
+            └──────────────┬─────────────────┘
+                           │
+                  ┌────────┴──────────┐
+                  │                   │
+                  ▼                   ▼
 ┌─────────────────────┐   ┌─────────────────────────────┐
 │  STAGE 2a: SEMANTIC │   │  STAGE 2b: KEYWORD SEARCH   │
 │  HNSW cosine search │   │  tsvector full-text +       │
@@ -40,22 +68,23 @@ User Query
                            │
                            ▼
 ┌─────────────────────────────────────────────────────────┐
-│  STAGE 4: CROSS-ENCODER RERANKING                       │
+│  STAGE 4: CROSS-ENCODER RERANKING (per-repo)            │
 │  cross-encoder/ms-marco-MiniLM-L-6-v2 (local, CPU)     │
 │  ● Scores every (query, chunk) pair                     │
 │  ● Sigmoid-normalized → quality_score (0.0–1.0)        │
 │  ● Top-N candidates kept                               │
+│  ● Runs independently per repo (cross-repo mode)        │
 └──────────────────────────┬──────────────────────────────┘
                            │
                            ▼
 ┌─────────────────────────────────────────────────────────┐
 │  STAGE 5: CONTEXT ASSEMBLY                              │
-│  assembler.py                                           │
-│  ● Sort by rerank score                                 │
-│  ● Deduplicate by chunk_id                              │
-│  ● Truncate to token_budget (configurable)              │
-│  ● Format as readable context block                     │
-│  ● Emit: context_text, tokens_used, retrieval_log      │
+│  assembler.py / assemble_multi_repo()                   │
+│  ● Single-repo: sort by rerank score, deduplicate,      │
+│    truncate to token_budget, format context block       │
+│  ● Multi-repo: per-repo assembly with ╔REPO╗ headers,   │
+│    ordered by highest-scored chunk, budgets respected   │
+│  ● Emit: context_text, tokens_used, retrieval_log       │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -285,6 +314,102 @@ HARD_THRESHOLD = 0.20  (configurable)
 
 ---
 
+---
+
+## Cross-Repo Routing (Stage 1b)
+
+### Repo Summaries
+
+Each repo has a pre-computed summary stored in `repo_summaries`:
+
+```
+repo_summaries row
+├── centroid_embedding  vector(1536)   AVG of all chunk embeddings
+├── tech_stack_keywords TEXT[]         top-50 frequent tokens from enriched_content
+├── language_distribution JSONB        {"python": 0.72, "typescript": 0.28}
+└── chunk_count         INTEGER        total indexed chunks (guards against noisy centroids)
+```
+
+Summaries are computed **post-indexing** (non-blocking `asyncio.create_task`) and cached in
+Redis under `repo_router:summaries` (TTL 120s). The cache is invalidated after every
+successful indexing job.
+
+Repos with fewer than `cross_repo_summary_update_min_chunks` (default 10) are skipped —
+their centroid would be unreliable.
+
+### Scoring Algorithm
+
+```python
+# For each repo summary:
+cos_sim  = cosine(query_vector, centroid_embedding)
+jac_sim  = len(query_tokens ∩ tech_stack_keywords)
+         / len(query_tokens ∪ tech_stack_keywords)
+
+score = 0.75 × max(0, cos_sim) + 0.25 × jac_sim
+
+# Filter, sort, take top-N
+if score >= cross_repo_min_score:     # default 0.20
+    include_repo(score)
+```
+
+Two signals reduce false positives:
+- **Semantic similarity** catches repos by meaning even without exact keyword overlap
+- **Keyword Jaccard** penalises repos with high centroid similarity but zero tech-stack overlap
+
+### Budget Allocation
+
+```python
+floor = max(500, total_budget × 0.10)          # every repo gets at least this
+remaining = total_budget − floor × len(repos)
+budget[repo] = floor + remaining × (score / Σscores)
+```
+
+Even the lowest-scored included repo gets a meaningful context window.
+
+### Scope Gate
+
+The scope gate runs **before** cosine scoring:
+
+```python
+if allowed_repos:            # from API key
+    summaries = [s for s in summaries
+                 if f"{s.repo_owner}/{s.repo_name}" in allowed_set]
+# Then score only the filtered list
+```
+
+This means out-of-scope repos are never scored, never searched, and never appear in results —
+even if their centroid is highly similar to the query.
+
+### `current_repo` Priority Hint
+
+The caller can pass a `current_repo` hint (the repo the developer is actively working in).
+That repo is always included first, with its score clamped to 1.0, regardless of centroid
+similarity. This prevents the case where a developer queries from repo A and gets context
+entirely from repo B.
+
+---
+
+## Repo Scope Enforcement in Tool Calls
+
+All 7 internal tools enforce the `allowed_repos` scope using two centralised helpers in
+`src/agent/tool_executor.py`:
+
+```python
+# For SQL-based lookups (get_symbol, get_file_context, get_agent_context):
+repo_filter, params = _build_repo_scope_filter(repo_owner, repo_name, allowed_repos)
+# → " AND (repo_owner || '/' || repo_name) = ANY(:scope_allowed_repos)"
+
+# For in-memory result lists (find_callers semantic results, get_agent_context):
+results = _filter_results_by_scope(results, repo_owner, repo_name, allowed_repos)
+```
+
+**Priority:** pinned repo > key scope > unrestricted
+
+Any new tool added to the executor **must call these helpers** — the module docstring
+documents this requirement explicitly.
+
+---
+
 ## Configuration
 
 | Setting | Default | Effect |
@@ -296,3 +421,11 @@ HARD_THRESHOLD = 0.20  (configurable)
 | `RETRIEVAL_TOKEN_BUDGET` | 8000 | Default context assembly budget |
 | `RELEVANCE_SOFT_THRESHOLD` | 0.35 | Soft relevance gate |
 | `RELEVANCE_HARD_THRESHOLD` | 0.20 | Hard relevance gate (refuse) |
+| `CROSS_REPO_ENABLED` | `true` | Enable cross-repo routing |
+| `CROSS_REPO_MAX_REPOS` | `5` | Max repos routed per query |
+| `CROSS_REPO_MIN_SCORE` | `0.20` | Minimum combined score to include a repo |
+| `CROSS_REPO_SEMANTIC_WEIGHT` | `0.75` | Weight of centroid cosine in combined score |
+| `CROSS_REPO_KEYWORD_WEIGHT` | `0.25` | Weight of keyword Jaccard in combined score |
+| `CROSS_REPO_ROUTER_CACHE_TTL` | `120` | Redis TTL for summaries cache (seconds) |
+| `CROSS_REPO_SUMMARY_UPDATE_MIN_CHUNKS` | `10` | Min chunks before centroid is computed |
+| `API_KEY_CACHE_TTL` | `300` | Redis TTL for key→scope lookup (seconds) |
