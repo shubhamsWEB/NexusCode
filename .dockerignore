@@ -15,10 +15,11 @@ htmlcov
 
 # Dev / docs
 .github
-doc/
 docs/
 *.md
 !README.md
+!doc/
+!doc/**
 
 # Secrets (should never be in image)
 .env
