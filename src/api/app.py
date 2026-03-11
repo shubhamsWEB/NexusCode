@@ -58,7 +58,12 @@ async def lifespan(application: FastAPI):
 
     await EventBus._get_redis()
 
-    yield
+    # Run the MCP Streamable HTTP session manager for the full server lifetime.
+    # streamable_http_app() lazily creates _session_manager at mount time (below);
+    # this context manager creates the anyio task group that all MCP sessions need.
+    # Without it every POST /mcp raises RuntimeError("Task group not initialized").
+    async with mcp_server._session_manager.run():
+        yield
 
 
 app = FastAPI(
@@ -86,8 +91,13 @@ app.include_router(api_keys_router)
 app.include_router(evolution_router)
 
 
-# Mount MCP server — exposes /mcp/sse and /mcp/messages/
-app.mount("/mcp", mcp_server.sse_app())
+# Mount MCP Streamable HTTP transport — single endpoint: POST /mcp
+# (MCP 2025-03-26 spec; works over HTTP/2 proxies like Railway's edge)
+# streamable_http_path="/" in server.py keeps the route at "/" inside this
+# sub-app so it resolves to /mcp, not /mcp/mcp.
+# IMPORTANT: calling streamable_http_app() here (module-level) creates
+# mcp_server._session_manager so the lifespan above can call .run() on it.
+app.mount("/mcp", mcp_server.streamable_http_app())
 
 
 # ── Health ────────────────────────────────────────────────────────────────────
