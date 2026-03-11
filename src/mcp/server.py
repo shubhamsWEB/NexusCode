@@ -21,6 +21,7 @@ import json
 from typing import Annotated
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from sqlalchemy import text
 
 from src.storage.db import AsyncSessionLocal
@@ -37,6 +38,10 @@ def _escape_ilike(value: str) -> str:
 
 mcp_server = FastMCP(
     name="codebase-intelligence",
+    # Disable localhost-only DNS rebinding protection — this server is a public
+    # production service (Railway), not a local dev tool, so the Host header
+    # check must not be restricted to 127.0.0.1/localhost.
+    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
     instructions=(
         "A live, always-fresh index of one or more GitHub repositories. "
         "All tools are scope-aware: if an API key is provided it restricts which repos are "
