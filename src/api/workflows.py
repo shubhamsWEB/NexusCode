@@ -82,10 +82,10 @@ async def create_workflow(req: CreateWorkflowRequest) -> JSONResponse:
         )
         return JSONResponse(result, status_code=201)
     except WorkflowParseError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-    except Exception:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
         logger.exception("create_workflow failed")
-        raise HTTPException(status_code=500, detail="Failed to save workflow")
+        raise HTTPException(status_code=500, detail="Failed to save workflow") from exc
 
 
 @router.get("", response_model=None)
@@ -135,7 +135,8 @@ async def stream_run(run_id: str) -> StreamingResponse:
 @router.get("/{workflow_id}", response_model=None)
 async def get_workflow(workflow_id: str) -> JSONResponse:
     """Get a workflow definition with its last 10 runs."""
-    from src.workflows.registry import get_workflow as _get_wf, list_runs
+    from src.workflows.registry import get_workflow as _get_wf
+    from src.workflows.registry import list_runs
     wf = await _get_wf(workflow_id)
     if not wf:
         raise HTTPException(status_code=404, detail=f"Workflow {workflow_id!r} not found")
@@ -168,13 +169,13 @@ async def trigger_run(workflow_id: str, req: TriggerRunRequest) -> JSONResponse:
         raise HTTPException(status_code=409, detail="Workflow is disabled")
 
     # Parse the workflow YAML to get the WorkflowDef
-    from src.workflows.parser import parse_workflow
     from src.workflows.executor import WorkflowExecutor
+    from src.workflows.parser import parse_workflow
 
     try:
         wf_def = parse_workflow(wf["yaml_definition"])
     except WorkflowParseError as exc:
-        raise HTTPException(status_code=422, detail=f"Workflow parse error: {exc}")
+        raise HTTPException(status_code=422, detail=f"Workflow parse error: {exc}") from exc
 
     # Normalise payload to dict — accepts both a raw object and a JSON string
     if isinstance(req.payload, dict):
@@ -205,7 +206,6 @@ async def trigger_run(workflow_id: str, req: TriggerRunRequest) -> JSONResponse:
 
     # Execute in background
     async def _run_bg():
-        from src.workflows.registry import update_run_status, update_run_context
         from src.events.bus import EventBus
         try:
             async for event in executor.stream():
@@ -330,14 +330,14 @@ async def receive_webhook(webhook_path: str, request: Request) -> JSONResponse:
         parsed_payload = {"raw": raw.decode("utf-8", errors="replace")}
 
     # Reuse existing trigger logic
-    from src.workflows.parser import parse_workflow
     from src.workflows.executor import WorkflowExecutor
+    from src.workflows.parser import parse_workflow
     from src.workflows.registry import create_run
 
     try:
         wf_def = parse_workflow(wf["yaml_definition"])
     except WorkflowParseError as exc:
-        raise HTTPException(status_code=422, detail=f"Workflow parse error: {exc}")
+        raise HTTPException(status_code=422, detail=f"Workflow parse error: {exc}") from exc
 
     run_id = await create_run(
         workflow_id=wf["id"],

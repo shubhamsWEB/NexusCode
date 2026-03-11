@@ -6,17 +6,24 @@ and exposes them to the agent loop. Unknown tool names in tool_executor are
 routed here.
 
 In-memory state is rebuilt by init_bridge() at startup and reload_bridge() on demand.
+
+Supports:
+  - remote HTTP servers (streamable_http / SSE transport)
+  - stdio subprocess servers (npx, python, docker, etc.)
+  - auth_type: none | header | bearer | basic | oauth
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 # ── In-memory registry ────────────────────────────────────────────────────────
-# tool_name → {schema, server_url, auth_header}
+# tool_name → {schema, server_url, auth_header, server_type, command, args, env, transport}
 _tool_registry: dict[str, dict] = {}
 
 # Local tool names — populated by ask_agent / claude_planner at startup
@@ -35,6 +42,32 @@ _LOCAL_TOOL_NAMES: frozenset[str] = frozenset(
 )
 
 
+# ── Auth helper ───────────────────────────────────────────────────────────────
+
+
+def _build_auth_header(auth_type: str, auth_value: str | None) -> str | None:
+    """Build the Authorization header value from auth_type + raw value.
+
+    auth_type:
+      'none'    — no header
+      'header'  — verbatim (backwards-compat with old auth_header field)
+      'bearer'  — prepends 'Bearer '
+      'basic'   — expects 'email:token', base64-encodes to 'Basic ...'
+      'oauth'   — auth_value is the oauth_token; prepends 'Bearer '
+    """
+    if not auth_value or auth_type == "none":
+        return None
+    if auth_type == "bearer":
+        return f"Bearer {auth_value}"
+    if auth_type == "basic":
+        import base64
+        return "Basic " + base64.b64encode(auth_value.encode()).decode()
+    if auth_type == "oauth":
+        return f"Bearer {auth_value}"
+    # 'header': verbatim
+    return auth_value
+
+
 # ── DB helpers ────────────────────────────────────────────────────────────────
 
 
@@ -46,9 +79,15 @@ async def _load_enabled_servers() -> list[dict]:
         from src.storage.db import AsyncSessionLocal
 
         sql = text(
-            "SELECT id, name, url, auth_header, "
-            "COALESCE(transport, 'auto') AS transport "
-            "FROM external_mcp_servers WHERE enabled = TRUE"
+            """
+            SELECT id, name, url, auth_header,
+                   COALESCE(transport, 'auto') AS transport,
+                   COALESCE(server_type, 'remote') AS server_type,
+                   command, args, env,
+                   COALESCE(auth_type, 'header') AS auth_type,
+                   oauth_token
+            FROM external_mcp_servers WHERE enabled = TRUE
+            """
         )
         async with AsyncSessionLocal() as session:
             rows = (await session.execute(sql)).mappings().all()
@@ -69,6 +108,7 @@ async def _update_server_stats(
 
         from src.storage.db import AsyncSessionLocal
 
+        params: dict[str, Any]
         if last_error is None:
             sql = text(
                 """
@@ -104,31 +144,32 @@ _TRANSPORT_AUTO = "auto"
 
 async def _list_tools_sse(url: str, headers: dict) -> list[dict]:
     """Connect via legacy SSE transport and return tool schemas."""
-    from mcp import ClientSession
     from mcp.client.sse import sse_client
 
+    from mcp import ClientSession
+
     tool_schemas: list[dict] = []
-    async with sse_client(url, headers=headers) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            tools_result = await session.list_tools()
-            for tool in tools_result.tools:
-                tool_schemas.append({
-                    "name": tool.name,
-                    "description": tool.description or "",
-                    "input_schema": tool.inputSchema if tool.inputSchema else {"type": "object", "properties": {}},
-                })
+    async with sse_client(url, headers=headers) as (read, write), ClientSession(read, write) as session:
+        await session.initialize()
+        tools_result = await session.list_tools()
+        for tool in tools_result.tools:
+            tool_schemas.append({
+                "name": tool.name,
+                "description": tool.description or "",
+                "input_schema": tool.inputSchema if tool.inputSchema else {"type": "object", "properties": {}},
+            })
     return tool_schemas
 
 
 async def _list_tools_streamable_http(url: str, headers: dict) -> list[dict]:
     """Connect via Streamable HTTP transport and return tool schemas."""
-    from mcp import ClientSession
     from mcp.client.streamable_http import streamablehttp_client
 
+    from mcp import ClientSession
+
     tool_schemas: list[dict] = []
-    async with streamablehttp_client(url, headers=headers) as (read, write, _):
-        async with ClientSession(read, write) as session:
+    try:
+        async with streamablehttp_client(url, headers=headers) as (read, write, _), ClientSession(read, write) as session:
             await session.initialize()
             tools_result = await session.list_tools()
             for tool in tools_result.tools:
@@ -137,30 +178,83 @@ async def _list_tools_streamable_http(url: str, headers: dict) -> list[dict]:
                     "description": tool.description or "",
                     "input_schema": tool.inputSchema if tool.inputSchema else {"type": "object", "properties": {}},
                 })
+    except Exception as exc:
+        if tool_schemas:
+            # Tools fetched successfully; error is from SSE stream teardown (e.g. Atlassian 400 on reconnect)
+            logger.debug("mcp_bridge: streamable_http teardown error ignored (tools fetched OK): %s", exc)
+        else:
+            raise
+    return tool_schemas
+
+
+async def _list_tools_stdio(command: str, args: list, env: dict) -> list[dict]:
+    """Spawn a stdio MCP subprocess and return its tool schemas."""
+    from mcp import ClientSession
+    from mcp.client.stdio import StdioServerParameters, stdio_client
+
+    params = StdioServerParameters(
+        command=command,
+        args=args or [],
+        env={**os.environ, **(env or {})},
+    )
+    tool_schemas: list[dict] = []
+    async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
+        await session.initialize()
+        tools_result = await session.list_tools()
+        for tool in tools_result.tools:
+            tool_schemas.append({
+                "name": tool.name,
+                "description": tool.description or "",
+                "input_schema": tool.inputSchema if tool.inputSchema else {"type": "object", "properties": {}},
+            })
     return tool_schemas
 
 
 async def _call_tool_sse(url: str, headers: dict, tool_name: str, tool_input: dict) -> str:
     """Call a tool via legacy SSE transport."""
-    from mcp import ClientSession
     from mcp.client.sse import sse_client
 
-    async with sse_client(url, headers=headers) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            result = await session.call_tool(tool_name, tool_input)
+    from mcp import ClientSession
+
+    async with sse_client(url, headers=headers) as (read, write), ClientSession(read, write) as session:
+        await session.initialize()
+        result = await session.call_tool(tool_name, tool_input)
     return _extract_tool_result(result)
 
 
 async def _call_tool_streamable_http(url: str, headers: dict, tool_name: str, tool_input: dict) -> str:
     """Call a tool via Streamable HTTP transport."""
-    from mcp import ClientSession
     from mcp.client.streamable_http import streamablehttp_client
 
-    async with streamablehttp_client(url, headers=headers) as (read, write, _):
-        async with ClientSession(read, write) as session:
+    from mcp import ClientSession
+
+    result = None
+    try:
+        async with streamablehttp_client(url, headers=headers) as (read, write, _), ClientSession(read, write) as session:
             await session.initialize()
             result = await session.call_tool(tool_name, tool_input)
+    except Exception as exc:
+        if result is not None:
+            # Tool call succeeded; error is from SSE stream teardown (e.g. Atlassian 400 on reconnect)
+            logger.debug("mcp_bridge: streamable_http teardown error ignored (tool call succeeded): %s", exc)
+        else:
+            raise
+    return _extract_tool_result(result)
+
+
+async def _call_tool_stdio(command: str, args: list, env: dict, tool_name: str, tool_input: dict) -> str:
+    """Spawn a fresh stdio MCP subprocess, call one tool, return result."""
+    from mcp import ClientSession
+    from mcp.client.stdio import StdioServerParameters, stdio_client
+
+    params = StdioServerParameters(
+        command=command,
+        args=args or [],
+        env={**os.environ, **(env or {})},
+    )
+    async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
+        await session.initialize()
+        result = await session.call_tool(tool_name, tool_input)
     return _extract_tool_result(result)
 
 
@@ -243,12 +337,33 @@ async def _call_tool_on_server(
 # ── Public API ────────────────────────────────────────────────────────────────
 
 
-async def test_server(url: str, auth_header: str | None, transport: str = _TRANSPORT_AUTO) -> dict:
+async def test_server(
+    url: str | None,
+    auth_header: str | None,
+    transport: str = _TRANSPORT_AUTO,
+    *,
+    server_type: str = "remote",
+    command: str | None = None,
+    args: list | None = None,
+    env: dict | None = None,
+) -> dict:
     """
     Attempt to connect to a server and list its tools.
     Returns {ok: bool, tools: [name,...], transport_used?: str, error?: str}.
     Does NOT modify the DB or in-memory registry.
     """
+    if server_type == "stdio":
+        if not command:
+            return {"ok": False, "tools": [], "error": "stdio server requires a command"}
+        try:
+            schemas = await _list_tools_stdio(command, args or [], env or {})
+            return {"ok": True, "tools": [s["name"] for s in schemas], "transport_used": "stdio"}
+        except Exception as exc:
+            return {"ok": False, "tools": [], "error": str(exc)}
+
+    if not url:
+        return {"ok": False, "tools": [], "error": "remote server requires a URL"}
+
     # For auto mode, report which transport actually succeeded
     if transport == _TRANSPORT_AUTO:
         headers: dict = {}
@@ -278,34 +393,70 @@ async def _load_single_server(server: dict) -> int:
     Returns number of tools registered from this server.
     """
     server_id: int = server["id"]
-    url: str = server["url"]
-    auth_header: str | None = server.get("auth_header")
+    server_type: str = server.get("server_type") or "remote"
     transport: str = server.get("transport") or _TRANSPORT_AUTO
     count = 0
 
+    # Build the effective auth header from auth_type
+    auth_type: str = server.get("auth_type") or "header"
+    if auth_type == "oauth":
+        raw_auth = server.get("oauth_token")
+    else:
+        raw_auth = server.get("auth_header")
+    auth_header = _build_auth_header(auth_type, raw_auth)
+
+    identifier = server.get("url") or server.get("command") or str(server_id)
+
     try:
-        schemas = await _connect_and_list_tools(url, auth_header, transport)
+        if server_type == "stdio":
+            command = server.get("command")
+            args = server.get("args") or []
+            env = server.get("env") or {}
+            if not command:
+                raise ValueError("stdio server is missing 'command'")
+            schemas = await _list_tools_stdio(command, args, env)
+        else:
+            url = server["url"]
+            schemas = await _connect_and_list_tools(url, auth_header, transport)
+
         for schema in schemas:
             name = schema["name"]
             if name in _LOCAL_TOOL_NAMES:
                 logger.warning(
                     "mcp_bridge: external tool %r from %s conflicts with local tool — skipping",
                     name,
-                    url,
+                    identifier,
                 )
                 continue
-            _tool_registry[name] = {
+            entry: dict = {
                 "schema": schema,
-                "server_url": url,
-                "auth_header": auth_header,
+                "server_type": server_type,
                 "transport": transport,
             }
+            if server_type == "stdio":
+                entry.update({
+                    "command": server.get("command"),
+                    "args": server.get("args") or [],
+                    "env": server.get("env") or {},
+                    "server_url": None,
+                    "auth_header": None,
+                })
+            else:
+                entry.update({
+                    "server_url": server["url"],
+                    "auth_header": auth_header,
+                })
+            _tool_registry[name] = entry
             count += 1
+
         await _update_server_stats(server_id, count, None)
-        logger.info("mcp_bridge: loaded %d tool(s) from %s (transport=%s)", count, url, transport)
+        logger.info(
+            "mcp_bridge: loaded %d tool(s) from %s (type=%s, transport=%s)",
+            count, identifier, server_type, transport,
+        )
     except Exception as exc:
         err_str = str(exc)
-        logger.warning("mcp_bridge: failed to connect to %s: %s", url, err_str)
+        logger.warning("mcp_bridge: failed to connect to %s: %s", identifier, err_str)
         await _update_server_stats(server_id, 0, err_str)
 
     return count
@@ -351,7 +502,8 @@ def get_external_tools_info() -> list[dict]:
         {
             "name": entry["schema"]["name"],
             "description": entry["schema"].get("description", ""),
-            "server_url": entry["server_url"],
+            "server_url": entry.get("server_url"),
+            "server_type": entry.get("server_type", "remote"),
         }
         for entry in _tool_registry.values()
     ]
@@ -372,13 +524,23 @@ async def call_external_tool(name: str, tool_input: dict) -> str:
         return json.dumps({"error": f"External tool not found: {name}"})
 
     try:
-        result = await _call_tool_on_server(
-            entry["server_url"],
-            entry["auth_header"],
-            name,
-            tool_input,
-            transport=entry.get("transport", _TRANSPORT_AUTO),
-        )
+        server_type = entry.get("server_type", "remote")
+        if server_type == "stdio":
+            result = await _call_tool_stdio(
+                entry["command"],
+                entry.get("args") or [],
+                entry.get("env") or {},
+                name,
+                tool_input,
+            )
+        else:
+            result = await _call_tool_on_server(
+                entry["server_url"],
+                entry["auth_header"],
+                name,
+                tool_input,
+                transport=entry.get("transport", _TRANSPORT_AUTO),
+            )
         return result
     except Exception as exc:
         logger.error("mcp_bridge: call to external tool %r failed: %s", name, exc)

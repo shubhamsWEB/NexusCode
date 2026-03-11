@@ -1,0 +1,19 @@
+# watchfiles configuration — controls which paths are watched for changes.
+# Prevents uvicorn --reload from triggering on .venv, build artefacts, or
+# test/coverage output. Only source code in src/ should cause a reload.
+
+[watchfiles]
+# Directories to ignore entirely (relative to project root).
+# Uses glob-style patterns; prefix with "re:" for regex.
+ignore_paths = [
+    ".venv",
+    "__pycache__",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".pytest_cache",
+    "htmlcov",
+    ".git",
+    "*.egg-info",
+    "dist",
+    "build",
+]

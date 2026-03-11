@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from src.utils.logging import get_secure_logger
 
@@ -26,8 +27,6 @@ class SkillInfo:
     source_label: str  # e.g. "skills/" or "/path/to/custom"
     metadata: dict = field(default_factory=dict)
 
-
-from typing import Any
 _STATE: dict[str, Any] = {"cache": [], "loaded": False}
 
 

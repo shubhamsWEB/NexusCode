@@ -57,6 +57,7 @@ src/ui/_pages/ask.py                — Ask Mode chat UI page (with model select
 ## Development Rules
 
 - `PYTHONPATH=.` is required for all local runs — never omit it
+- **Always use `make dev`** to start the API (not raw `uvicorn`) — it adds `--reload-dir src` which prevents `.venv` from triggering hot-reloads
 - `OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES` required for RQ on macOS
 - Dashboard pages go in `src/ui/_pages/` (underscore prefix prevents Streamlit auto-discovery)
 - All new API endpoints → `src/api/` as a separate router, mounted in `app.py`

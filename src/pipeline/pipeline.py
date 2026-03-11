@@ -29,6 +29,7 @@ from src.config import settings
 from src.utils.sanitize import sanitize_log
 
 logger = structlog.get_logger(__name__)
+_background_tasks: set[asyncio.Task[Any]] = set()
 
 
 # ── RQ entry point (synchronous wrapper) ─────────────────────────────────────
@@ -126,7 +127,30 @@ async def _async_incremental_index(payload: dict[str, Any]) -> dict[str, Any]:
         pass
 
     # Update repo summary for cross-repo routing (non-blocking)
-    asyncio.create_task(_update_repo_summary(owner, repo))
+    task = asyncio.create_task(_update_repo_summary(owner, repo))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+    # Enrich semantic graph (non-blocking, best-effort)
+    sem_task = asyncio.create_task(_trigger_semantic_enrichment(owner, repo))
+    _background_tasks.add(sem_task)
+    sem_task.add_done_callback(_background_tasks.discard)
+
+    # Evolution: update worldview and optionally trigger reflection (non-blocking)
+    try:
+        from src.config import settings as _settings
+
+        if _settings.evolution_enabled:
+            if _settings.evolution_worldview_update_on_index:
+                wv_task = asyncio.create_task(_trigger_worldview_update(owner, repo))
+                _background_tasks.add(wv_task)
+                wv_task.add_done_callback(_background_tasks.discard)
+
+            cycle_task = asyncio.create_task(_maybe_trigger_reflection_cycle(owner, repo))
+            _background_tasks.add(cycle_task)
+            cycle_task.add_done_callback(_background_tasks.discard)
+    except Exception:
+        pass  # Evolution is always non-fatal
 
     # Update webhook event status to "done" (or "error" if all files errored)
     if delivery_id and delivery_id != "manual":
@@ -176,6 +200,59 @@ async def _update_repo_summary(owner: str, name: str) -> None:
             repo=f"{owner}/{name}",
             error=str(exc),
         )
+
+
+# ── Semantic enrichment helper ────────────────────────────────────────────────
+
+
+async def _trigger_semantic_enrichment(owner: str, repo: str) -> None:
+    """Non-blocking helper: run LLM semantic enrichment after a successful index."""
+    try:
+        from src.graph.semantic_enricher import enrich_repo_semantic_graph
+
+        edges, syms = await enrich_repo_semantic_graph(owner, repo)
+        logger.info("semantic_enrichment.done", repo=f"{owner}/{repo}", edges=edges, symbols=syms)
+    except Exception as exc:
+        logger.warning("semantic_enrichment.failed", repo=f"{owner}/{repo}", error=str(exc))
+
+
+# ── Evolution helpers ─────────────────────────────────────────────────────────
+
+
+async def _trigger_worldview_update(owner: str, repo: str) -> None:
+    """Non-blocking helper: regenerate the worldview after a successful index."""
+    try:
+        from src.evolution.worldview_generator import generate_worldview
+
+        doc = await generate_worldview(owner, repo)
+        if doc:
+            logger.info("evolution.worldview_updated", repo=f"{owner}/{repo}", version=doc.version)
+    except Exception as exc:
+        logger.warning("evolution.worldview_update_failed", repo=f"{owner}/{repo}", error=str(exc))
+
+
+async def _maybe_trigger_reflection_cycle(owner: str, repo: str) -> None:
+    """Non-blocking helper: enqueue a reflection cycle if the threshold is met."""
+    try:
+        from src.evolution.reflection_cycle import should_run_cycle
+
+        if await should_run_cycle(owner, repo):
+            import redis
+            from rq import Queue
+
+            from src.config import settings as _settings
+
+            _redis = redis.from_url(_settings.redis_url)
+            q = Queue("default", connection=_redis)
+            q.enqueue(
+                "src.evolution.jobs.run_reflection_cycle_job",
+                owner,
+                repo,
+                job_timeout=600,
+            )
+            logger.info("evolution.cycle_enqueued", repo=f"{owner}/{repo}")
+    except Exception as exc:
+        logger.warning("evolution.cycle_enqueue_failed", repo=f"{owner}/{repo}", error=str(exc))
 
 
 # ── Deletion handler ──────────────────────────────────────────────────────────

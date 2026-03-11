@@ -145,6 +145,7 @@ async def get_role_config_async(role) -> dict[str, Any]:
 
     try:
         from sqlalchemy import text
+
         from src.storage.db import AsyncSessionLocal
 
         async with AsyncSessionLocal() as session:
@@ -161,17 +162,17 @@ async def get_role_config_async(role) -> dict[str, Any]:
             ).mappings().first()
 
         if row:
-            row = dict(row)
-            sp = (row.get("system_prompt") or "").rstrip()
-            inst = (row.get("instructions") or "").strip()
+            row_dict = dict(row)
+            sp = (row_dict.get("system_prompt") or "").rstrip()
+            inst = (row_dict.get("instructions") or "").strip()
             if inst:
                 sp = sp + "\n\n## Additional Instructions\n" + inst
             return {
                 "system_prompt": sp,
-                "default_tools": list(row.get("default_tools") or []),
-                "require_search": bool(row.get("require_search", True)),
-                "max_iterations": int(row.get("max_iterations") or 5),
-                "token_budget": int(row.get("token_budget") or 80_000),
+                "default_tools": list(row_dict.get("default_tools") or []),
+                "require_search": bool(row_dict.get("require_search", True)),
+                "max_iterations": int(row_dict.get("max_iterations") or 5),
+                "token_budget": int(row_dict.get("token_budget") or 80_000),
             }
     except Exception as exc:
         logger.warning("get_role_config_async: DB lookup failed for %r: %s", role_name, exc)

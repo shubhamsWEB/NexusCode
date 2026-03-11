@@ -8,11 +8,10 @@ Layout:
 """
 from __future__ import annotations
 
-import time
 import textwrap
 
-import streamlit as st
 import requests
+import streamlit as st
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -249,78 +248,77 @@ def _render_workflow_list():
             run_col, edit_col, del_col, hook_col = st.columns(4)
 
             # ── Run this workflow ──────────────────────────────────────────
-            with run_col:
-                with st.popover("▶ Run", use_container_width=True):
-                    st.markdown("**Configure run**")
+            with run_col, st.popover("▶ Run", use_container_width=True):
+                st.markdown("**Configure run**")
 
-                    trigger_type = wf.get("trigger_type", "manual")
+                trigger_type = wf.get("trigger_type", "manual")
 
-                    # Repo selector
-                    repo_choice = st.selectbox(
-                        "Repository",
-                        options=["(none)"] + repos,
-                        key=f"repo_{wf['id']}",
-                        help="Passed to workflow as trigger.repo_owner / trigger.repo_name",
+                # Repo selector
+                repo_choice = st.selectbox(
+                    "Repository",
+                    options=["(none)", *repos],
+                    key=f"repo_{wf['id']}",
+                    help="Passed to workflow as trigger.repo_owner / trigger.repo_name",
+                )
+
+                # For webhook workflows, hint the user that they need to fill in payload
+                if trigger_type == "webhook":
+                    st.info(
+                        "⚠️ **Webhook workflow** — this workflow reads data from the "
+                        "trigger payload. Paste your JSON payload below (e.g. alert data, "
+                        "PR info, event object). Leaving it as `{}` will cause template "
+                        "fields like `{{ trigger.service }}` to render as `[MISSING: service]`.",
+                        icon=None,
                     )
 
-                    # For webhook workflows, hint the user that they need to fill in payload
-                    if trigger_type == "webhook":
-                        st.info(
-                            "⚠️ **Webhook workflow** — this workflow reads data from the "
-                            "trigger payload. Paste your JSON payload below (e.g. alert data, "
-                            "PR info, event object). Leaving it as `{}` will cause template "
-                            "fields like `{{ trigger.service }}` to render as `[MISSING: service]`.",
-                            icon=None,
+                # Payload textarea — remember last value per workflow in session state
+                payload_key = f"payload_{wf['id']}"
+                default_payload = st.session_state.get(f"_last_payload_{wf['id']}", "{}")
+
+                extra_raw = st.text_area(
+                    "Trigger payload (JSON)" if trigger_type == "webhook"
+                    else "Extra trigger payload (JSON, optional)",
+                    value=default_payload,
+                    height=160 if trigger_type == "webhook" else 80,
+                    key=payload_key,
+                    placeholder='{\n  "service": "my-api",\n  "error_message": "...",\n  "stack_trace": "..."\n}' if trigger_type == "webhook" else "{}",
+                    help="All fields become available as {{ trigger.FIELD }} in the workflow YAML.",
+                )
+
+                if st.button("🚀 Trigger run", key=f"go_{wf['id']}", use_container_width=True):
+                    import json as _json
+                    try:
+                        payload = _json.loads(extra_raw or "{}")
+                    except Exception:
+                        st.error("❌ Invalid JSON — check syntax and try again.")
+                        st.stop()
+
+                    # Warn (but don't block) when webhook workflow has empty payload
+                    if trigger_type == "webhook" and payload == {}:
+                        st.warning(
+                            "Payload is empty `{}` — template variables in this workflow "
+                            "will render as `[MISSING: field]`. Add the alert/event JSON above."
                         )
 
-                    # Payload textarea — remember last value per workflow in session state
-                    payload_key = f"payload_{wf['id']}"
-                    default_payload = st.session_state.get(f"_last_payload_{wf['id']}", "{}")
+                    # Cache the payload for next time
+                    st.session_state[f"_last_payload_{wf['id']}"] = extra_raw
 
-                    extra_raw = st.text_area(
-                        "Trigger payload (JSON)" if trigger_type == "webhook"
-                        else "Extra trigger payload (JSON, optional)",
-                        value=default_payload,
-                        height=160 if trigger_type == "webhook" else 80,
-                        key=payload_key,
-                        placeholder='{\n  "service": "my-api",\n  "error_message": "...",\n  "stack_trace": "..."\n}' if trigger_type == "webhook" else "{}",
-                        help="All fields become available as {{ trigger.FIELD }} in the workflow YAML.",
+                    # Inject repo into payload
+                    if repo_choice != "(none)":
+                        owner, name = repo_choice.split("/", 1)
+                        payload.setdefault("repo_owner", owner)
+                        payload.setdefault("repo_name", name)
+
+                    ok2, run = _api(
+                        "post",
+                        f"/workflows/{wf['id']}/run",
+                        json={"payload": payload},
                     )
-
-                    if st.button("🚀 Trigger run", key=f"go_{wf['id']}", use_container_width=True):
-                        import json as _json
-                        try:
-                            payload = _json.loads(extra_raw or "{}")
-                        except Exception:
-                            st.error("❌ Invalid JSON — check syntax and try again.")
-                            st.stop()
-
-                        # Warn (but don't block) when webhook workflow has empty payload
-                        if trigger_type == "webhook" and payload == {}:
-                            st.warning(
-                                "Payload is empty `{}` — template variables in this workflow "
-                                "will render as `[MISSING: field]`. Add the alert/event JSON above."
-                            )
-
-                        # Cache the payload for next time
-                        st.session_state[f"_last_payload_{wf['id']}"] = extra_raw
-
-                        # Inject repo into payload
-                        if repo_choice != "(none)":
-                            owner, name = repo_choice.split("/", 1)
-                            payload.setdefault("repo_owner", owner)
-                            payload.setdefault("repo_name", name)
-
-                        ok2, run = _api(
-                            "post",
-                            f"/workflows/{wf['id']}/run",
-                            json={"payload": payload},
-                        )
-                        if ok2:
-                            st.success(f"✅ Run started — ID: `{run['run_id'][:12]}…`")
-                            st.session_state["last_run_id"] = run["run_id"]
-                        else:
-                            st.error(f"Failed: {run}")
+                    if ok2:
+                        st.success(f"✅ Run started — ID: `{run['run_id'][:12]}…`")
+                        st.session_state["last_run_id"] = run["run_id"]
+                    else:
+                        st.error(f"Failed: {run}")
 
             # ── Edit workflow YAML ─────────────────────────────────────────
             with edit_col:
@@ -336,21 +334,19 @@ def _render_workflow_list():
                         st.error(f"Could not load workflow: {wf_full}")
 
             # ── Delete ────────────────────────────────────────────────────
-            with del_col:
-                with st.popover("🗑 Delete", use_container_width=True):
-                    st.warning("This will delete the workflow and all its run history.")
-                    if st.button("Confirm delete", key=f"del_confirm_{wf['id']}", use_container_width=True):
-                        ok3, _ = _api("delete", f"/workflows/{wf['id']}")
-                        if ok3:
-                            st.success("Deleted.")
-                            st.rerun()
-                        else:
-                            st.error("Delete failed.")
+            with del_col, st.popover("🗑 Delete", use_container_width=True):
+                st.warning("This will delete the workflow and all its run history.")
+                if st.button("Confirm delete", key=f"del_confirm_{wf['id']}", use_container_width=True):
+                    ok3, _ = _api("delete", f"/workflows/{wf['id']}")
+                    if ok3:
+                        st.success("Deleted.")
+                        st.rerun()
+                    else:
+                        st.error("Delete failed.")
 
             # ── Webhook Config ─────────────────────────────────────────────
-            with hook_col:
-                with st.popover("🔗 Webhook", use_container_width=True):
-                    _render_webhook_config(wf)
+            with hook_col, st.popover("🔗 Webhook", use_container_width=True):
+                _render_webhook_config(wf)
 
     # ── Inline edit panel (shown when an Edit button was clicked) ─────────────
     if "edit_wf_id" in st.session_state:
@@ -739,7 +735,6 @@ def _duration(started: str | None, completed: str | None) -> str:
         return ""
     try:
         from datetime import datetime
-        fmt = "%Y-%m-%dT%H:%M:%S"
         s = datetime.fromisoformat(started[:19])
         e = datetime.fromisoformat(completed[:19])
         secs = int((e - s).total_seconds())
@@ -760,7 +755,7 @@ def _render_run_history():
     with filter_col:
         selected_wf = st.selectbox(
             "Filter by workflow",
-            options=["All"] + list(wf_options.keys()),
+            options=["All", *list(wf_options.keys())],
             label_visibility="collapsed",
         )
     with limit_col:
@@ -979,7 +974,7 @@ def _md_to_html(text: str) -> str:
     Falls back to pre-formatted plain text if the markdown library is not available.
     """
     try:
-        import markdown as _markdown
+        import markdown as _markdown  # type: ignore[import-untyped]
         return _markdown.markdown(
             text,
             extensions=["fenced_code", "tables", "nl2br", "sane_lists"],

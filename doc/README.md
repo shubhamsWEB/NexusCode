@@ -36,6 +36,12 @@ GitHub repositories and exposes the resulting knowledge via MCP, REST API, and a
 |----------|-------------|
 | [API Reference](./api-reference.md) | Complete REST API — all 40+ endpoints |
 
+## Release Notes
+
+| Document | Description |
+|----------|-------------|
+| [v0.1.0](./releases/0.1.0.md) | First public release of NexusCode |
+
 ## Deep-Dive Architecture
 
 See the [`/architecture`](../architecture/README.md) directory:

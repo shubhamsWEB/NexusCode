@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from src.api.agent_roles import router as agent_roles_router
+from src.api.evolution import router as evolution_router
 from src.api.api_keys import router as api_keys_router
 from src.api.ask import router as ask_router
 from src.api.documents import router as documents_router
@@ -28,6 +29,7 @@ from src.github.webhook import router as webhook_router
 from src.mcp.auth import router as auth_router
 from src.mcp.server import mcp_server
 from src.storage.db import get_index_stats
+
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
@@ -81,6 +83,7 @@ app.include_router(workflow_webhook_router)
 app.include_router(agent_roles_router)
 app.include_router(documents_router)
 app.include_router(api_keys_router)
+app.include_router(evolution_router)
 
 
 # Mount MCP server — exposes /mcp/sse and /mcp/messages/

@@ -27,17 +27,18 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.
 
 # isort: split
 
+from typing import Any
+
 import httpx
 import streamlit as st
 
 from src.ui.helpers import AGENT_DEFAULT_ICON, AGENT_TOOL_ICONS, api_get, render_agent_timeline_html
 
-
 # ── Session state helpers ──────────────────────────────────────────────────────
 
 
-def _init_state():
-    defaults = {
+def _init_state() -> None:
+    defaults: dict[str, Any] = {
         "ask_messages":     [],   # [{role, content, meta}]
         "ask_agent_logs":   [],   # execution timeline for the latest run
         "ask_pending_hint": None,

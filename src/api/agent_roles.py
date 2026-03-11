@@ -279,7 +279,7 @@ async def delete_role(name: str) -> JSONResponse:
         )
         await session.commit()
 
-    if result.rowcount == 0 and name not in _BUILTIN_NAMES:
+    if int(getattr(result, "rowcount", 0) or 0) == 0 and name not in _BUILTIN_NAMES:
         raise HTTPException(status_code=404, detail=f"Role {name!r} not found")
 
     if name in _BUILTIN_NAMES:

@@ -172,6 +172,12 @@ class Settings(BaseSettings):
     cross_repo_router_cache_ttl: int = Field(120, description="Redis TTL for router summaries cache (seconds)")
     cross_repo_summary_update_min_chunks: int = Field(10, description="Min chunks before centroid is computed")
 
+    # ── MCP OAuth ────────────────────────────────────────────────────────────
+    mcp_oauth_callback_base_url: str = Field(
+        "http://localhost:8000",
+        description="Public base URL for MCP OAuth callback (e.g. https://nexus.myco.com)",
+    )
+
     # ── API Key Scoping ───────────────────────────────────────────────────────
     api_key_header: str = Field("X-Api-Key", description="HTTP header name for API key")
     api_key_query_param: str = Field("api_key", description="URL query param fallback for MCP SSE URL")
@@ -189,6 +195,26 @@ class Settings(BaseSettings):
     )
     workflow_max_parallel_steps: int = Field(
         4, description="Max steps that can run in parallel within a single wave"
+    )
+
+    # ── Self-Evolution ────────────────────────────────────────────────────────
+    evolution_enabled: bool = Field(
+        True, description="Enable automatic self-evolution cycles"
+    )
+    evolution_cycle_interval_hours: int = Field(
+        24, description="Run a reflection cycle every N hours (per repo)"
+    )
+    evolution_min_interactions_to_reflect: int = Field(
+        50, description="Min interactions since last cycle before auto-triggering a new one"
+    )
+    evolution_worldview_update_on_index: bool = Field(
+        True, description="Regenerate the repo worldview after every successful index"
+    )
+    evolution_ab_test_sample_fraction: float = Field(
+        0.10, description="Fraction of interactions assigned to A/B treatment group (0.0–1.0)"
+    )
+    evolution_max_param_change_pct: float = Field(
+        20.0, description="Max allowed % change per parameter in a single reflection cycle"
     )
 
     # ── Derived helpers ──────────────────────────────────────────────────────

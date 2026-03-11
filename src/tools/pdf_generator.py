@@ -8,7 +8,7 @@ Stores PDFs in the generated_documents table (PostgreSQL BYTEA).
 from __future__ import annotations
 
 import re
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from typing import Any
 
 from src.utils.logging import get_secure_logger
@@ -366,7 +366,7 @@ def generate_pdf_from_markdown(
     Returns:
         Raw PDF bytes.
     """
-    import markdown as _markdown
+    import markdown as _markdown  # type: ignore[import-untyped]
     import weasyprint
 
     if metadata is None:
@@ -413,6 +413,7 @@ async def store_document(
         doc_id (UUID string) of the newly created row.
     """
     from sqlalchemy import text
+
     from src.storage.db import AsyncSessionLocal
 
     if metadata is None:
@@ -461,6 +462,7 @@ async def get_documents_for_step(
     Used by the workflow executor to attach document metadata to step output.
     """
     from sqlalchemy import text
+
     from src.storage.db import AsyncSessionLocal
 
     async with AsyncSessionLocal() as session:

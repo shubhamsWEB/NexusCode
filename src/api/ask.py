@@ -28,6 +28,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from src.api.middleware import get_repo_scope
+from src.config import settings
 from src.planning.schemas import AskRequest
 from src.utils.logging import get_secure_logger
 
@@ -39,6 +40,50 @@ _background_tasks: set[asyncio.Task] = set()
 
 
 # ── Persistence helper ─────────────────────────────────────────────────────────
+
+
+def _retrieval_params_snapshot() -> dict:
+    """Snapshot the current retrieval settings at call time for telemetry."""
+    return {
+        "retrieval_strategy": "hybrid",
+        "hnsw_ef_search": settings.hnsw_ef_search,
+        "retrieval_rrf_k": settings.retrieval_rrf_k,
+        "retrieval_candidate_multiplier": settings.retrieval_candidate_multiplier,
+        "reranker_top_n": settings.reranker_top_n,
+        "query_relevance_threshold": settings.query_relevance_threshold,
+        "ask_max_iterations": settings.ask_max_iterations,
+    }
+
+
+async def _record_ask_telemetry(
+    repo_owner: str | None,
+    repo_name: str | None,
+    query: str,
+    result,
+    session_id: str,
+    retrieval_params: dict,
+) -> int | None:
+    """Fire-and-forget telemetry capture — returns metric_id or None."""
+    if repo_owner is None or repo_name is None:
+        return None
+    try:
+        from src.evolution.telemetry import record_ask_metrics
+
+        return await record_ask_metrics(
+            repo_owner=repo_owner,
+            repo_name=repo_name,
+            query=query,
+            quality_score=getattr(result, "quality_score", None),
+            iterations=getattr(result, "iterations", 0),
+            tool_calls_count=getattr(result, "tool_calls_count", 0),
+            context_tokens=getattr(result, "context_tokens", 0),
+            elapsed_ms=getattr(result, "elapsed_ms", 0.0),
+            retrieval_params=retrieval_params,
+            session_id=session_id,
+        )
+    except Exception:
+        logger.debug("Evolution telemetry capture failed (non-fatal)")
+        return None
 
 
 async def _save_ask_turn(session_id: str, query: str, result, repo_owner, repo_name):
@@ -78,6 +123,7 @@ async def ask_question(req: AskRequest, allowed_repos: list[str] | None = Depend
 
 async def _sync_ask(req: AskRequest, allowed_repos: list[str] | None = None) -> JSONResponse:
     effective_session_id = req.session_id or str(_uuid.uuid4())
+    retrieval_params = _retrieval_params_snapshot()
 
     try:
         from src.ask.ask_agent import generate_answer
@@ -109,11 +155,17 @@ async def _sync_ask(req: AskRequest, allowed_repos: list[str] | None = None) -> 
             {"error": "Answer generation failed. Please try again."}, status_code=500
         )
 
+    # Persist chat turn (fire-and-forget)
     task = asyncio.create_task(
         _save_ask_turn(effective_session_id, req.query, result, req.repo_owner, req.repo_name)
     )
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
+
+    # Await telemetry so we can return the interaction_id for feedback linkage
+    metric_id = await _record_ask_telemetry(
+        req.repo_owner, req.repo_name, req.query, result, effective_session_id, retrieval_params
+    )
 
     return JSONResponse(
         {
@@ -131,6 +183,7 @@ async def _sync_ask(req: AskRequest, allowed_repos: list[str] | None = None) -> 
                     f"{result.tool_calls_count} tool calls"
                 ),
                 "query_complexity": None,
+                "interaction_id": metric_id,
             },
         }
     )
@@ -155,6 +208,7 @@ async def _sse_generator(req: AskRequest, allowed_repos: list[str] | None = None
         return f"data: {json.dumps(data)}\n\n"
 
     effective_session_id = req.session_id or str(_uuid.uuid4())
+    retrieval_params = _retrieval_params_snapshot()
 
     yield _event({"type": "status", "message": "Searching codebase…"})
 
@@ -206,6 +260,10 @@ async def _sse_generator(req: AskRequest, allowed_repos: list[str] | None = None
                 await _save_ask_turn(
                     effective_session_id, req.query, result, req.repo_owner, req.repo_name
                 )
+                metric_id = await _record_ask_telemetry(
+                    req.repo_owner, req.repo_name, req.query, result,
+                    effective_session_id, retrieval_params,
+                )
                 yield _event(
                     {
                         "type": "answer_complete",
@@ -222,6 +280,7 @@ async def _sse_generator(req: AskRequest, allowed_repos: list[str] | None = None
                                 f"{result.tool_calls_count} tool calls"
                             ),
                             "query_complexity": None,
+                            "interaction_id": metric_id,
                         },
                     }
                 )

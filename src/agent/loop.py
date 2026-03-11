@@ -287,17 +287,15 @@ class AgentLoop:
         import anthropic
 
         from src.agent.tool_executor import execute_tool
+        from src.agent.tool_schemas import THINK_TOOL_SCHEMA
         from src.llm.client import (
             MAX_RETRIES,
-            RETRYABLE_CODES,
             RateLimitOrOverloadError,
             get_client_for_model,
             get_retry_after,
             is_ollama_model,
             semaphore,
         )
-
-        from src.agent.tool_schemas import THINK_TOOL_SCHEMA
 
         client = get_client_for_model(model)
         _use_caching = not is_ollama_model(model)  # Ollama doesn't support prompt caching
@@ -308,7 +306,7 @@ class AgentLoop:
 
         # Inject the "think" tool into retrieval tools (Anthropic engineering pattern).
         # It is side-effect-free so it must NOT count toward search_tools_called.
-        retrieval_tools_with_think = list(retrieval_tools) + [THINK_TOOL_SCHEMA]
+        retrieval_tools_with_think = [*list(retrieval_tools), THINK_TOOL_SCHEMA]
 
         final_tool_names = {t["name"] for t in final_answer_tools}
         retrieval_tool_names = {t["name"] for t in retrieval_tools}  # excludes "think" intentionally
@@ -595,17 +593,15 @@ class AgentLoop:
         import anthropic
 
         from src.agent.tool_executor import execute_tool
+        from src.agent.tool_schemas import THINK_TOOL_SCHEMA
         from src.llm.client import (
             MAX_RETRIES,
-            RETRYABLE_CODES,
             RateLimitOrOverloadError,
             get_client_for_model,
             get_retry_after,
             is_ollama_model,
             semaphore,
         )
-
-        from src.agent.tool_schemas import THINK_TOOL_SCHEMA
 
         client = get_client_for_model(model)
         _use_caching = not is_ollama_model(model)
@@ -614,7 +610,7 @@ class AgentLoop:
         final_answer_tools = _enhance_final_answer_tools(list(final_answer_tools))
 
         # Inject the "think" tool alongside retrieval tools.
-        retrieval_tools_with_think = list(retrieval_tools) + [THINK_TOOL_SCHEMA]
+        retrieval_tools_with_think = [*list(retrieval_tools), THINK_TOOL_SCHEMA]
 
         final_tool_names = {t["name"] for t in final_answer_tools}
         retrieval_tool_names = {t["name"] for t in retrieval_tools}  # excludes "think" intentionally
@@ -673,8 +669,6 @@ class AgentLoop:
             # Track which tool is currently being streamed to detect final answer tools
             current_tool_name: str | None = None
             is_streaming_final_tool = False
-            response_content: list[dict] = []
-            final_tool_block: dict | None = None
 
             last_exc = None
             streamed_ok = False

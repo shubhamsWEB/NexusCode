@@ -18,12 +18,11 @@ from typing import Any
 
 from src.utils.logging import get_secure_logger
 from src.workflows.context import ExecutionContext
-from src.workflows.models import AgentRole, StepDef, StepType, WorkflowDef
+from src.workflows.models import StepDef, StepType, WorkflowDef
 from src.workflows.parser import topological_order
 from src.workflows.registry import (
     create_checkpoint,
     create_run,
-    get_run,
     get_workflow_by_name,
     update_run_context,
     update_run_status,
@@ -67,9 +66,7 @@ class WorkflowExecutor:
         """
         result: dict[str, Any] = {"status": "completed"}
         async for event in self.stream():
-            if event.get("type") == "workflow_complete":
-                result = event
-            elif event.get("type") == "workflow_error":
+            if event.get("type") == "workflow_complete" or event.get("type") == "workflow_error":
                 result = event
         return result
 
@@ -189,12 +186,12 @@ class WorkflowExecutor:
                 elif step.type == StepType.action:
                     output = await self._run_action_step(step)
                 elif step.type == StepType.agent:
-                    output, tokens = await self._run_agent_step(step)
+                    output_text, tokens = await self._run_agent_step(step)
                     self._total_tokens += tokens
 
                     # Collect any PDFs generated during this step and attach them
                     from src.tools.pdf_generator import get_documents_for_step
-                    output_json: dict = {"text": output}
+                    output_json: dict[str, Any] = {"text": output_text}
                     try:
                         pdf_docs = await get_documents_for_step(self.run_id, step.id)
                         if pdf_docs:
@@ -216,7 +213,7 @@ class WorkflowExecutor:
                         output=output_json,
                         tokens_used=tokens,
                     )
-                    self.exec_ctx.set_step_output(step.id, output)
+                    self.exec_ctx.set_step_output(step.id, output_text)
                     yield {
                         "type": "step_complete",
                         "run_id": self.run_id,
@@ -273,8 +270,8 @@ class WorkflowExecutor:
         from src.agent.loop import AgentLoop, AgentLoopConfig
         from src.agent.roles import get_role_config_async
         from src.agent.tool_schemas import ALL_INTERNAL_TOOL_SCHEMAS, RETRIEVAL_TOOL_SCHEMAS
-        from src.planning.schemas import ANSWER_TOOL_SCHEMA
         from src.config import settings
+        from src.planning.schemas import ANSWER_TOOL_SCHEMA
 
         role_config = await get_role_config_async(step.role or "searcher")
 
@@ -373,7 +370,6 @@ class WorkflowExecutor:
     async def _run_checkpoint_step(self, step: StepDef) -> AsyncIterator[dict[str, Any]]:
         """Create a human checkpoint and wait for a response (or timeout)."""
         import asyncio
-        from datetime import UTC, datetime, timedelta
 
         rendered_prompt = self.exec_ctx.render(step.prompt or "Please review and approve.")
 
@@ -402,9 +398,9 @@ class WorkflowExecutor:
         while time.monotonic() < deadline:
             await asyncio.sleep(poll_interval)
 
-            from src.workflows.registry import get_pending_checkpoints
-            from src.storage.db import AsyncSessionLocal
             from sqlalchemy import text
+
+            from src.storage.db import AsyncSessionLocal
 
             async with AsyncSessionLocal() as session:
                 cp = (
@@ -444,7 +440,7 @@ class WorkflowExecutor:
         """Execute a GitHub action."""
         try:
             from src.github.client import get_github_client
-            client = get_github_client()
+            get_github_client()
 
             if action == "github.get_pr_diff":
                 # Placeholder — implement with actual GitHub API

@@ -79,9 +79,9 @@ SEARCH_CODEBASE_SCHEMA: dict = {
             "top_k": {
                 "type": "integer",
                 "description": (
-                    "Maximum number of code chunks to return (1–15, default 5). "
-                    "Use 10–15 for broad exploration or when the codebase is large. "
-                    "Use 3–5 for targeted single-symbol lookups."
+                    "Maximum number of code chunks to return (1-15, default 5). "
+                    "Use 10-15 for broad exploration or when the codebase is large. "
+                    "Use 3-5 for targeted single-symbol lookups."
                 ),
                 "default": 5,
             },
@@ -213,7 +213,7 @@ FIND_CALLERS_SCHEMA: dict = {
             "depth": {
                 "type": "integer",
                 "description": (
-                    "How many call-graph hops to traverse (1–2, default 1). "
+                    "How many call-graph hops to traverse (1-2, default 1). "
                     "depth=1: direct callers only. "
                     "depth=2: callers of callers (BFS, may be slow on large codebases). "
                     "Start with depth=1 and increase only if you need the full chain."
@@ -480,6 +480,41 @@ ASK_CODEBASE_SCHEMA: dict = {
 }
 
 
+# ── Tool 5 (retrieval): get_semantic_context ──────────────────────────────────
+
+GET_SEMANTIC_CONTEXT_SCHEMA: dict = {
+    "name": "get_semantic_context",
+    "description": (
+        "Retrieve LLM-extracted semantic architecture relationships for symbols.\n"
+        "Returns facts the call graph can't show: 'AuthService validates JWT tokens',\n"
+        "'PaymentFlow coordinates StripeClient'.\n\n"
+        "WHEN TO USE:\n"
+        "  • After finding key symbols — understand their architectural role.\n"
+        "  • Cross-cutting questions: 'what relates to authentication?'\n"
+        "  • Before planning changes — know a module's semantic dependencies.\n"
+        "RETURNS: formatted relationship graph for the requested symbols."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "symbols": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Symbol names or qualified names to look up semantic relationships for.",
+            },
+            "concept": {
+                "type": "string",
+                "description": (
+                    "Optional concept filter — only return relationships matching this concept "
+                    "(e.g. 'authentication', 'caching', 'validation')."
+                ),
+            },
+        },
+        "required": ["symbols"],
+    },
+}
+
+
 # ── Tool 8: generate_pdf ──────────────────────────────────────────────────────
 
 GENERATE_PDF_SCHEMA: dict = {
@@ -580,12 +615,13 @@ THINK_TOOL_SCHEMA: dict = {
 
 # ── Exported schema lists ──────────────────────────────────────────────────────
 
-# Core 4 retrieval tools — included in every agent loop by default
+# Core retrieval tools — included in every agent loop by default
 RETRIEVAL_TOOL_SCHEMAS: list[dict] = [
     SEARCH_CODEBASE_SCHEMA,
     GET_SYMBOL_SCHEMA,
     FIND_CALLERS_SCHEMA,
     GET_FILE_CONTEXT_SCHEMA,
+    GET_SEMANTIC_CONTEXT_SCHEMA,
 ]
 
 # 3 higher-order tools — only included when a role explicitly requests them
@@ -595,7 +631,7 @@ EXTENDED_TOOL_SCHEMAS: list[dict] = [
     ASK_CODEBASE_SCHEMA,
 ]
 
-# All 8 internal tools combined (includes generate_pdf)
+# All internal tools combined (includes generate_pdf)
 ALL_INTERNAL_TOOL_SCHEMAS: list[dict] = RETRIEVAL_TOOL_SCHEMAS + EXTENDED_TOOL_SCHEMAS + [GENERATE_PDF_SCHEMA]
 
 # Trimmed set for Ask Mode — drops get_file_context to save ~300 tokens/turn
@@ -603,4 +639,5 @@ ASK_RETRIEVAL_TOOL_SCHEMAS: list[dict] = [
     SEARCH_CODEBASE_SCHEMA,
     GET_SYMBOL_SCHEMA,
     FIND_CALLERS_SCHEMA,
+    GET_SEMANTIC_CONTEXT_SCHEMA,
 ]

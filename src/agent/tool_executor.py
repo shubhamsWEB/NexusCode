@@ -161,6 +161,8 @@ async def execute_tool(
             return await _get_symbol(inp, repo_owner, repo_name, allowed_repos)
         elif name == "find_callers":
             return await _find_callers(inp, repo_owner, repo_name, allowed_repos)
+        elif name == "get_semantic_context":
+            return await _get_semantic_context(inp, repo_owner, repo_name, allowed_repos)
         elif name == "get_file_context":
             return await _get_file_context(inp, repo_owner, repo_name, allowed_repos)
         elif name == "get_agent_context":
@@ -499,6 +501,44 @@ async def _find_callers(
     )
 
 
+# ── get_semantic_context ──────────────────────────────────────────────────────
+
+
+async def _get_semantic_context(
+    inp: dict,
+    repo_owner: str | None,
+    repo_name: str | None,
+    allowed_repos: list[str] | None = None,
+) -> str:
+    from src.graph.semantic_enricher import get_semantic_context_for_symbols
+
+    symbols = inp.get("symbols") or []
+    if not symbols:
+        return json.dumps({
+            "error": "get_semantic_context requires a 'symbols' list. "
+                     "Example: {\"symbols\": [\"AuthService\", \"JWTValidator\"]}",
+            "received_keys": list(inp.keys()),
+        })
+
+    context = await get_semantic_context_for_symbols(
+        symbols=symbols,
+        owner=repo_owner or "",
+        repo_name=repo_name or "",
+        concept=inp.get("concept"),
+    )
+
+    tip = (
+        "No semantic data yet? Trigger POST /graph/{owner}/{name}/enrich to run enrichment."
+        if not context
+        else ""
+    )
+    return json.dumps({
+        "context": context,
+        "symbols_queried": symbols,
+        "tip": tip,
+    }, indent=2)
+
+
 # ── get_file_context ──────────────────────────────────────────────────────────
 
 
@@ -618,11 +658,12 @@ async def _get_agent_context(
     repo_name: str | None,
     allowed_repos: list[str] | None = None,
 ) -> str:
+    from sqlalchemy import text
+
     from src.retrieval.assembler import assemble
     from src.retrieval.reranker import rerank
     from src.retrieval.searcher import SearchResult, _semantic_search, embed_query
     from src.storage.db import AsyncSessionLocal
-    from sqlalchemy import text
 
     task = inp.get("task") or inp.get("query") or inp.get("description") or ""
     if not task:
