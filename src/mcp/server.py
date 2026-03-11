@@ -38,6 +38,10 @@ def _escape_ilike(value: str) -> str:
 
 mcp_server = FastMCP(
     name="codebase-intelligence",
+    # Streamable HTTP transport (MCP 2025-03-26 spec).
+    # streamable_http_path="/" so that when FastAPI mounts this sub-app at
+    # /mcp the single handler endpoint lands at POST /mcp (not /mcp/mcp).
+    streamable_http_path="/",
     # Disable localhost-only DNS rebinding protection — this server is a public
     # production service (Railway), not a local dev tool, so the Host header
     # check must not be restricted to 127.0.0.1/localhost.
