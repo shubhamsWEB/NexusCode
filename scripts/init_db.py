@@ -35,11 +35,10 @@ async def run_migrations(conn) -> int:
 
     for mf in migration_files:
         sql = mf.read_text()
-        # Split on semicolons to handle multi-statement migrations
-        for statement in sql.split(";"):
-            stmt = statement.strip()
-            if stmt:
-                await conn.execute(text(stmt))
+        # Execute the whole file as one string — asyncpg handles multi-statement
+        # SQL natively, and this correctly handles dollar-quoted blocks (DO $ … $)
+        # which the naive split(";") approach breaks.
+        await conn.exec_driver_sql(sql)
     return len(migration_files)
 
 

@@ -8,12 +8,13 @@ OAuth browser flow with PKCE.
 from __future__ import annotations
 
 import streamlit as st
+from typing import Any
 
 from src.ui.helpers import api_delete, api_get, api_patch, api_post, time_ago
 
 # ── Quick presets ──────────────────────────────────────────────────────────────
 
-_PRESETS = [
+_PRESETS: list[dict[str, Any]] = [
     {
         "label": "GitHub",
         "icon": "🐙",
@@ -120,8 +121,8 @@ def _server_identifier(server: dict) -> str:
 def _env_editor(key_prefix: str, initial: dict | None = None) -> dict:
     """Render a key-value env var editor, return current dict."""
     if f"{key_prefix}_rows" not in st.session_state:
-        rows = list((initial or {}).items()) if initial else []
-        st.session_state[f"{key_prefix}_rows"] = rows if rows else [("", "")]
+        initial_rows = list((initial or {}).items()) if initial else []
+        st.session_state[f"{key_prefix}_rows"] = initial_rows if initial_rows else [("", "")]
 
     rows: list[tuple[str, str]] = st.session_state[f"{key_prefix}_rows"]
     updated_rows: list[tuple[str, str]] = []
