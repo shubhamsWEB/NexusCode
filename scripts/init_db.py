@@ -20,101 +20,77 @@ from src.storage.models import Base
 MIGRATIONS_DIR = Path(__file__).parent.parent / "src" / "storage" / "migrations"
 
 
-async def run_migrations(conn) -> None:
+async def run_migrations(conn) -> int:
     """Discover and execute all .sql migration files in order.
 
     Migration files MUST be idempotent (use IF NOT EXISTS / IF EXISTS guards)
     so they are safe to re-run on every init.
+
+    Returns the number of migration files applied.
     """
     migration_files = sorted(MIGRATIONS_DIR.glob("*.sql"))
     if not migration_files:
         print("  No migration files found — skipping.")
-        return
+        return 0
 
     for mf in migration_files:
         sql = mf.read_text()
-        print(f"  Applying migration: {mf.name} …")
         # Split on semicolons to handle multi-statement migrations
         for statement in sql.split(";"):
             stmt = statement.strip()
             if stmt:
                 await conn.execute(text(stmt))
-        print(f"  ✓ {mf.name} applied.")
+    return len(migration_files)
 
 
 async def main() -> None:
-    print(f"Connecting to: {settings.database_url}")
-    engine = create_async_engine(settings.database_url, echo=True)
+    print(f"DB init starting …")
+    engine = create_async_engine(settings.database_url, echo=False)
 
     async with engine.begin() as conn:
         # Enable required extensions
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm;"))
-        print("Extensions enabled: vector, pg_trgm")
 
         # Create all tables from ORM models (skips existing)
         await conn.run_sync(Base.metadata.create_all)
-        print("ORM tables created (or already exist).")
 
         await conn.execute(text("SET maintenance_work_mem = '256MB';"))
         # Run SQL migration files (idempotent — safe to re-run)
-        print("\nRunning SQL migrations …")
-        await run_migrations(conn)
+        n = await run_migrations(conn)
+        print(f"DB init complete — {n} migration(s) applied.")
 
     await engine.dispose()
 
-    # Verify tables and columns exist
-    verify_engine = create_async_engine(settings.database_url)
+    # Verify key tables and columns exist
+    verify_engine = create_async_engine(settings.database_url, echo=False)
     async with verify_engine.connect() as conn:
-        # Check tables
         result = await conn.execute(
             text("SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename;")
         )
-        tables = [row[0] for row in result]
-        print(f"\n✓ Tables found: {tables}")
+        tables = {row[0] for row in result}
 
-        expected = {
-            "chunks",
-            "symbols",
-            "merkle_nodes",
-            "repos",
-            "webhook_events",
-            "chat_sessions",
-            "chat_turns",
-            "plan_history",
-        }
-        missing = expected - set(tables)
+        expected = {"chunks", "symbols", "merkle_nodes", "repos", "webhook_events", "chat_sessions", "chat_turns", "plan_history"}
+        missing = expected - tables
         if missing:
             print(f"✗ Missing tables: {missing}")
             sys.exit(1)
 
-        # Check that key migration columns exist (e.g. webhook_hook_id from 002)
-        result = await conn.execute(
-            text(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name = 'repos' AND column_name = 'webhook_hook_id';"
+        # Spot-check key migration columns
+        checks = [
+            ("repos", "webhook_hook_id", "002"),
+            ("chat_sessions", "turn_count", "003"),
+        ]
+        for table, column, migration in checks:
+            result = await conn.execute(
+                text("SELECT 1 FROM information_schema.columns WHERE table_name=:t AND column_name=:c"),
+                {"t": table, "c": column},
             )
-        )
-        if result.fetchone():
-            print("✓ repos.webhook_hook_id column present.")
-        else:
-            print("✗ repos.webhook_hook_id column missing — migration 002 may have failed.")
-            sys.exit(1)
+            if not result.fetchone():
+                print(f"✗ {table}.{column} missing — migration {migration} may have failed.")
+                sys.exit(1)
 
-        # Check that chat history columns exist (from 003)
-        result = await conn.execute(
-            text(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name = 'chat_sessions' AND column_name = 'turn_count';"
-            )
-        )
-        if result.fetchone():
-            print("✓ chat_sessions.turn_count column present.")
-        else:
-            print("✗ chat_sessions.turn_count column missing — migration 003 may have failed.")
-            sys.exit(1)
-
-        print("✓ All required tables and columns present. DB init complete.")
+        print(f"✓ Schema verified ({len(tables)} tables present).")
 
     await verify_engine.dispose()
 

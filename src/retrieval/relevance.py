@@ -72,13 +72,13 @@ async def check_query_relevance(
         return RelevanceResult(is_relevant=True, best_score=0.0, reason="relevant")
 
     if not results:
-        logger.info("relevance_gate: no indexed content found — no_index")
+        logger.debug("relevance_gate: no indexed content found — no_index")
         return RelevanceResult(is_relevant=False, best_score=0.0, reason="no_index")
 
     best_score = max(r.score for r in results)
     top_file = results[0].file_path if results else None
 
-    logger.info(
+    logger.debug(
         "relevance_gate: best_score=%.3f threshold=%.2f soft=%.2f file=%s",
         best_score,
         threshold,
