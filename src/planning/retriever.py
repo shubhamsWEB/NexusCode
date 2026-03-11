@@ -418,43 +418,25 @@ async def retrieve_planning_context(
 
     # ── Phase 0: analyze query + extract stack fingerprint ──────────────
     analysis = _analyze_query(query)
-    logger.info(
-        "planning retriever: query analysis — complexity=%s, improvement=%s, "
-        "cross_cutting=%s, sub_queries=%d, mentioned_paths=%s",
-        analysis.complexity,
-        analysis.is_improvement,
-        analysis.is_cross_cutting,
-        len(analysis.sub_queries),
-        analysis.mentioned_paths or "none",
-    )
 
     stack_fingerprint = await _extract_stack_fingerprint(repo_owner, repo_name)
 
     # Get codebase size for candidate scaling
     codebase_size = await _get_codebase_size(repo_owner, repo_name)
-    logger.info("planning retriever: codebase size = %d chunks", codebase_size)
 
     budgets = _compute_budgets(analysis)
     candidate_config = _compute_candidates(analysis, codebase_size)
-    logger.info(
-        "planning retriever: budgets=%s, candidates=%d, rerank_top_n=%d",
-        {k: v for k, v in budgets.items() if v > 0},
-        candidate_config["candidates"],
-        candidate_config["rerank_top_n"],
-    )
 
     # ── Phase 0b: web research (background) ─────────────────────────────
     web_research_task = None
     if web_research:
         from src.planning.web_researcher import research_implementation
 
-        logger.info("planning retriever: starting stack-aware web research (background)")
         web_research_task = asyncio.create_task(
             research_implementation(query, stack_context=stack_fingerprint, model=model)
         )
 
     # ── Phase 1: embed query ────────────────────────────────────────────
-    logger.info("planning retriever: embedding query")
     query_vector = await embed_query(query)
 
     # ── Phase 1b: embed sub-queries in a single batch call ──────────────
@@ -472,7 +454,6 @@ async def retrieve_planning_context(
 
     # ── Phase 2: hybrid search (adaptive candidates) ────────────────────
     num_candidates = candidate_config["candidates"]
-    logger.info("planning retriever: hybrid search (%d candidates)", num_candidates)
 
     # Primary search — enable HyDE for concept queries AND cross-cutting additive
     # queries (e.g. "add rate limiting to endpoints") so the vector represents
@@ -480,8 +461,6 @@ async def retrieve_planning_context(
     use_hyde = analysis.is_concept or analysis.is_cross_cutting
 
     if repo_owner is None and settings.cross_repo_enabled:
-        # Cross-repo path: route to the most relevant repos, then flatten results
-        logger.info("planning retriever: using cross-repo routing")
         cross_results_by_repo, _ = await search_cross_repo(
             query,
             query_vector,
@@ -548,7 +527,6 @@ async def retrieve_planning_context(
     # ── Phase 3: cross-encoder rerank → adaptive top-N ──────────────────
     rerank_n = candidate_config["rerank_top_n"]
     if candidates:
-        logger.info("planning retriever: reranking %d → top %d", len(candidates), rerank_n)
         candidates = rerank(query, candidates, top_n=rerank_n)
 
     # ── Phase 4: file structure maps ────────────────────────────────────
@@ -580,11 +558,7 @@ async def retrieve_planning_context(
             token_budget=budgets["dependency"],
             max_depth=2,
         )
-        if dependency_context:
-            logger.info(
-                "planning retriever: dependency context loaded (%d chars)",
-                len(dependency_context),
-            )
+        pass  # dependency_context loaded
 
     # ── Second semantic pass using discovered symbols (parallel) ─────────
     expansion_results = []
@@ -638,22 +612,13 @@ async def retrieve_planning_context(
             repo_name=repo_name,
             token_budget=budgets["component"],
         )
-        if component_context:
-            logger.info(
-                "planning retriever: component context loaded (%d chars)",
-                len(component_context),
-            )
+        pass  # component_context loaded
 
     # ── Phase 6: collect web research notes ─────────────────────────────
     web_research_notes = ""
     if web_research_task is not None:
         try:
             web_research_notes = await web_research_task
-            if web_research_notes:
-                logger.info(
-                    "planning retriever: web research complete (%d chars)",
-                    len(web_research_notes),
-                )
         except Exception as exc:
             logger.warning("planning retriever: web research task failed: %s", sanitize_log(exc))
 
@@ -966,7 +931,6 @@ async def _boost_mentioned_symbols(
                 )
 
         if boosted:
-            logger.info("mentioned-symbol boost: added %d chunks for missing symbols", len(boosted))
             # Insert boosted results near the top (after first 3 semantic results)
             return candidates[:3] + boosted + candidates[3:]
 

@@ -500,7 +500,7 @@ class AgentLoop:
                 result_tokens = _estimate_tokens(result_text)
                 total_context_tokens += result_tokens
 
-                logger.info(
+                logger.debug(
                     "agent_loop: iter=%d tool=%s tokens=%d cumulative=%d",
                     iteration,
                     block.name,
@@ -526,7 +526,7 @@ class AgentLoop:
                         if norm in seen_search_queries:
                             tool_results.append({"type": "text", "text": _DUPLICATE_QUERY_MSG})
                             duplicate_detected = True
-                            logger.info(
+                            logger.debug(
                                 "agent_loop: duplicate query detected at iter=%d: %r",
                                 iteration, raw_query[:60],
                             )
@@ -558,7 +558,7 @@ class AgentLoop:
             ):
                 tool_results.append({"type": "text", "text": _SOFT_ANSWER_NUDGE})
                 soft_nudge_added = True
-                logger.info(
+                logger.debug(
                     "agent_loop: soft nudge at iter=%d tokens=%d",
                     iteration,
                     total_context_tokens,

@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import requests
 import streamlit as st
+from typing import Any
 
 
-def _api(path: str, method: str = "GET", json: dict | None = None) -> dict | list | None:
+def _api(path: str, method: str = "GET", json: dict | None = None) -> Any:
     """Make a request to the NexusCode API."""
     url = st.session_state.get("api_url", "http://localhost:8000").rstrip("/")
     headers = {}

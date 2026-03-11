@@ -205,7 +205,7 @@ def assemble(
         context_text += f"\n{divider_heavy}"
 
     retrieval_log = _build_log(query, chunks_used, tokens_used, token_budget)
-    logger.info(
+    logger.debug(
         "assembler: %d/%d chunks included across %d files, %d tokens used",
         len(chunks_used),
         len(results),

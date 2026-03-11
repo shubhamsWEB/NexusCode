@@ -66,15 +66,11 @@ async def embed_chunks(
     new_chunks = [c for c in chunks if c.chunk_id not in existing_ids]
     cache_hits = len(chunks) - len(new_chunks)
 
-    if cache_hits:
-        logger.info("embed_chunks: %d cache hits skipped, %d to embed", cache_hits, len(new_chunks))
-
     if not new_chunks:
         return {}
 
     # Build batches that respect the API token limit
     batches = _build_batches(new_chunks)
-    logger.info("embed_chunks: %d chunks → %d batches", len(new_chunks), len(batches))
 
     embeddings: dict[str, list[float]] = {}
     client = _make_client()
@@ -85,7 +81,6 @@ async def embed_chunks(
 
         # On free tier, throttle to 3 RPM between batches
         if i > 0 and _is_free_tier:
-            logger.info("Free-tier throttle: waiting %.0fs before next batch", _FREE_TIER_RPM_DELAY)
             await asyncio.sleep(_FREE_TIER_RPM_DELAY)
 
         vectors = await _embed_with_retry(client, texts, batch_num=i + 1, total=len(batches))

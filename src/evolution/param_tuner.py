@@ -157,25 +157,25 @@ def apply_prompt_improvements(
 
         try:
             if target == "ask_system_prompt":
-                import src.ask.ask_agent as module
-                old_prompt = module.ASK_SYSTEM_PROMPT
+                import src.ask.ask_agent as ask_module
+                old_prompt = ask_module.ASK_SYSTEM_PROMPT
                 # Append the improvement as a new instruction block
-                module.ASK_SYSTEM_PROMPT = (
+                ask_module.ASK_SYSTEM_PROMPT = (
                     old_prompt.rstrip()
                     + f"\n\n## Learned Refinement\n{change}\n"
                 )
                 logger.info("param_tuner: updated ask system prompt (+%d chars)", len(change))
-                applied.append({"target": target, "change": change[:200], "reason": reason, "old_length": len(old_prompt), "new_length": len(module.ASK_SYSTEM_PROMPT)})
+                applied.append({"target": target, "change": change[:200], "reason": reason, "old_length": len(old_prompt), "new_length": len(ask_module.ASK_SYSTEM_PROMPT)})
 
             elif target == "planning_system_prompt":
-                import src.planning.claude_planner as module
-                old_prompt = module.PLANNING_SYSTEM_PROMPT
-                module.PLANNING_SYSTEM_PROMPT = (
+                import src.planning.claude_planner as plan_module
+                old_prompt = plan_module.PLANNING_SYSTEM_PROMPT
+                plan_module.PLANNING_SYSTEM_PROMPT = (
                     old_prompt.rstrip()
                     + f"\n\n## Learned Refinement\n{change}\n"
                 )
                 logger.info("param_tuner: updated planning system prompt (+%d chars)", len(change))
-                applied.append({"target": target, "change": change[:200], "reason": reason, "old_length": len(old_prompt), "new_length": len(module.PLANNING_SYSTEM_PROMPT)})
+                applied.append({"target": target, "change": change[:200], "reason": reason, "old_length": len(old_prompt), "new_length": len(plan_module.PLANNING_SYSTEM_PROMPT)})
 
             else:
                 logger.warning("param_tuner: unknown prompt target %r", target)
