@@ -20,6 +20,87 @@ from src.storage.models import Base
 MIGRATIONS_DIR = Path(__file__).parent.parent / "src" / "storage" / "migrations"
 
 
+def _split_sql_statements(sql: str) -> list[str]:
+    """Split a SQL file into individual statements.
+
+    Correctly handles:
+    - Dollar-quoted blocks: DO $$ BEGIN...END $$ and DO $tag$ BEGIN...END $tag$
+    - Single-quoted strings with escaped quotes ('')
+    - Line comments (--)
+    """
+    statements: list[str] = []
+    buf: list[str] = []
+    pos = 0
+    in_single_quote = False
+    dollar_tag: str | None = None
+
+    while pos < len(sql):
+        c = sql[pos]
+
+        if in_single_quote:
+            buf.append(c)
+            if c == "'" and pos + 1 < len(sql) and sql[pos + 1] == "'":
+                buf.append(sql[pos + 1])  # escaped ''
+                pos += 2
+            elif c == "'":
+                in_single_quote = False
+                pos += 1
+            else:
+                pos += 1
+            continue
+
+        if dollar_tag is not None:
+            if sql[pos : pos + len(dollar_tag)] == dollar_tag:
+                buf.append(dollar_tag)
+                pos += len(dollar_tag)
+                dollar_tag = None
+            else:
+                buf.append(c)
+                pos += 1
+            continue
+
+        if c == "'":
+            in_single_quote = True
+            buf.append(c)
+            pos += 1
+            continue
+
+        if c == "$":
+            end = pos + 1
+            while end < len(sql) and (sql[end].isalnum() or sql[end] == "_"):
+                end += 1
+            if end < len(sql) and sql[end] == "$":
+                tag = sql[pos : end + 1]
+                dollar_tag = tag
+                buf.append(tag)
+                pos = end + 1
+                continue
+
+        if c == "-" and pos + 1 < len(sql) and sql[pos + 1] == "-":
+            newline = sql.find("\n", pos)
+            line = sql[pos : newline + 1] if newline != -1 else sql[pos:]
+            buf.append(line)
+            pos = newline + 1 if newline != -1 else len(sql)
+            continue
+
+        if c == ";":
+            stmt = "".join(buf).strip()
+            if stmt:
+                statements.append(stmt)
+            buf = []
+            pos += 1
+            continue
+
+        buf.append(c)
+        pos += 1
+
+    remaining = "".join(buf).strip()
+    if remaining:
+        statements.append(remaining)
+
+    return [s for s in statements if s.strip()]
+
+
 async def run_migrations(conn) -> int:
     """Discover and execute all .sql migration files in order.
 
@@ -35,10 +116,8 @@ async def run_migrations(conn) -> int:
 
     for mf in migration_files:
         sql = mf.read_text()
-        # Execute the whole file as one string — asyncpg handles multi-statement
-        # SQL natively, and this correctly handles dollar-quoted blocks (DO $ … $)
-        # which the naive split(";") approach breaks.
-        await conn.exec_driver_sql(sql)
+        for stmt in _split_sql_statements(sql):
+            await conn.execute(text(stmt))
     return len(migration_files)
 
 
