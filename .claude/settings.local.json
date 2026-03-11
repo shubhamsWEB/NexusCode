@@ -114,7 +114,10 @@
       "WebFetch(domain:gist.github.com)",
       "WebFetch(domain:www.letta.com)",
       "WebFetch(domain:ai-sdk.dev)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "WebFetch(domain:support.atlassian.com)",
+      "Bash(.venv/bin/pip index:*)",
+      "WebFetch(domain:docs.cursor.com)"
     ]
   }
 }

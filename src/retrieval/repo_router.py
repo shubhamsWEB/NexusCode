@@ -141,14 +141,14 @@ def _ensure_first(scored: list[ScoredRepo], owner: str, name: str) -> list[Score
     if existing:
         existing.score = 1.0
         existing.confidence = "high"
-        return [existing] + remaining
+        return [existing, *remaining]
     # Not in scored list — add a synthetic entry at the front
     pinned = ScoredRepo(
         owner=owner, name=name,
         score=1.0, semantic_score=1.0, keyword_score=1.0,
         confidence="high", chunk_count=0,
     )
-    return [pinned] + remaining
+    return [pinned, *remaining]
 
 
 class RepoRouter:

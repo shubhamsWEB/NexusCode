@@ -15,9 +15,9 @@ from src.llm.client import (
 )
 
 __all__ = [
+    "RateLimitOrOverloadError",
     "get_client",
     "get_client_for_model",
     "get_ollama_client",
     "is_ollama_model",
-    "RateLimitOrOverloadError",
 ]

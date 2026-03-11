@@ -20,11 +20,10 @@ Flow:
 
 from __future__ import annotations
 
-import asyncio
 import json
 import re
-import time
 from collections.abc import AsyncIterator
+from contextlib import suppress
 
 from src.config import settings
 from src.planning.schemas import (
@@ -48,7 +47,7 @@ logger = get_secure_logger(__name__)
 def _parse_xml_items(text: str) -> list:
     """Parse XML-like <item> nested strings into Python lists."""
     tokens = re.split(r"(</?item>)", text)
-    
+
     stack: list[list] = [[]]
     current_text: list[str] = []
 
@@ -68,13 +67,11 @@ def _parse_xml_items(text: str) -> list:
                 if val:
                     # Attempt JSON parse in case it's an object string
                     if val.startswith("{") and val.endswith("}"):
-                        try:
+                        with suppress(json.JSONDecodeError, ValueError):
                             val = json.loads(val)
-                        except (json.JSONDecodeError, ValueError):
-                            pass
                     stack[-1].append(val)
                 current_text = []
-            
+
             if len(stack) > 1:
                 item_content = stack.pop()
                 if len(item_content) == 1:
@@ -84,12 +81,12 @@ def _parse_xml_items(text: str) -> list:
                     stack[-1].append(item_content)
         else:
             current_text.append(token)
-            
+
     if current_text:
         val = "".join(current_text).strip()
         if val:
             stack[0].append(val)
-            
+
     return stack[0]
 
 
@@ -130,8 +127,12 @@ PROCESS
 2. Use get_symbol for exact function/class definitions.
 3. Use find_callers to understand blast radius before planning changes.
 4. Use get_file_context to understand a file's full structure.
-5. Search multiple times — explore the code thoroughly before planning.
-6. Once you understand the system, call the appropriate final tool.
+5. Use get_semantic_context on the key symbols before finalising the plan —
+   it reveals architectural intent the call graph cannot express: which
+   component validates, coordinates, or delegates to which. This prevents
+   plans that break hidden semantic contracts.
+6. Search multiple times — explore the code thoroughly before planning.
+7. Once you understand the system, call the appropriate final tool.
 
 TOOL SELECTION
 ──────────────
@@ -152,6 +153,9 @@ GROUNDING RULES
 • ONLY reference file paths you found via tool calls.
 • ONLY reference symbols you found via tool calls.
 • If context is insufficient, say so — do not guess.
+• For any plan touching more than one component, call get_semantic_context
+  on the affected symbols — use the relationships it returns to validate
+  that the plan preserves existing architectural contracts.
 
 STRUCTURED REASONING (for implementation plans AND analysis)
 ─────────────────────────────────────────────────────────────
@@ -193,23 +197,47 @@ TOOL ARGUMENT FORMAT (IMPORTANT)
 ─────────────────────────────────
 Always pass tool arguments as a JSON object with the exact field names.
 Examples:
-  search_codebase  → {"query": "JWT token validation"}
-  get_symbol       → {"name": "authenticate"}
-  find_callers     → {"symbol": "authenticate"}
-  get_file_context → {"path": "src/api/app.py"}
+  search_codebase      → {"query": "JWT token validation"}
+  get_symbol           → {"name": "authenticate"}
+  find_callers         → {"symbol": "authenticate"}
+  get_file_context     → {"path": "src/api/app.py"}
+  get_semantic_context → {"symbols": ["AuthService", "JWTValidator"]}
 Never call a tool with empty arguments — the call will fail.
 """
+
+
+async def _fetch_worldview_context(repo_owner: str | None, repo_name: str | None) -> str:
+    """Return a worldview preamble for the planning system prompt, or '' on miss."""
+    if not repo_owner or not repo_name:
+        return ""
+    try:
+        from src.evolution.worldview_generator import get_latest_worldview_text
+
+        wv = await get_latest_worldview_text(repo_owner, repo_name)
+        if wv:
+            return (
+                "CODEBASE UNDERSTANDING\n"
+                "──────────────────────\n"
+                "NexusCode has built the following semantic worldview of this repository. "
+                "Use it to guide your retrieval strategy and planning decisions.\n\n"
+                f"{wv}\n\n"
+                "──────────────────────\n\n"
+            )
+    except Exception:
+        logger.debug("Worldview fetch failed for planner (non-fatal)")
+    return ""
 
 
 def _build_system_prompt(
     repo_owner: str | None,
     repo_name: str | None,
     model: str | None = None,
+    worldview_preamble: str = "",
 ) -> str:
     from src.agent.rules import load_rules
     from src.llm.client import is_ollama_model
 
-    prompt = PLANNING_SYSTEM_PROMPT
+    prompt = worldview_preamble + PLANNING_SYSTEM_PROMPT
     if model and is_ollama_model(model):
         prompt += _OLLAMA_TOOL_HINT
     rules = load_rules(repo_owner, repo_name)
@@ -372,9 +400,13 @@ async def generate_plan(
         except Exception as exc:
             logger.warning("planning: web research failed (non-fatal): %s", exc)
 
+    worldview_preamble = await _fetch_worldview_context(repo_owner, repo_name)
+
     tool_block, stats = await AgentLoop().run(
         model=effective_model,
-        system=_build_system_prompt(repo_owner, repo_name, model=effective_model),
+        system=_build_system_prompt(
+            repo_owner, repo_name, model=effective_model, worldview_preamble=worldview_preamble
+        ),
         initial_message=_build_initial_message(query, repo_owner, repo_name, web_research_notes=web_notes),
         retrieval_tools=all_retrieval,
         final_answer_tools=_FINAL_ANSWER_TOOLS,
@@ -484,9 +516,13 @@ async def stream_generate_plan(
         except Exception as exc:
             logger.warning("planning: web research failed (non-fatal): %s", exc)
 
+    worldview_preamble = await _fetch_worldview_context(repo_owner, repo_name)
+
     async for event in AgentLoop().stream(
         model=effective_model,
-        system=_build_system_prompt(repo_owner, repo_name, model=effective_model),
+        system=_build_system_prompt(
+            repo_owner, repo_name, model=effective_model, worldview_preamble=worldview_preamble
+        ),
         initial_message=_build_initial_message(query, repo_owner, repo_name, web_research_notes=web_notes),
         retrieval_tools=all_retrieval,
         final_answer_tools=_FINAL_ANSWER_TOOLS,

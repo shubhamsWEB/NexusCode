@@ -1,14 +1,15 @@
 """
-MCP server — exposes 7 codebase intelligence tools via FastMCP.
+MCP server — exposes 8 codebase intelligence tools via FastMCP.
 
 Tools:
-  1. search_codebase      — hybrid semantic+keyword search + rerank
-  2. get_symbol           — fuzzy symbol lookup (like "Go to Definition")
-  3. find_callers         — who calls this function/method?
-  4. get_file_context     — structural map of a file (symbols + imports + imported_by)
-  5. get_agent_context    — pre-assembled token-budget-aware context for a task
-  6. plan_implementation  — web research + codebase context → structured implementation plan
-  7. ask_codebase         — answer a natural-language question about the codebase
+  1. search_codebase       — hybrid semantic+keyword search + rerank
+  2. get_symbol            — fuzzy symbol lookup (like "Go to Definition")
+  3. find_callers          — who calls this function/method?
+  4. get_file_context      — structural map of a file (symbols + imports + imported_by)
+  5. get_agent_context     — pre-assembled token-budget-aware context for a task
+  6. plan_implementation   — web research + codebase context → structured implementation plan
+  7. ask_codebase          — answer a natural-language question about the codebase
+  8. get_semantic_context  — LLM-extracted architectural relationships between symbols
 
 Mount the Starlette SSE app via:
     app.mount("/mcp", mcp_server.sse_app())
@@ -48,8 +49,10 @@ mcp_server = FastMCP(
         "• get_agent_context — call this FIRST before starting any implementation task; it assembles "
         "all relevant context in one shot.\n"
         "• plan_implementation — for generating a full grounded implementation plan.\n"
-        "• ask_codebase      — for conversational questions that need a mentor-style explanation.\n"
-        "• list_skills       — to discover available skills and workflows.\n\n"
+        "• ask_codebase         — for conversational questions that need a mentor-style explanation.\n"
+        "• get_semantic_context — after finding key symbols, call this to understand their "
+        "architectural role (validates, delegates_to, coordinates, etc.).\n"
+        "• list_skills          — to discover available skills and workflows.\n\n"
         "REPO TARGETING (in priority order):\n"
         "1. repo='owner/name' — always use this when you know the target repo. Most reliable.\n"
         "2. Include 'owner/name' in the query text (e.g. 'search myorg/auth-service for login') "
@@ -98,8 +101,8 @@ async def search_codebase(
     ] = None,
     top_k: Annotated[
         int,
-        "Max results to return per repo (1–20). Default 5. "
-        "Use 10–15 for planning or deep research tasks.",
+        "Max results to return per repo (1-20). Default 5. "
+        "Use 10-15 for planning or deep research tasks.",
     ] = 5,
     mode: Annotated[
         str,
@@ -355,7 +358,7 @@ async def find_callers(
     ] = None,
     depth: Annotated[
         int,
-        "Call-graph traversal depth (1–3). "
+        "Call-graph traversal depth (1-3). "
         "depth=1: who calls this symbol directly? "
         "depth=2: who calls the code that calls this symbol? "
         "depth=3: three hops — use for blast-radius analysis before a signature change.",
@@ -666,7 +669,7 @@ async def get_agent_context(
     token_budget: Annotated[
         int,
         "Max tokens to return in the assembled context (default 8000, max 32000). "
-        "Increase to 16000–32000 for complex multi-file tasks.",
+        "Increase to 16000-32000 for complex multi-file tasks.",
     ] = 8000,
     repo: Annotated[
         str | None,
@@ -698,7 +701,7 @@ async def get_agent_context(
 
     WHEN TO USE:
     - Always call this at the start of 'implement X', 'fix bug in Y', 'refactor Z' tasks.
-    - It replaces 3–5 individual search_codebase calls with one optimised assembly.
+    - It replaces 3-5 individual search_codebase calls with one optimised assembly.
 
     WHEN NOT TO USE:
     - Quick lookups ('where is function X?') → use get_symbol or search_codebase instead.
@@ -706,9 +709,14 @@ async def get_agent_context(
     from sqlalchemy import text
 
     from src.config import settings as _settings
-    from src.retrieval.assembler import assemble, assemble_multi_repo
+    from src.retrieval.assembler import assemble
     from src.retrieval.reranker import rerank
-    from src.retrieval.searcher import SearchResult, _semantic_search, embed_query, search_cross_repo
+    from src.retrieval.searcher import (
+        SearchResult,
+        _semantic_search,
+        embed_query,
+        search_cross_repo,
+    )
     from src.storage.db import AsyncSessionLocal
 
     repo_owner = repo_name = None
@@ -951,9 +959,9 @@ async def ask_codebase(
     clarifying architecture decisions, and pointing to real file locations.
 
     Returns a markdown answer with:
-    - Inline file citations (e.g. `src/pipeline/pipeline.py` lines 42–80)
+    - Inline file citations (e.g. `src/pipeline/pipeline.py` lines 42-80)
     - Fenced code snippets for key examples
-    - 2–3 concrete follow-up questions grounded in the codebase
+    - 2-3 concrete follow-up questions grounded in the codebase
 
     WHEN TO USE:
     - 'How does the webhook processing pipeline work?'
@@ -1083,7 +1091,7 @@ def _format_plan_markdown(plan) -> str:
         for i, sol in enumerate(solutions):
             name = sol.get("name", f"Option {chr(65 + i)}")
             recommended = sol.get("is_recommended", False)
-            label = f" (Recommended)" if recommended else ""
+            label = " (Recommended)" if recommended else ""
             lines.append(f"### Option {chr(65 + i)}: {name}{label}")
             lines.append(sol.get("approach", ""))
             pros = sol.get("pros", [])
@@ -1202,7 +1210,77 @@ def _format_plan_markdown(plan) -> str:
     return "\n".join(lines)
 
 
-# ── Tool 8: list_skills ───────────────────────────────────────────────────────
+# ── Tool 8: get_semantic_context ──────────────────────────────────────────────
+
+
+@mcp_server.tool()
+async def get_semantic_context(
+    symbols: Annotated[
+        list[str],
+        "Symbol names or qualified names to retrieve semantic relationships for. "
+        "Example: ['AuthService', 'JWTValidator', 'PaymentFlow.charge']",
+    ],
+    repo: Annotated[
+        str | None,
+        "Target repo as 'owner/name'. Omit to use the default/current repo.",
+    ] = None,
+    concept: Annotated[
+        str | None,
+        "Optional concept filter — only return relationships matching this concept. "
+        "Example: 'authentication', 'caching', 'validation'.",
+    ] = None,
+) -> str:
+    """
+    Retrieve LLM-extracted semantic architectural relationships for a set of symbols.
+
+    Returns facts the structural call graph cannot express:
+      "AuthService —[validates]→ JWTToken  (confidence: 0.92)"
+      "PaymentFlow —[coordinates]→ StripeClient  (confidence: 0.88)"
+
+    WHEN TO USE:
+    - After search_codebase / get_symbol found key symbols — understand their role.
+    - Cross-cutting architecture questions: "what relates to authentication?"
+    - Before planning a refactor — know a module's semantic dependencies.
+    - When the call graph alone doesn't explain *why* two components are coupled.
+
+    RETURNS:
+      context:         Markdown-formatted relationship graph ready to read.
+      symbols_queried: List of symbols looked up.
+      tip:             Guidance if no data is available yet.
+
+    NOTE: Requires semantic enrichment to have run for the repo first.
+    Trigger enrichment via POST /graph/{owner}/{name}/enrich if context is empty.
+    """
+    from src.graph.semantic_enricher import get_semantic_context_for_symbols
+
+    if not symbols:
+        return json.dumps({"error": "symbols list must not be empty"})
+
+    repo_owner: str | None = None
+    repo_name: str | None = None
+    if repo and "/" in repo:
+        repo_owner, repo_name = repo.split("/", 1)
+
+    context = await get_semantic_context_for_symbols(
+        symbols=symbols,
+        owner=repo_owner or "",
+        repo_name=repo_name or "",
+        concept=concept,
+    )
+
+    tip = (
+        "No semantic data yet. Trigger POST /graph/{owner}/{name}/enrich to run enrichment."
+        if not context
+        else ""
+    )
+    return json.dumps({
+        "context": context,
+        "symbols_queried": symbols,
+        "tip": tip,
+    }, indent=2)
+
+
+# ── Tool 9: list_skills ───────────────────────────────────────────────────────
 
 
 @mcp_server.tool()
@@ -1225,3 +1303,212 @@ async def list_skills(
 
     result = [{"name": s.name, "description": s.description, "source": s.source} for s in skills]
     return json.dumps({"skills": result, "total": len(result)}, indent=2)
+
+
+# ── Tool 10: get_evolution_metrics ────────────────────────────────────────────
+
+
+@mcp_server.tool()
+async def get_evolution_metrics(
+    repo: Annotated[str | None, "Repository in 'owner/name' format, e.g. 'acme/backend'"] = None,
+    days: Annotated[int, "Look-back window in days (default 7)"] = 7,
+) -> str:
+    """
+    Return performance metrics and evolution status for a repository.
+
+    Shows mean retrieval quality, latency percentiles, user feedback summary,
+    latest worldview version, and the most recent reflection cycle outcome.
+
+    Use this to understand how well NexusCode is serving a repo and what
+    self-improvements have been applied.
+    """
+    if not repo or "/" not in repo:
+        return json.dumps({"error": "repo must be in 'owner/name' format"})
+
+    owner, name = repo.split("/", 1)
+
+    from src.evolution.telemetry import get_repo_performance_window
+    from src.evolution.feedback import get_feedback_summary
+
+    stats = await get_repo_performance_window(owner, name, days)
+    feedback = await get_feedback_summary(owner, name, days)
+
+    # Fetch latest worldview version
+    worldview_version = None
+    async with AsyncSessionLocal() as session:
+        wv_row = (
+            await session.execute(
+                text("""
+                    SELECT version, generated_at FROM repo_worldviews
+                    WHERE repo_owner = :owner AND repo_name = :name
+                    ORDER BY version DESC LIMIT 1
+                """),
+                {"owner": owner, "name": name},
+            )
+        ).mappings().first()
+        if wv_row:
+            worldview_version = {
+                "version": wv_row["version"],
+                "generated_at": wv_row["generated_at"].isoformat() if wv_row["generated_at"] else None,
+            }
+
+    # Fetch last evolution cycle
+    last_cycle = None
+    async with AsyncSessionLocal() as session:
+        cy_row = (
+            await session.execute(
+                text("""
+                    SELECT cycle_number, status, improvements_applied,
+                           cycle_completed_at, discovered_patterns
+                    FROM evolution_log
+                    WHERE repo_owner = :owner AND repo_name = :name
+                    ORDER BY cycle_number DESC LIMIT 1
+                """),
+                {"owner": owner, "name": name},
+            )
+        ).mappings().first()
+        if cy_row:
+            last_cycle = {
+                "cycle_number": cy_row["cycle_number"],
+                "status": cy_row["status"],
+                "improvements_applied": cy_row["improvements_applied"],
+                "completed_at": cy_row["cycle_completed_at"].isoformat() if cy_row["cycle_completed_at"] else None,
+                "patterns_discovered": cy_row["discovered_patterns"] or [],
+            }
+
+    return json.dumps(
+        {
+            "repo": repo,
+            "lookback_days": days,
+            "performance": {
+                "total_interactions": stats.total_interactions,
+                "mean_quality": stats.mean_quality,
+                "low_quality_ratio": stats.low_quality_ratio,
+                "p50_latency_ms": stats.p50_latency_ms,
+                "p95_latency_ms": stats.p95_latency_ms,
+                "mean_iterations": stats.mean_iterations,
+                "by_complexity": stats.by_complexity,
+            },
+            "feedback": feedback,
+            "worldview": worldview_version,
+            "last_evolution_cycle": last_cycle,
+        },
+        indent=2,
+    )
+
+
+# ── Tool 11: get_repo_worldview ───────────────────────────────────────────────
+
+
+@mcp_server.tool()
+async def get_repo_worldview(
+    repo: Annotated[str, "Repository in 'owner/name' format, e.g. 'acme/backend'"],
+) -> str:
+    """
+    Return the semantic worldview NexusCode has built for a repository.
+
+    The worldview is an LLM-generated understanding of the codebase:
+    architecture, key design patterns, conventions, and areas where retrieval
+    is typically difficult.
+
+    This worldview is automatically injected into Ask and Plan mode prompts,
+    making responses progressively smarter as it evolves.
+    """
+    if "/" not in repo:
+        return json.dumps({"error": "repo must be in 'owner/name' format"})
+
+    owner, name = repo.split("/", 1)
+
+    async with AsyncSessionLocal() as session:
+        row = (
+            await session.execute(
+                text("""
+                    SELECT version, architecture_summary, key_patterns,
+                           difficult_zones, conventions, recent_changes,
+                           full_worldview, generated_at
+                    FROM repo_worldviews
+                    WHERE repo_owner = :owner AND repo_name = :name
+                    ORDER BY version DESC LIMIT 1
+                """),
+                {"owner": owner, "name": name},
+            )
+        ).mappings().first()
+
+    if not row:
+        return json.dumps(
+            {
+                "repo": repo,
+                "worldview": None,
+                "message": "No worldview yet. Trigger a reflection cycle via POST /evolution/cycle.",
+            }
+        )
+
+    return json.dumps(
+        {
+            "repo": repo,
+            "version": row["version"],
+            "architecture_summary": row["architecture_summary"],
+            "key_patterns": row["key_patterns"] or [],
+            "difficult_zones": row["difficult_zones"] or [],
+            "conventions": row["conventions"] or [],
+            "recent_changes": row["recent_changes"],
+            "full_worldview": row["full_worldview"],
+            "generated_at": row["generated_at"].isoformat() if row["generated_at"] else None,
+        },
+        indent=2,
+    )
+
+
+# ── Tool 12: reflect_and_improve ──────────────────────────────────────────────
+
+
+@mcp_server.tool()
+async def reflect_and_improve(
+    repo: Annotated[str, "Repository in 'owner/name' format, e.g. 'acme/backend'"],
+    lookback_days: Annotated[int, "Days of interaction history to analyze (default 30)"] = 30,
+    force: Annotated[bool, "Run even if interaction threshold not met (default false)"] = False,
+) -> str:
+    """
+    Trigger a self-reflection cycle for a repository.
+
+    NexusCode will:
+    1. Analyze recent interaction quality and retrieval efficiency
+    2. Discover weak query patterns and opportunities for improvement
+    3. Propose and autonomously apply parameter + prompt improvements
+    4. Generate a fresh semantic worldview of the repository
+    5. Log all changes in the evolution_log (full audit trail)
+
+    Returns a summary of what was analyzed, changed, and learned.
+    Use get_evolution_metrics to track impact over time.
+    """
+    if "/" not in repo:
+        return json.dumps({"error": "repo must be in 'owner/name' format"})
+
+    owner, name = repo.split("/", 1)
+
+    from src.evolution.reflection_cycle import run_reflection_cycle
+
+    result = await run_reflection_cycle(
+        repo_owner=owner,
+        repo_name=name,
+        lookback_days=lookback_days,
+        force=force,
+    )
+
+    return json.dumps(
+        {
+            "repo": repo,
+            "cycle_number": result.cycle_number,
+            "status": result.status,
+            "metrics_analyzed": result.metrics_analyzed,
+            "parameters_changed": result.parameters_changed,
+            "prompts_improved": [
+                {"target": p.get("target"), "reason": p.get("reason", "")}
+                for p in result.prompts_improved
+            ],
+            "discovered_patterns": result.discovered_patterns,
+            "new_worldview_version": result.new_worldview_version,
+            "error": result.error,
+        },
+        indent=2,
+    )

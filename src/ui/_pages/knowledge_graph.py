@@ -52,6 +52,7 @@ _EDGE_STYLES: dict[str, tuple[str, Any, float]] = {
     "defines":  ("#4ECDC4", False,  1.2),   # teal solid
     "contains": ("#79C0FF", [2, 4], 1.2),   # blue dotted
     "calls":    ("#FFA657", False,  2.0),   # orange solid thick
+    "semantic": ("#C792EA", True,   2.0),   # purple dashed curved
 }
 
 _NODE_SHAPES: dict[str, str] = {
@@ -231,6 +232,44 @@ def _symbol_tooltip(
     """).strip()
 
 
+# ── Semantic edge tooltip ──────────────────────────────────────────────────────
+
+def _semantic_edge_tooltip(edge: dict) -> str:
+    """Build an HTML tooltip for a semantic edge."""
+    src = edge.get("source", "")
+    tgt = edge.get("target", "")
+    relationship = edge.get("relationship", "semantic")
+    confidence = edge.get("confidence", 0.0)
+    reasoning = edge.get("reasoning", "")
+
+    src_short = src.split(".")[-1]
+    tgt_short = tgt.split(".")[-1]
+
+    reasoning_html = (
+        f'<div style="margin-top:6px;font-size:10.5px;color:#cdd9e5;font-style:italic;'
+        f'line-height:1.5;padding:5px 7px;border-left:2px solid #C792EA44;">{reasoning}</div>'
+        if reasoning
+        else ""
+    )
+
+    return (
+        f'<div style="background:#161b22;border:1px solid #C792EA55;border-radius:10px;'
+        f'padding:11px 14px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;'
+        f'max-width:280px;box-shadow:0 6px 20px rgba(0,0,0,.7)">'
+        f'<div style="font-size:12px;font-weight:600;color:#e6edf3;margin-bottom:7px">'
+        f'<span style="color:#C792EA">{src_short}</span>'
+        f' <span style="color:#6e7681;font-weight:400">—[</span>'
+        f'<span style="color:#f0883e">{relationship}</span>'
+        f'<span style="color:#6e7681;font-weight:400">]→</span> '
+        f'<span style="color:#C792EA">{tgt_short}</span>'
+        f'</div>'
+        f'<div style="font-size:10.5px;color:#8b949e">Confidence: '
+        f'<b style="color:#3fb950">{confidence:.0%}</b></div>'
+        f'{reasoning_html}'
+        f'</div>'
+    )
+
+
 # ── vis.js options ─────────────────────────────────────────────────────────────
 
 _VIS_OPTIONS = """{
@@ -362,13 +401,22 @@ def _build_graph_html(
         )
 
     # Track edge restore data keyed by insertion order (pyvis uses sequential ints)
+    # Also collect edge tooltips for semantic edges
     edge_restore: dict[int, dict] = {}
+    edge_tooltip_data: dict[str, str] = {}  # "src->tgt" → tooltip HTML
     for idx, edge in enumerate(edges):
         etype = edge.get("type", "defines")
         color, dashes, width = _EDGE_STYLES.get(etype, ("#8B949E", False, 1.5))
-        # Brighter hover accent per edge type
         hover_color = _lighten(color, 1.5)
         edge_restore[idx] = {"color": color, "width": width, "dashes": dashes}
+
+        # Semantic edges get curved smooth lines
+        smooth = (
+            {"type": "curvedCW", "roundness": 0.2}
+            if etype == "semantic"
+            else {"type": "continuous", "roundness": 0.3}
+        )
+
         net.add_edge(
             edge["source"],
             edge["target"],
@@ -381,7 +429,12 @@ def _build_graph_html(
             },
             width=width,
             dashes=dashes,
+            smooth=smooth,
         )
+
+        if etype == "semantic":
+            tip_key = f"{edge['source']}->{edge['target']}"
+            edge_tooltip_data[tip_key] = _semantic_edge_tooltip(edge)
 
     raw_html = net.generate_html(local=True)
 
@@ -436,6 +489,15 @@ body { margin: 0; padding: 0; background: #0d1117; overflow: hidden; }
         if any(e.get("type") == et for e in edges)
     )
 
+    _semantic_badge = (
+        '<div style="margin-top:6px;padding:3px 6px;border-radius:5px;'
+        'background:#C792EA18;border:1px solid #C792EA44;'
+        'font-size:9px;color:#C792EA;font-weight:600;text-align:center">'
+        '● Semantic view</div>'
+        if view_param == "semantic"
+        else ""
+    )
+
     legend_html = f"""
 <div id="kg-legend" style="
   position:absolute;top:12px;left:12px;z-index:300;
@@ -453,6 +515,7 @@ body { margin: 0; padding: 0; background: #0d1117; overflow: hidden; }
          text-transform:uppercase;letter-spacing:.09em;margin-bottom:6px">Edges</div>
     {edge_legend}
   </div>
+  {_semantic_badge}
 </div>"""
 
     # ── Controls ───────────────────────────────────────────────────────────────
@@ -630,21 +693,26 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>"""
 
     # ── Custom tooltip JS ──────────────────────────────────────────────────────
-    _tooltip_json = json.dumps(tooltip_data)
-    _tooltip_json = (
-        _tooltip_json
-        .replace("\\u003c", "<")
-        .replace("\\u003e", ">")
-        .replace("\\u0026", "&")
-        .replace("\\'", "'")
-    )
+    def _clean_tooltip_json(data: dict) -> str:
+        s = json.dumps(data)
+        return (
+            s.replace("\\u003c", "<")
+            .replace("\\u003e", ">")
+            .replace("\\u0026", "&")
+            .replace("\\'", "'")
+        )
+
+    _tooltip_json = _clean_tooltip_json(tooltip_data)
+    _edge_tip_json = _clean_tooltip_json(edge_tooltip_data)
+
     tooltip_js = f"""
 <div id="kg-tip" style="
   position:fixed;z-index:9999;pointer-events:auto;display:none;
   max-width:295px;transition:opacity .12s"></div>
 <script>
 (function(){{
-  var TIP  = {_tooltip_json};
+  var TIP      = {_tooltip_json};
+  var EDGE_TIP = {_edge_tip_json};
   var el   = document.getElementById('kg-tip');
   var _rdy = false;
   var _hideTimer = null;   // debounce handle for delayed hide
@@ -671,6 +739,21 @@ document.addEventListener('DOMContentLoaded', function() {
     el.style.display = 'none';
   }}
 
+  function _showAt(html, mx, my) {{
+    el.innerHTML = html;
+    el.style.display = 'block';
+    el.style.opacity = '0';
+    requestAnimationFrame(function() {{ el.style.opacity = '1'; }});
+    var c  = document.getElementById('mynetwork').getBoundingClientRect();
+    var tx = c.left + mx + 22;
+    var ty = c.top  + my - 16;
+    if (tx + 300 > window.innerWidth)  tx = c.left + mx - 312;
+    if (ty + 260 > window.innerHeight) ty = window.innerHeight - 268;
+    ty = Math.max(8, ty);
+    el.style.left = tx + 'px';
+    el.style.top  = ty + 'px';
+  }}
+
   /* ---- tooltip element events ---------------------------------------- */
   // Mouse entered the tooltip itself → cancel the pending hide
   el.addEventListener('mouseenter', function() {{ _clearHide(); }});
@@ -686,25 +769,25 @@ document.addEventListener('DOMContentLoaded', function() {
       _clearHide();   // cancel any pending hide from a previous blurNode
       var html = TIP[String(p.node)];
       if (!html) return;
-      el.innerHTML = html;
-      el.style.display = 'block';
-      // Force reflow so transition plays from 0
-      el.style.opacity = '0';
-      requestAnimationFrame(function() {{ el.style.opacity = '1'; }});
-      var c  = document.getElementById('mynetwork').getBoundingClientRect();
-      var mx = p.pointer.DOM.x, my = p.pointer.DOM.y;
-      var tx = c.left + mx + 22;
-      var ty = c.top  + my - 16;
-      if (tx + 300 > window.innerWidth)  tx = c.left + mx - 312;
-      if (ty + 260 > window.innerHeight) ty = window.innerHeight - 268;
-      ty = Math.max(8, ty);
-      el.style.left = tx + 'px';
-      el.style.top  = ty + 'px';
+      _showAt(html, p.pointer.DOM.x, p.pointer.DOM.y);
+    }});
+
+    // Semantic edge tooltips on hoverEdge
+    network.on('hoverEdge', function(p) {{
+      var edgeId = p.edge;
+      var edgeData = network.body.data.edges.get(edgeId);
+      if (!edgeData) return;
+      var key = edgeData.from + '->' + edgeData.to;
+      var html = EDGE_TIP[key];
+      if (!html) return;
+      _clearHide();
+      _showAt(html, p.pointer.DOM.x, p.pointer.DOM.y);
     }});
 
     // blurNode fires the moment cursor leaves the node hitbox — use the
     // grace-period timer so the user can move the cursor onto the tooltip.
     network.on('blurNode',  function() {{ _scheduleHide(); }});
+    network.on('blurEdge',  function() {{ _scheduleHide(); }});
 
     // Hard-hide on explicit user actions
     network.on('click',     function() {{ _forceHide(); }});
@@ -945,7 +1028,7 @@ def render() -> None:
     with c2:
         view = st.radio(
             "View",
-            ["📁 Files", "🔷 Symbols", "🌐 All"],
+            ["📁 Files", "🔷 Symbols", "🌐 All", "🔮 Semantic"],
             horizontal=True,
             key="kg_view",
             label_visibility="collapsed",
@@ -967,7 +1050,64 @@ def render() -> None:
         return
 
     owner, name = selected_repo.split("/", 1)
-    view_param = {"📁 Files": "files", "🔷 Symbols": "symbols", "🌐 All": "all"}[view]
+    view_param = {
+        "📁 Files": "files",
+        "🔷 Symbols": "symbols",
+        "🌐 All": "all",
+        "🔮 Semantic": "semantic",
+    }[view]
+
+    # ── Semantic enrichment status banner ────────────────────────────────────
+    if view_param in ("semantic", "all"):
+        sem_status, _ = api_get(f"/graph/{owner}/{name}/semantic?limit=0", timeout=5)
+        sem_total = (sem_status or {}).get("total", 0)
+        if sem_total:
+            sem_col, btn_col = st.columns([5, 1])
+            with sem_col:
+                st.info(
+                    f"Semantic graph: **{sem_total}** architectural relationships indexed.",
+                    icon="ℹ️",
+                )
+            with btn_col:
+                enrich_clicked = st.button(
+                    "🔄 Re-enrich", key="kg_enrich_btn", use_container_width=True
+                )
+            if enrich_clicked:
+                with st.spinner("Running semantic enrichment…"):
+                    enrich_data, enrich_err = api_post(
+                        f"/graph/{owner}/{name}/enrich", json={}, timeout=120
+                    )
+                if enrich_err:
+                    st.error(f"Enrichment failed: {enrich_err}")
+                elif enrich_data:
+                    st.success(
+                        f"Enriched — **{enrich_data.get('edges_inserted', 0)} edges** "
+                        f"from {enrich_data.get('symbols_processed', 0)} symbols "
+                        f"in {enrich_data.get('elapsed_ms', 0):.0f} ms",
+                        icon="✅",
+                    )
+                    st.rerun()
+        else:
+            enrich_col, _ = st.columns([5, 1])
+            with enrich_col:
+                st.warning(
+                    "No semantic edges yet. Click **🔄 Enrich** to extract architectural relationships.",
+                    icon="⚠️",
+                )
+            with _:
+                if st.button("🔄 Enrich", key="kg_enrich_btn_empty", use_container_width=True):
+                    with st.spinner("Running semantic enrichment…"):
+                        enrich_data, enrich_err = api_post(
+                            f"/graph/{owner}/{name}/enrich", json={}, timeout=120
+                        )
+                    if enrich_err:
+                        st.error(f"Enrichment failed: {enrich_err}")
+                    elif enrich_data:
+                        st.success(
+                            f"Enriched — **{enrich_data.get('edges_inserted', 0)} edges** inserted.",
+                            icon="✅",
+                        )
+                        st.rerun()
 
     # ── Build on click ────────────────────────────────────────────────────────
     if build_clicked:

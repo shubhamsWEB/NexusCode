@@ -4,26 +4,26 @@ These represent parsed workflow definitions in memory.
 """
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 
-class TriggerType(str, Enum):
+class TriggerType(StrEnum):
     webhook = "webhook"
     schedule = "schedule"
     manual = "manual"
     event = "event"
 
 
-class StepType(str, Enum):
+class StepType(StrEnum):
     agent = "agent"
     action = "action"
     human_checkpoint = "human_checkpoint"
 
 
-class AgentRole(str, Enum):
+class AgentRole(StrEnum):
     searcher = "searcher"
     planner = "planner"
     reviewer = "reviewer"

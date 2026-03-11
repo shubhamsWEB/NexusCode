@@ -36,18 +36,25 @@ PROCESS
 2. Use get_symbol to look up specific functions or classes by name.
 3. Use find_callers to trace how something is used across the codebase.
 4. Use get_file_context to understand a file's structure and dependencies.
-5. Call multiple tools if needed — follow the code where it leads.
-6. Once you have real code to reference, call answer_question.
+5. Use get_semantic_context with the key symbols you found — it surfaces
+   architectural relationships the call graph cannot show: "AuthService
+   validates JWTToken", "PaymentFlow coordinates StripeClient". Call it
+   whenever you want to explain WHY two components are coupled.
+6. Call multiple tools if needed — follow the code where it leads.
+7. Once you have real code to reference, call answer_question.
 
 You MUST call at least one search tool before calling answer_question.
+For architecture or design questions, also call get_semantic_context on the
+key symbols found — it provides pre-extracted relationship facts that improve
+the quality of your explanation significantly.
 
 ANSWER STYLE
 ────────────
 • Friendly, direct, authoritative. Think Slack message from a senior teammate.
-• Open with a clear 1–2 sentence answer. No preamble.
+• Open with a clear 1-2 sentence answer. No preamble.
 • Walk through the code citing real file paths and line numbers.
 • Use fenced code blocks for key snippets.
-• Close with 2–3 concrete follow-up questions grounded in what you found.
+• Close with 2-3 concrete follow-up questions grounded in what you found.
 
 HARD RULES
 ──────────
@@ -99,12 +106,12 @@ class AskResult:
     __slots__ = (
         "answer",
         "cited_files",
+        "context_tokens",
         "elapsed_ms",
         "follow_up_hints",
-        "quality_score",
-        "context_tokens",
-        "tool_calls_count",
         "iterations",
+        "quality_score",
+        "tool_calls_count",
     )
 
     def __init__(
@@ -148,23 +155,48 @@ TOOL ARGUMENT FORMAT (IMPORTANT)
 ─────────────────────────────────
 Always pass tool arguments as a JSON object with the exact field names.
 Examples:
-  search_codebase  → {"query": "JWT token validation"}
-  get_symbol       → {"name": "authenticate"}
-  find_callers     → {"symbol": "authenticate"}
-  get_file_context → {"path": "src/api/app.py"}
+  search_codebase      → {"query": "JWT token validation"}
+  get_symbol           → {"name": "authenticate"}
+  find_callers         → {"symbol": "authenticate"}
+  get_file_context     → {"path": "src/api/app.py"}
+  get_semantic_context → {"symbols": ["AuthService", "JWTValidator"]}
 Never call a tool with empty arguments — the call will fail.
 """
+
+
+async def _fetch_worldview_context(repo_owner: str | None, repo_name: str | None) -> str:
+    """Return a worldview preamble to prepend to the system prompt, or '' on miss."""
+    if not repo_owner or not repo_name:
+        return ""
+    try:
+        from src.evolution.worldview_generator import get_latest_worldview_text
+
+        wv = await get_latest_worldview_text(repo_owner, repo_name)
+        if wv:
+            return (
+                "CODEBASE UNDERSTANDING\n"
+                "──────────────────────\n"
+                "NexusCode has built the following semantic worldview of this repository "
+                "from prior interactions and code analysis. Use it to orient your searches "
+                "and calibrate your answers.\n\n"
+                f"{wv}\n\n"
+                "──────────────────────\n\n"
+            )
+    except Exception:
+        logger.debug("Worldview fetch failed (non-fatal)")
+    return ""
 
 
 def _build_system_prompt(
     repo_owner: str | None,
     repo_name: str | None,
     model: str | None = None,
+    worldview_preamble: str = "",
 ) -> str:
     from src.agent.rules import load_rules
     from src.llm.client import is_ollama_model
 
-    prompt = ASK_SYSTEM_PROMPT
+    prompt = worldview_preamble + ASK_SYSTEM_PROMPT
     if model and is_ollama_model(model):
         prompt += _OLLAMA_TOOL_HINT
     rules = load_rules(repo_owner, repo_name)
@@ -239,9 +271,13 @@ async def generate_answer(
     effective_model = model or settings.default_model
     all_retrieval = ASK_RETRIEVAL_TOOL_SCHEMAS + get_external_tool_schemas()
 
+    worldview_preamble = await _fetch_worldview_context(repo_owner, repo_name)
+
     tool_block, stats = await AgentLoop().run(
         model=effective_model,
-        system=_build_system_prompt(repo_owner, repo_name, model=effective_model),
+        system=_build_system_prompt(
+            repo_owner, repo_name, model=effective_model, worldview_preamble=worldview_preamble
+        ),
         initial_message=_build_initial_message(query, repo_owner, repo_name),
         retrieval_tools=all_retrieval,
         final_answer_tools=[_ASK_ANSWER_TOOL],
@@ -320,9 +356,13 @@ async def stream_generate_answer(
     effective_model = model or settings.default_model
     all_retrieval = ASK_RETRIEVAL_TOOL_SCHEMAS + get_external_tool_schemas()
 
+    worldview_preamble = await _fetch_worldview_context(repo_owner, repo_name)
+
     async for event in AgentLoop().stream(
         model=effective_model,
-        system=_build_system_prompt(repo_owner, repo_name, model=effective_model),
+        system=_build_system_prompt(
+            repo_owner, repo_name, model=effective_model, worldview_preamble=worldview_preamble
+        ),
         initial_message=_build_initial_message(query, repo_owner, repo_name),
         retrieval_tools=all_retrieval,
         final_answer_tools=[_ASK_ANSWER_TOOL],

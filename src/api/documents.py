@@ -20,6 +20,7 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 async def download_document(doc_id: str) -> Response:
     """Stream a generated PDF document by its ID."""
     from sqlalchemy import text
+
     from src.storage.db import AsyncSessionLocal
 
     async with AsyncSessionLocal() as session:

@@ -19,7 +19,7 @@ def render():
         "while the platform team has a different scoped key."
     )
 
-    col_title, col_refresh = st.columns([6, 1])
+    _col_title, col_refresh = st.columns([6, 1])
     with col_refresh:
         st.write("")
         if st.button("🔄 Refresh", key="api_keys_refresh"):

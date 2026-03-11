@@ -134,7 +134,7 @@ class ExecutionContext:
         }
 
     @classmethod
-    def from_snapshot(cls, snapshot: dict[str, Any]) -> "ExecutionContext":
+    def from_snapshot(cls, snapshot: dict[str, Any]) -> ExecutionContext:
         """Restore from a DB-persisted snapshot."""
         obj = cls(
             trigger_payload=snapshot.get("trigger", {}),
@@ -151,7 +151,7 @@ class _StepProxy:
     def __init__(self, outputs: dict[str, Any]) -> None:
         self._outputs = outputs
 
-    def __getattr__(self, step_id: str) -> "_StepResult":
+    def __getattr__(self, step_id: str) -> _StepResult:
         return _StepResult(self._outputs.get(step_id))
 
 

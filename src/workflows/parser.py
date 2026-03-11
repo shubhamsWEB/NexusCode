@@ -3,11 +3,11 @@ YAML DSL parser and DAG validator for workflow definitions.
 """
 from __future__ import annotations
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 from pydantic import ValidationError
 
-from src.workflows.models import StepDef, WorkflowDef
 from src.utils.logging import get_secure_logger
+from src.workflows.models import StepDef, WorkflowDef
 
 logger = get_secure_logger(__name__)
 

@@ -15,9 +15,10 @@ Usage:
 """
 from __future__ import annotations
 
-import asyncio
+import inspect
 import json
-from typing import Any
+from collections.abc import Awaitable
+from typing import Any, TypeVar, cast
 
 from src.config import settings
 from src.utils.logging import get_secure_logger
@@ -32,6 +33,14 @@ TOPIC_EXTERNAL = "nexus:events:external"
 TOPIC_WORKFLOW_UPDATES = "nexus:workflow:updates"
 
 _KNOWN_TOPICS = {TOPIC_GITHUB, TOPIC_SCHEDULE, TOPIC_MANUAL, TOPIC_EXTERNAL, TOPIC_WORKFLOW_UPDATES}
+_T = TypeVar("_T")
+
+
+async def _resolve_maybe_awaitable(value: Awaitable[_T] | _T) -> _T:
+    """Normalize redis methods whose stubs allow sync or async returns."""
+    if inspect.isawaitable(value):
+        return await cast("Awaitable[_T]", value)
+    return value
 
 
 class EventBus:
@@ -49,7 +58,7 @@ class EventBus:
             try:
                 import redis.asyncio as aioredis
                 cls._redis = aioredis.from_url(settings.redis_url, decode_responses=True)
-                await cls._redis.ping()
+                await _resolve_maybe_awaitable(cls._redis.ping())
                 logger.info("event_bus: connected to Redis at %s", settings.redis_url)
             except Exception as exc:
                 logger.warning("event_bus: Redis unavailable (%s) — pub/sub disabled", exc)
@@ -67,7 +76,7 @@ class EventBus:
             return False
         try:
             message = json.dumps(payload, default=str)
-            await redis.publish(topic, message)
+            await _resolve_maybe_awaitable(redis.publish(topic, message))
             logger.debug("event_bus: published to %s: %s", topic, message[:100])
             return True
         except Exception as exc:

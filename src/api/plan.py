@@ -28,6 +28,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from src.api.middleware import get_repo_scope
+from src.config import settings
 from src.planning.schemas import PlanRequest
 from src.utils.logging import get_secure_logger
 
@@ -60,6 +61,37 @@ async def _save_plan(plan, repo_owner, repo_name):
         )
     except Exception:
         logger.exception("plan history persistence failed (non-fatal)")
+
+
+async def _record_plan_telemetry(plan, repo_owner, repo_name):
+    """Best-effort evolution telemetry for plan completions."""
+    if repo_owner is None or repo_name is None:
+        return
+    try:
+        from src.evolution.telemetry import record_plan_metrics
+
+        metadata = plan.metadata
+        retrieval_params = {
+            "retrieval_strategy": "hybrid",
+            "hnsw_ef_search": settings.hnsw_ef_search,
+            "retrieval_rrf_k": settings.retrieval_rrf_k,
+            "retrieval_candidate_multiplier": settings.retrieval_candidate_multiplier,
+            "reranker_top_n": settings.reranker_top_n,
+            "query_relevance_threshold": settings.query_relevance_threshold,
+            "plan_max_iterations": settings.plan_max_iterations,
+        }
+        await record_plan_metrics(
+            repo_owner=repo_owner,
+            repo_name=repo_name,
+            query=plan.query,
+            elapsed_ms=metadata.elapsed_ms if metadata else 0.0,
+            context_tokens=metadata.context_tokens if metadata else 0,
+            quality_score=None,  # plans don't have a single quality_score
+            retrieval_params=retrieval_params,
+            plan_id=str(plan.plan_id) if plan.plan_id else None,
+        )
+    except Exception:
+        logger.debug("Evolution telemetry capture failed for plan (non-fatal)")
 
 
 # ── Sync endpoint ─────────────────────────────────────────────────────────────
@@ -106,9 +138,13 @@ async def _sync_plan(req: PlanRequest, allowed_repos: list[str] | None = None) -
         logger.exception("plan generation failed")
         return JSONResponse({"error": "Plan generation failed. Please try again."}, status_code=500)
 
-    task = asyncio.create_task(_save_plan(plan, req.repo_owner, req.repo_name))
-    _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
+    for coro in [
+        _save_plan(plan, req.repo_owner, req.repo_name),
+        _record_plan_telemetry(plan, req.repo_owner, req.repo_name),
+    ]:
+        task = asyncio.create_task(coro)
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
     return JSONResponse(plan.model_dump())
 
 
@@ -179,6 +215,7 @@ async def _sse_generator(req: PlanRequest, allowed_repos: list[str] | None = Non
             elif etype == "plan_complete":
                 plan = chunk["plan"]
                 await _save_plan(plan, req.repo_owner, req.repo_name)
+                await _record_plan_telemetry(plan, req.repo_owner, req.repo_name)
                 yield _event(
                     {
                         "type": "plan_complete",

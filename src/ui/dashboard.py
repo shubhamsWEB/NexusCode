@@ -65,6 +65,7 @@ PAGES = [
     "🤖 Agent Roles",
     "⚡ Workflows",
     "🗝️ API Key Scopes",
+    "🧬 Evolution",
     "📚 Documentation",
 ]
 
@@ -545,6 +546,11 @@ elif page == "⚡ Workflows":
 
 elif page == "🗝️ API Key Scopes":
     from src.ui._pages.api_keys import render
+
+    render()
+
+elif page == "🧬 Evolution":
+    from src.ui._pages.evolution import render
 
     render()
 

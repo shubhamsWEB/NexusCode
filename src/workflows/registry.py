@@ -9,8 +9,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import delete, select, text, update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import text
 
 from src.storage.db import AsyncSessionLocal
 from src.utils.logging import get_secure_logger
@@ -188,7 +187,7 @@ async def set_workflow_active(workflow_id: str, is_active: bool) -> bool:
             {"id": workflow_id, "active": is_active},
         )
         await session.commit()
-    return result.rowcount > 0
+    return int(getattr(result, "rowcount", 0) or 0) > 0
 
 
 async def delete_workflow(workflow_id: str) -> bool:
@@ -199,7 +198,7 @@ async def delete_workflow(workflow_id: str) -> bool:
             {"id": workflow_id},
         )
         await session.commit()
-    return result.rowcount > 0
+    return int(getattr(result, "rowcount", 0) or 0) > 0
 
 
 # ── Workflow Runs ─────────────────────────────────────────────────────────────
@@ -237,10 +236,9 @@ async def update_run_status(
     total_tokens: int = 0,
 ) -> None:
     """Update a run's status and optionally its result."""
-    completed_at = "NOW()" if status in ("completed", "failed", "cancelled") else "NULL"
     async with AsyncSessionLocal() as session:
         await session.execute(
-            text(f"""
+            text("""
                 UPDATE workflow_runs
                 SET status = :status,
                     error_message = :error,
@@ -447,7 +445,7 @@ async def answer_checkpoint(checkpoint_id: str, response: str) -> bool:
             {"id": checkpoint_id, "response": response},
         )
         await session.commit()
-    return result.rowcount > 0
+    return int(getattr(result, "rowcount", 0) or 0) > 0
 
 
 async def get_pending_checkpoints(run_id: str) -> list[dict[str, Any]]:

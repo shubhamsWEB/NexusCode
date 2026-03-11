@@ -2,16 +2,23 @@
 Knowledge Graph API
 
 GET  /graph/{owner}/{name}
-     ?view=files|symbols|all  (default: files)
+     ?view=files|symbols|all|semantic  (default: files)
      ?max_nodes=200
      Returns nodes, edges, stats, built_at
 
 POST /graph/{owner}/{name}/build
      Rebuilds the full graph for the repo. Returns stats.
+
+GET  /graph/{owner}/{name}/semantic
+     Paginated list of semantic edges with relationship + reasoning.
+
+POST /graph/{owner}/{name}/enrich
+     Manually trigger semantic enrichment. Returns {edges_inserted, symbols_processed, elapsed_ms}.
 """
 
 from __future__ import annotations
 
+import time
 from typing import Literal
 
 import anyio
@@ -29,7 +36,8 @@ logger = get_secure_logger(__name__)
 _VIEW_EDGE_TYPES: dict[str, list[str]] = {
     "files": ["imports"],
     "symbols": ["defines", "contains", "calls"],
-    "all": ["imports", "defines", "contains", "calls"],
+    "all": ["imports", "defines", "contains", "calls", "semantic"],
+    "semantic": ["semantic"],
 }
 
 # Language → color mapping for file nodes
@@ -76,7 +84,7 @@ async def _get_graph_data(
         edge_rows = (
             await session.execute(
                 text("""
-                    SELECT source_id, source_type, target_id, target_type, edge_type, confidence
+                    SELECT source_id, source_type, target_id, target_type, edge_type, confidence, extra
                     FROM kg_edges
                     WHERE repo_owner = :owner AND repo_name = :name
                       AND edge_type = ANY(:types)
@@ -204,16 +212,20 @@ async def _get_graph_data(
                 }
             )
 
-    # Build edge objects
-    edges = [
-        {
+    # Build edge objects (semantic edges include extra metadata)
+    edges = []
+    for r in edge_rows:
+        edge: dict = {
             "source": r[0],
             "target": r[2],
             "type": r[4],
             "confidence": float(r[5]) if r[5] else 1.0,
         }
-        for r in edge_rows
-    ]
+        if r[4] == "semantic" and r[6]:
+            extra = r[6] if isinstance(r[6], dict) else {}
+            edge["relationship"] = extra.get("relationship", "")
+            edge["reasoning"] = extra.get("reasoning", "")
+        edges.append(edge)
 
     return {
         "nodes": nodes,
@@ -227,7 +239,7 @@ async def _get_graph_data(
 async def get_graph(
     owner: str,
     name: str,
-    view: Literal["files", "symbols", "all"] = Query("files"),
+    view: Literal["files", "symbols", "all", "semantic"] = Query("files"),
     max_nodes: int = Query(200, ge=10, le=1000),
 ) -> JSONResponse:
     """Return knowledge graph data for a repo."""
@@ -255,11 +267,93 @@ async def build_graph_endpoint(owner: str, name: str) -> JSONResponse:
     try:
         with anyio.fail_after(30):
             result = await build_graph(owner, name)
-    except TimeoutError:
+    except TimeoutError as exc:
         logger.warning("build_graph timed out", extra={"repo": f"{owner}/{name}"})
-        raise HTTPException(status_code=504, detail="Graph build timed out after 30s")
+        raise HTTPException(status_code=504, detail="Graph build timed out after 30s") from exc
     except Exception as exc:
         logger.error("build_graph failed", extra={"repo": f"{owner}/{name}", "error": str(exc)})
-        raise HTTPException(status_code=500, detail=f"Graph build failed: {exc}")
+        raise HTTPException(status_code=500, detail=f"Graph build failed: {exc}") from exc
 
     return JSONResponse(result)
+
+
+@router.get("/{owner}/{name}/semantic")
+async def get_semantic_edges(
+    owner: str,
+    name: str,
+    limit: int = Query(50, ge=0, le=200),
+    offset: int = Query(0, ge=0),
+) -> JSONResponse:
+    """Return a paginated list of semantic edges with relationship + reasoning."""
+    async with AsyncSessionLocal() as session:
+        rows = (
+            await session.execute(
+                text("""
+                    SELECT source_id, target_id, confidence,
+                           extra->>'relationship' AS relationship,
+                           extra->>'reasoning'    AS reasoning,
+                           indexed_at
+                    FROM kg_edges
+                    WHERE repo_owner = :owner AND repo_name = :name
+                      AND edge_type = 'semantic'
+                    ORDER BY confidence DESC, indexed_at DESC
+                    LIMIT :limit OFFSET :offset
+                """),
+                {"owner": owner, "name": name, "limit": limit, "offset": offset},
+            )
+        ).fetchall()
+
+        total = (
+            await session.execute(
+                text("""
+                    SELECT COUNT(*) FROM kg_edges
+                    WHERE repo_owner = :owner AND repo_name = :name
+                      AND edge_type = 'semantic'
+                """),
+                {"owner": owner, "name": name},
+            )
+        ).scalar()
+
+    edges = [
+        {
+            "source": r[0],
+            "target": r[1],
+            "confidence": float(r[2]) if r[2] else 1.0,
+            "relationship": r[3] or "",
+            "reasoning": r[4] or "",
+            "indexed_at": r[5].isoformat() if r[5] else None,
+        }
+        for r in rows
+    ]
+    return JSONResponse({"edges": edges, "total": int(total or 0), "offset": offset, "limit": limit})
+
+
+@router.post("/{owner}/{name}/enrich")
+async def enrich_semantic_graph(owner: str, name: str) -> JSONResponse:
+    """Manually trigger semantic enrichment for a repo."""
+    from src.graph.semantic_enricher import enrich_repo_semantic_graph
+
+    # Verify repo exists
+    async with AsyncSessionLocal() as session:
+        exists = (
+            await session.execute(
+                text("SELECT 1 FROM repos WHERE owner = :owner AND name = :name"),
+                {"owner": owner, "name": name},
+            )
+        ).scalar()
+    if not exists:
+        raise HTTPException(status_code=404, detail=f"Repo {owner}/{name} not found")
+
+    t_start = time.monotonic()
+    try:
+        edges_inserted, symbols_processed = await enrich_repo_semantic_graph(owner, name)
+    except Exception as exc:
+        logger.error("enrich_semantic_graph failed", extra={"repo": f"{owner}/{name}", "error": str(exc)})
+        raise HTTPException(status_code=500, detail=f"Enrichment failed: {exc}") from exc
+
+    elapsed_ms = round((time.monotonic() - t_start) * 1000, 1)
+    return JSONResponse({
+        "edges_inserted": edges_inserted,
+        "symbols_processed": symbols_processed,
+        "elapsed_ms": elapsed_ms,
+    })

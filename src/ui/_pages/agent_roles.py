@@ -14,6 +14,7 @@ from __future__ import annotations
 import requests
 import streamlit as st
 
+
 def _base() -> str:
     return st.session_state.get("api_url", "http://localhost:8000")
 

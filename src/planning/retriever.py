@@ -28,6 +28,7 @@ Supports:
 from __future__ import annotations
 
 import re
+import time as _time
 from dataclasses import dataclass
 
 from src.config import settings
@@ -278,8 +279,6 @@ def _decompose_query(
     # Always expand regardless of word count — these queries look "simple" but
     # require seeing multiple API/route files and any existing X infrastructure.
     if is_additive_infra:
-        q = query.lower()
-
         # Extract the feature part: text between the verb and the "to/for/on" preposition
         _ADDITIVE_RE = re.compile(
             r"(?:add|implement|integrate|enable|support|introduce|apply|enforce|attach|inject)\s+"
@@ -1373,8 +1372,6 @@ async def _fetch_component_context(
 
 
 # ── Phase 0a helper: stack fingerprint (with TTL cache) ──────────────────────
-
-import time as _time
 
 _stack_cache: dict[tuple, tuple[str, float]] = {}
 _STACK_CACHE_TTL = 300  # 5 minutes
