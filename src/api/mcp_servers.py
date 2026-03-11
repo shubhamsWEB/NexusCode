@@ -21,11 +21,16 @@ POST /mcp-servers/{id}/oauth/refresh      — refresh expired token
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
+import ipaddress
+import json as _json_stdlib
 import logging
 import os
 import secrets
+import socket
+import ssl
 import urllib.parse
 
 import httpx
@@ -426,7 +431,222 @@ async def reload_bridge_endpoint() -> JSONResponse:
     return JSONResponse({"tool_count": tool_count, "message": f"Bridge reloaded — {tool_count} tool(s) active"})
 
 
-# ── OAuth endpoints ────────────────────────────────────────────────────────────
+# ── SSRF guard ─────────────────────────────────────────────────────────────────
+#
+# Full SSRF mitigation strategy (CWE-918):
+#
+#   Step 1 — _resolve_safe_ip(hostname, port): resolve the hostname once, validate
+#            every returned IP is public, and return the first validated IP string.
+#
+#   Step 2 — _ssrf_safe_https_get / _ssrf_safe_https_post: open the TCP connection
+#            directly to the *pre-validated* IP (no second DNS lookup = no DNS-rebinding
+#            window), while setting `server_hostname` so Python's ssl module still
+#            performs correct SNI + certificate hostname verification against the
+#            original hostname.
+#
+# This approach satisfies the CodeQL py/full-ssrf rule because the URL that flows
+# to the network layer is constructed from `validated_ip` (our DNS result), not
+# from the raw user-supplied string.
+
+_PRIVATE_NETWORKS: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = [
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("169.254.0.0/16"),  # link-local / AWS metadata
+    ipaddress.ip_network("0.0.0.0/8"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),
+    ipaddress.ip_network("fe80::/10"),
+]
+
+
+async def _resolve_safe_ip(hostname: str, port: int) -> str:
+    """
+    Resolve *hostname* and return the first public IP as a string.
+
+    Raises HTTPException(400) if:
+    - the hostname cannot be resolved
+    - ANY resolved address is private, loopback, link-local, or unspecified
+    """
+    loop = asyncio.get_event_loop()
+    try:
+        infos = await loop.run_in_executor(
+            None, socket.getaddrinfo, hostname, port, 0, socket.SOCK_STREAM
+        )
+    except socket.gaierror as exc:
+        raise HTTPException(status_code=400, detail=f"Cannot resolve hostname '{hostname}': {exc}") from exc
+
+    if not infos:
+        raise HTTPException(status_code=400, detail=f"No addresses found for '{hostname}'.")
+
+    validated_ip: str | None = None
+    for _family, _type, _proto, _canon, sockaddr in infos:
+        ip_str = sockaddr[0]
+        try:
+            addr = ipaddress.ip_address(ip_str)
+        except ValueError:
+            continue
+        if (
+            addr.is_loopback
+            or addr.is_private
+            or addr.is_link_local
+            or addr.is_multicast
+            or addr.is_unspecified
+            or any(addr in net for net in _PRIVATE_NETWORKS)
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Requests to private, loopback, or internal addresses are not allowed.",
+            )
+        if validated_ip is None:
+            validated_ip = ip_str
+
+    if validated_ip is None:
+        raise HTTPException(status_code=400, detail=f"No routable address found for '{hostname}'.")
+    return validated_ip
+
+
+async def _ssrf_safe_https_get(url: str, *, timeout: float = 10.0) -> tuple[int, dict]:
+    """
+    SSRF-safe HTTPS GET.
+
+    1. Validates the URL scheme is https://.
+    2. Resolves the hostname → validates all IPs are public (_resolve_safe_ip).
+    3. Opens a TCP connection **directly to the validated IP** — no second DNS
+       lookup, so DNS-rebinding between check and connect is impossible.
+    4. Passes `server_hostname=hostname` to asyncio.open_connection so that
+       Python's ssl module performs SNI and certificate verification against the
+       original hostname (not the IP), keeping TLS security intact.
+
+    Returns (http_status_code, parsed_json_body).
+    """
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https":
+        raise HTTPException(status_code=400, detail="URL must use the https:// scheme.")
+    hostname = parsed.hostname
+    if not hostname:
+        raise HTTPException(status_code=400, detail="URL must include a hostname.")
+    port = parsed.port or 443
+    path = (parsed.path or "/") + (f"?{parsed.query}" if parsed.query else "")
+
+    # Resolve once; connection below uses this IP directly — no re-resolution.
+    validated_ip = await _resolve_safe_ip(hostname, port)
+
+    ssl_ctx = ssl.create_default_context()
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(
+                validated_ip, port,
+                ssl=ssl_ctx,
+                server_hostname=hostname,   # SNI + cert check against hostname
+            ),
+            timeout=timeout,
+        )
+    except (OSError, asyncio.TimeoutError) as exc:
+        raise HTTPException(status_code=502, detail=f"Connection failed: {exc}") from exc
+
+    try:
+        writer.write(
+            f"GET {path} HTTP/1.0\r\nHost: {hostname}\r\nAccept: application/json\r\n\r\n"
+            .encode()
+        )
+        await writer.drain()
+        raw = await asyncio.wait_for(reader.read(131_072), timeout=timeout)
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="Request timed out.") from exc
+    finally:
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception:
+            pass
+
+    header_end = raw.find(b"\r\n\r\n")
+    if header_end == -1:
+        return 0, {}
+    try:
+        status = int(raw[: raw.index(b"\r\n")].decode().split()[1])
+    except (ValueError, IndexError):
+        return 0, {}
+    body = raw[header_end + 4:].strip()
+    try:
+        return status, _json_stdlib.loads(body) if body else {}
+    except _json_stdlib.JSONDecodeError:
+        return status, {}
+
+
+async def _ssrf_safe_https_post_form(
+    url: str, data: dict, *, timeout: float = 15.0
+) -> tuple[int, dict]:
+    """
+    SSRF-safe HTTPS POST with application/x-www-form-urlencoded body.
+
+    Uses the same IP-pinning strategy as _ssrf_safe_https_get.
+    Returns (http_status_code, parsed_json_body).
+    """
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https":
+        raise HTTPException(status_code=400, detail="Token endpoint must use the https:// scheme.")
+    hostname = parsed.hostname
+    if not hostname:
+        raise HTTPException(status_code=400, detail="Token endpoint must include a hostname.")
+    port = parsed.port or 443
+    path = (parsed.path or "/") + (f"?{parsed.query}" if parsed.query else "")
+
+    validated_ip = await _resolve_safe_ip(hostname, port)
+
+    body_bytes = urllib.parse.urlencode(data).encode()
+    ssl_ctx = ssl.create_default_context()
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(
+                validated_ip, port,
+                ssl=ssl_ctx,
+                server_hostname=hostname,
+            ),
+            timeout=timeout,
+        )
+    except (OSError, asyncio.TimeoutError) as exc:
+        raise HTTPException(status_code=502, detail=f"Connection to token endpoint failed: {exc}") from exc
+
+    try:
+        writer.write(
+            (
+                f"POST {path} HTTP/1.0\r\n"
+                f"Host: {hostname}\r\n"
+                "Accept: application/json\r\n"
+                "Content-Type: application/x-www-form-urlencoded\r\n"
+                f"Content-Length: {len(body_bytes)}\r\n"
+                "\r\n"
+            ).encode() + body_bytes
+        )
+        await writer.drain()
+        raw = await asyncio.wait_for(reader.read(131_072), timeout=timeout)
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="Token request timed out.") from exc
+    finally:
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception:
+            pass
+
+    header_end = raw.find(b"\r\n\r\n")
+    if header_end == -1:
+        return 0, {}
+    try:
+        status = int(raw[: raw.index(b"\r\n")].decode().split()[1])
+    except (ValueError, IndexError):
+        return 0, {}
+    body = raw[header_end + 4:].strip()
+    try:
+        return status, _json_stdlib.loads(body) if body else {}
+    except _json_stdlib.JSONDecodeError:
+        return status, {}
+
+
+# ── OAuth endpoints ─────────────────────────────────────────────────────────────
 
 
 @router.post("/oauth/discover")
@@ -435,14 +655,19 @@ async def oauth_discover(req: OAuthDiscoverRequest) -> JSONResponse:
     Probe a remote MCP server URL for OAuth authorization server metadata.
     Returns {auth_endpoint, token_endpoint, registration_endpoint, scopes_supported}.
     """
-    base = req.url.rstrip("/")
-    # Try RFC 8414 well-known endpoint
-    well_known_url = base + "/.well-known/oauth-authorization-server"
+    # Validate scheme + hostname; build well-known URL from parsed (not raw) input
+    parsed_req = urllib.parse.urlparse(req.url)
+    if parsed_req.scheme != "https":
+        raise HTTPException(status_code=400, detail="URL must use the https:// scheme.")
+    if not parsed_req.hostname:
+        raise HTTPException(status_code=400, detail="URL must include a hostname.")
+    port = parsed_req.port or 443
+    base_netloc = f"{parsed_req.hostname}:{port}"
+    # Try RFC 8414 well-known endpoint — path is a hardcoded constant, not user input
+    well_known_url = f"https://{base_netloc}/.well-known/oauth-authorization-server"
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(well_known_url)
-        if resp.status_code == 200:
-            meta = resp.json()
+        status_code, meta = await _ssrf_safe_https_get(well_known_url, timeout=10.0)
+        if status_code == 200 and meta:
             return JSONResponse({
                 "auth_endpoint": meta.get("authorization_endpoint"),
                 "token_endpoint": meta.get("token_endpoint"),
@@ -450,6 +675,8 @@ async def oauth_discover(req: OAuthDiscoverRequest) -> JSONResponse:
                 "scopes_supported": meta.get("scopes_supported", []),
                 "raw": meta,
             })
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.debug("oauth_discover: well-known probe failed: %s", exc)
 
@@ -490,13 +717,14 @@ async def oauth_initiate(server_id: int) -> JSONResponse:
     token_endpoint = server.get("oauth_token_endpoint")
     auth_endpoint: str | None = None
     if server.get("url"):
-        base = server["url"].rstrip("/")
-        well_known_url = base + "/.well-known/oauth-authorization-server"
+        srv_parsed = urllib.parse.urlparse(server["url"])
+        if srv_parsed.scheme != "https" or not srv_parsed.hostname:
+            raise HTTPException(status_code=400, detail="Server URL must be a public HTTPS address.")
+        srv_port = srv_parsed.port or 443
+        well_known_url = f"https://{srv_parsed.hostname}:{srv_port}/.well-known/oauth-authorization-server"
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.get(well_known_url)
-            if resp.status_code == 200:
-                meta = resp.json()
+            status_code, meta = await _ssrf_safe_https_get(well_known_url, timeout=10.0)
+            if status_code == 200 and meta:
                 auth_endpoint = meta.get("authorization_endpoint")
                 if not token_endpoint:
                     token_endpoint = meta.get("token_endpoint")
@@ -605,22 +833,23 @@ async def oauth_callback(request: Request) -> RedirectResponse:
     if not token_endpoint or not client_id:
         return RedirectResponse(url=dashboard_url + "?oauth_error=missing_token_endpoint_or_client_id")
 
-    # Exchange code for tokens
+    # Exchange code for tokens (SSRF-safe: IP-pinned connection)
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(
-                token_endpoint,
-                data={
-                    "grant_type": "authorization_code",
-                    "code": code,
-                    "redirect_uri": callback_url,
-                    "client_id": client_id,
-                    "code_verifier": code_verifier,
-                },
-                headers={"Accept": "application/json"},
-            )
-        resp.raise_for_status()
-        tokens = resp.json()
+        status_code, tokens = await _ssrf_safe_https_post_form(
+            token_endpoint,
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": callback_url,
+                "client_id": client_id,
+                "code_verifier": code_verifier,
+            },
+            timeout=15.0,
+        )
+        if status_code < 200 or status_code >= 300:
+            raise ValueError(f"Token endpoint returned HTTP {status_code}")
+    except HTTPException:
+        return RedirectResponse(url=dashboard_url + "?oauth_error=invalid_token_endpoint")
     except Exception as exc:
         logger.error("oauth_callback: token exchange failed: %s", exc)
         return RedirectResponse(url=dashboard_url + "?oauth_error=token_exchange_failed")
@@ -671,19 +900,19 @@ async def oauth_refresh(server_id: int) -> JSONResponse:
     if not token_endpoint:
         raise HTTPException(status_code=400, detail="No token_endpoint stored for this server.")
 
+    # Refresh token (SSRF-safe: IP-pinned connection)
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(
-                token_endpoint,
-                data={
-                    "grant_type": "refresh_token",
-                    "refresh_token": refresh_token,
-                    "client_id": client_id or "",
-                },
-                headers={"Accept": "application/json"},
-            )
-        resp.raise_for_status()
-        tokens = resp.json()
+        status_code, tokens = await _ssrf_safe_https_post_form(
+            token_endpoint,
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                "client_id": client_id or "",
+            },
+            timeout=15.0,
+        )
+        if status_code < 200 or status_code >= 300:
+            raise ValueError(f"Token endpoint returned HTTP {status_code}")
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Token refresh failed: {exc}") from exc
 
