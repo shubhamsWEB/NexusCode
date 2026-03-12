@@ -15,7 +15,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 COPY requirements.txt ./
 
 # pip cache mount speeds up rebuilds without baking the cache into the image.
-RUN --mount=type=cache,target=/root/.cache/pip \
+RUN --mount=type=cache,id=pip-cache,target=/root/.cache/pip \
     pip install torch --index-url https://download.pytorch.org/whl/cpu \
     && pip install -r requirements.txt
 
