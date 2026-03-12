@@ -2,7 +2,7 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-COPY requirements.txt .
+COPY requirements.txt ./
 
 # System deps, pip installs, and cleanup in a single layer
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -21,7 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get purge -y --auto-remove gcc g++ curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY . .
+COPY . ./
 
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
