@@ -4,6 +4,15 @@ import streamlit as st
 
 from src.ui.helpers import api_get, api_post
 
+_CORE_MCP_TOOLS = {
+    "search_codebase",
+    "get_symbol",
+    "find_callers",
+    "get_file_context",
+    "get_agent_context",
+    "get_semantic_context",
+}
+
 
 def render():
     st.title("MCP Tokens")
@@ -83,31 +92,48 @@ def render():
     st.subheader("Connect Your AI Agent")
 
     api_url = st.session_state.get("api_url", "http://localhost:8000")
+    core_mcp_url = f"{api_url}/mcp"
+    full_mcp_url = f"{api_url}/mcp/full"
 
     tab_claude, tab_python, tab_rest = st.tabs(["Claude Desktop", "Python MCP Client", "REST API"])
 
     with tab_claude:
         st.markdown(
-            "Add this to `~/Library/Application Support/Claude/claude_desktop_config.json`  \n"
+            "Add one of these to `~/Library/Application Support/Claude/claude_desktop_config.json`  \n"
             "*(requires [mcp-remote](https://www.npmjs.com/package/mcp-remote) or Claude Desktop ≥ 0.10 with HTTP MCP support)*:"
         )
-        claude_config = {
-            "mcpServers": {
-                "nexuscode": {
-                    "type": "streamable-http",
-                    "url": f"{api_url}/mcp",
+        claude_core, claude_full = st.tabs(["Core Profile", "Full Profile"])
+        with claude_core:
+            claude_config = {
+                "mcpServers": {
+                    "nexuscode": {
+                        "type": "streamable-http",
+                        "url": core_mcp_url,
+                    }
                 }
             }
-        }
-        st.code(json.dumps(claude_config, indent=2), language="json")
+            st.code(json.dumps(claude_config, indent=2), language="json")
+            st.caption("Default profile for external agents: core codebase-context tools only.")
+        with claude_full:
+            claude_config = {
+                "mcpServers": {
+                    "nexuscode-full": {
+                        "type": "streamable-http",
+                        "url": full_mcp_url,
+                    }
+                }
+            }
+            st.code(json.dumps(claude_config, indent=2), language="json")
+            st.caption("Advanced/internal profile: full NexusCode MCP surface.")
         st.caption("Restart Claude Desktop after saving this file.")
 
     with tab_python:
+        st.caption("Core profile example")
         python_snippet = f'''\
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
-async with streamablehttp_client("{api_url}/mcp") as (read, write, _):
+async with streamablehttp_client("{core_mcp_url}") as (read, write, _):
     async with ClientSession(read, write) as session:
         await session.initialize()
 
@@ -129,6 +155,7 @@ async with streamablehttp_client("{api_url}/mcp") as (read, write, _):
         print(result.content[0].text)
 '''
         st.code(python_snippet, language="python")
+        st.caption("Full profile endpoint: `" + full_mcp_url + "`")
         st.caption("Install: `pip install mcp`  |  Transport: Streamable HTTP (MCP 2025-03-26 spec)")
 
     with tab_rest:
@@ -152,6 +179,7 @@ curl -s -X POST {api_url}/auth/token \\
 
     # ── Section 3: MCP Tools Reference ───────────────────────────────────────
     st.subheader("Available MCP Tools")
+    st.caption("Default `/mcp` profile exposes only the core codebase-context tools. Full NexusCode MCP is available at `/mcp/full`.")
 
     st.markdown(
         """
@@ -162,29 +190,31 @@ curl -s -X POST {api_url}/auth/token \\
 | `find_callers` | Who calls this function? | `symbol`, `depth`, `repo` |
 | `get_file_context` | Full structural map of a file | `path`, `repo`, `include_deps` |
 | `get_agent_context` | Pre-assembled context for a coding task | `task`, `focal_files`, `token_budget` |
-| `plan_implementation` | Web research + codebase context → implementation plan | `query`, `repo`, `web_research` |
-| `ask_codebase` | Mentor-style conversational Q&A with citations | `question`, `repo`, `model` |
 | `get_semantic_context` | Architectural relationships between symbols | `symbols`, `repo`, `concept` |
-| `list_skills` | List available NexusCode skills and workflows | `filter` |
-| `get_evolution_metrics` | Retrieval quality metrics and evolution status | `repo`, `days` |
-| `get_repo_worldview` | LLM-generated semantic worldview of a repo | `repo` |
-| `reflect_and_improve` | Trigger self-reflection and improvement cycle | `repo`, `lookback_days`, `force` |
 """
     )
+    st.caption("Full profile-only tools: `plan_implementation`, `ask_codebase`, `list_skills`, `get_evolution_metrics`, `get_repo_worldview`, `reflect_and_improve`.")
 
     st.divider()
 
     # ── Section 4: Test Connection ────────────────────────────────────────────
     st.subheader("Test MCP Server")
 
-    st.markdown("**MCP endpoint (Streamable HTTP):**")
-    st.code(f"{api_url}/mcp", language="text")
+    st.markdown("**Available MCP endpoints (Streamable HTTP):**")
+    st.code(core_mcp_url, language="text")
+    st.code(full_mcp_url, language="text")
 
-    if st.button("Test Connection", type="secondary"):
-        with st.spinner("Connecting to MCP server and listing tools…"):
+    col1, col2 = st.columns(2)
+    test_core = col1.button("Test Core MCP", type="secondary")
+    test_full = col2.button("Test Full MCP", type="secondary")
+
+    if test_core or test_full:
+        selected_url = core_mcp_url if test_core else full_mcp_url
+        selected_label = "core" if test_core else "full"
+        with st.spinner(f"Connecting to {selected_label} MCP server and listing tools…"):
             result, err = api_post(
                 "/mcp-servers/test-url",
-                json={"url": f"{api_url}/mcp", "auth_type": "none", "auth_header": None},
+                json={"url": selected_url, "auth_type": "none", "auth_header": None},
                 timeout=15,
             )
         if err:
@@ -193,9 +223,14 @@ curl -s -X POST {api_url}/auth/token \\
             tools = result.get("tools", [])
             transport = result.get("transport_used", "unknown")
             st.success(
-                f"MCP server reachable · **{len(tools)} tool(s)** available  \n"
+                f"{selected_label.capitalize()} MCP server reachable · **{len(tools)} tool(s)** available  \n"
                 f"Transport: `{transport}`"
             )
+            if test_core and tools and set(tools) != _CORE_MCP_TOOLS:
+                st.warning(
+                    "The live `/mcp` endpoint is not exposing the expected core-only toolset. "
+                    "If you recently changed the server code, restart or reload the API server and test again."
+                )
             if tools:
                 st.markdown("**Available tools:**")
                 cols = st.columns(3)

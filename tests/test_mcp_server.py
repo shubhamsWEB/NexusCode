@@ -7,6 +7,47 @@ import pytest
 
 
 @pytest.mark.asyncio
+async def test_default_mcp_profile_exposes_only_core_tools():
+    from src.mcp.server import core_mcp_server
+
+    tools = await core_mcp_server.list_tools()
+    names = {tool.name for tool in tools}
+
+    assert names == {
+        "search_codebase",
+        "get_symbol",
+        "find_callers",
+        "get_file_context",
+        "get_agent_context",
+        "get_semantic_context",
+    }
+
+
+@pytest.mark.asyncio
+async def test_full_mcp_profile_keeps_extended_tools():
+    from src.mcp.server import mcp_server
+
+    tools = await mcp_server.list_tools()
+    names = {tool.name for tool in tools}
+
+    assert "plan_implementation" in names
+    assert "ask_codebase" in names
+    assert "list_skills" in names
+    assert "get_evolution_metrics" in names
+    assert "reflect_and_improve" in names
+
+
+def test_fastapi_mounts_full_mcp_before_core_mcp():
+    from src.api.app import app
+
+    mcp_mount_paths = [route.path for route in app.routes if getattr(route, "path", "").startswith("/mcp")]
+
+    assert "/mcp/full" in mcp_mount_paths
+    assert "/mcp" in mcp_mount_paths
+    assert mcp_mount_paths.index("/mcp/full") < mcp_mount_paths.index("/mcp")
+
+
+@pytest.mark.asyncio
 async def test_ask_codebase_accepts_query_alias():
     from src.mcp.server import ask_codebase
 

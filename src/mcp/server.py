@@ -1,18 +1,11 @@
 """
-MCP server — exposes 8 codebase intelligence tools via FastMCP.
+MCP server profiles for NexusCode.
 
-Tools:
-  1. search_codebase       — hybrid semantic+keyword search + rerank
-  2. get_symbol            — fuzzy symbol lookup (like "Go to Definition")
-  3. find_callers          — who calls this function/method?
-  4. get_file_context      — structural map of a file (symbols + imports + imported_by)
-  5. get_agent_context     — pre-assembled token-budget-aware context for a task
-  6. plan_implementation   — web research + codebase context → structured implementation plan
-  7. ask_codebase          — answer a natural-language question about the codebase
-  8. get_semantic_context  — LLM-extracted architectural relationships between symbols
+Default public MCP profile:
+  - exposes only core codebase-context tools for external agents
 
-Mount the Starlette SSE app via:
-    app.mount("/mcp", mcp_server.sse_app())
+Full MCP profile:
+  - exposes the entire NexusCode tool surface for advanced/internal clients
 """
 
 from __future__ import annotations
@@ -36,26 +29,32 @@ def _escape_ilike(value: str) -> str:
     return value.replace("%", r"\%").replace("_", r"\_")
 
 
-mcp_server = FastMCP(
-    name="codebase-intelligence",
-    # ── Streamable HTTP transport (MCP 2025-03-26 spec) ─────────────────────
-    # streamable_http_path="/" → when FastAPI mounts this sub-app at /mcp
-    # the single handler endpoint lands at POST /mcp (not /mcp/mcp).
-    streamable_http_path="/",
-    # stateless_http=True → no session-ID tracking per request.
-    # Cursor (and most MCP clients) do NOT echo the MCP-Session-ID header
-    # from the initialize response back on notifications/initialized and
-    # subsequent calls.  In stateful mode this triggers "Bad Request: Missing
-    # session ID" on every non-initialize request.  Stateless mode sets
-    # mcp_session_id=None in the transport so _validate_session() returns
-    # True unconditionally — each POST is a self-contained MCP exchange.
-    stateless_http=True,
-    # ── Disable localhost-only DNS rebinding protection ──────────────────────
-    # FastMCP defaults host="127.0.0.1" which auto-enables DNS rebinding
-    # protection restricted to 127.0.0.1/localhost only.  This server is a
-    # public production service on Railway, so reject that restriction.
-    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
-    instructions=(
+def _make_mcp_server(name: str, instructions: str) -> FastMCP:
+    return FastMCP(
+        name=name,
+        # ── Streamable HTTP transport (MCP 2025-03-26 spec) ─────────────────
+        # streamable_http_path="/" → when FastAPI mounts this sub-app at /mcp
+        # the single handler endpoint lands at POST /mcp (not /mcp/mcp).
+        streamable_http_path="/",
+        # stateless_http=True → no session-ID tracking per request.
+        # Cursor (and most MCP clients) do NOT echo the MCP-Session-ID header
+        # from the initialize response back on notifications/initialized and
+        # subsequent calls.  In stateful mode this triggers "Bad Request: Missing
+        # session ID" on every non-initialize request.  Stateless mode sets
+        # mcp_session_id=None in the transport so _validate_session() returns
+        # True unconditionally — each POST is a self-contained MCP exchange.
+        stateless_http=True,
+        # ── Disable localhost-only DNS rebinding protection ──────────────────
+        # FastMCP defaults host="127.0.0.1" which auto-enables DNS rebinding
+        # protection restricted to 127.0.0.1/localhost only.  This server is a
+        # public production service on Railway, so reject that restriction.
+        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+        instructions=instructions,
+        warn_on_duplicate_tools=False,
+    )
+
+
+_FULL_MCP_INSTRUCTIONS = (
         "A live, always-fresh index of one or more GitHub repositories. "
         "All tools are scope-aware: if an API key is provided it restricts which repos are "
         "accessible; tools silently enforce this — never try to access repos outside the scope.\n\n"
@@ -81,9 +80,27 @@ mcp_server = FastMCP(
         "Fires only when exactly one repo name matches — no guessing, no heuristics.\n"
         "4. Omit both — cross-repo routing searches all accessible repos automatically.\n\n"
         "Use current_repo='owner/name' to tell the system which repo the user is actively working in."
-    ),
-    warn_on_duplicate_tools=False,
 )
+
+_CORE_MCP_INSTRUCTIONS = (
+    "A live, always-fresh index of one or more GitHub repositories for external AI agents. "
+    "This default MCP profile intentionally exposes only the core codebase-context tools: "
+    "search, symbol lookup, callers, file context, assembled agent context, and semantic context. "
+    "All tools are scope-aware: if an API key is provided it restricts which repos are accessible; "
+    "tools silently enforce this — never try to access repos outside the scope.\n\n"
+    "TOOL SELECTION GUIDE:\n"
+    "• search_codebase   — first choice for any 'find / where is / how does X work' question.\n"
+    "• get_symbol        — when you know the exact function or class name and want its definition.\n"
+    "• find_callers      — when you need to know what calls a function (blast-radius analysis).\n"
+    "• get_file_context  — when you need the complete structure of a specific file.\n"
+    "• get_agent_context — assemble token-budget-aware context for an implementation task.\n"
+    "• get_semantic_context — understand architectural relationships between symbols.\n\n"
+    "If you need higher-level workflows such as planning, Q&A, or evolution/admin tooling, "
+    "connect to the full MCP profile instead of this default core profile."
+)
+
+mcp_server = _make_mcp_server("codebase-intelligence-full", _FULL_MCP_INSTRUCTIONS)
+core_mcp_server = _make_mcp_server("codebase-intelligence-core", _CORE_MCP_INSTRUCTIONS)
 
 
 # ── Tool 1: search_codebase ───────────────────────────────────────────────────
@@ -1556,3 +1573,19 @@ async def reflect_and_improve(
         },
         indent=2,
     )
+
+
+def _register_core_tools() -> None:
+    """Expose only the core retrieval/context tools on the default MCP profile."""
+    for tool_fn in (
+        search_codebase,
+        get_symbol,
+        find_callers,
+        get_file_context,
+        get_agent_context,
+        get_semantic_context,
+    ):
+        core_mcp_server.add_tool(tool_fn)
+
+
+_register_core_tools()

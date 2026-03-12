@@ -149,6 +149,50 @@ class Settings(BaseSettings):
         True,
         description="Set false to disable the relevance gate entirely (e.g. for testing).",
     )
+    query_relevance_mode: str = Field(
+        "strict",
+        description=(
+            "Planner relevance gate behavior: 'strict' rejects out-of-scope queries, "
+            "'warn' logs and continues, 'off' skips the gate."
+        ),
+    )
+    web_research_timeout_s: int = Field(
+        0,
+        description=(
+            "Max seconds allowed for planner web research before it is skipped. "
+            "Set to 0 to disable the timeout."
+        ),
+    )
+    web_research_max_chars: int = Field(
+        0,
+        description=(
+            "Max characters of web research notes injected into planner prompts. "
+            "Set to 0 to disable truncation."
+        ),
+    )
+    web_research_selective_trigger: bool = Field(
+        False,
+        description=(
+            "If true, planner web research only runs for complex or externally-oriented queries. "
+            "If false, it preserves legacy behavior and runs whenever web_research is enabled."
+        ),
+    )
+    plan_max_iterations_simple: int = Field(
+        5,
+        description="Max retrieval iterations for simple plan queries. Defaults to plan_max_iterations behavior.",
+    )
+    plan_max_iterations_moderate: int = Field(
+        5,
+        description="Max retrieval iterations for moderate plan queries. Defaults to plan_max_iterations behavior.",
+    )
+    agent_token_budget_simple: int = Field(
+        35_000,
+        description="Cumulative planner tool-result token budget for simple queries.",
+    )
+    agent_token_budget_moderate: int = Field(
+        35_000,
+        description="Cumulative planner tool-result token budget for moderate queries.",
+    )
 
     github_api_concurrency: int = Field(
         10, description="Max concurrent GitHub API file fetch calls during indexing"
@@ -236,6 +280,14 @@ class Settings(BaseSettings):
         if not v.startswith("postgresql"):
             raise ValueError("DATABASE_URL must be a PostgreSQL connection string")
         return v
+
+    @field_validator("query_relevance_mode")
+    @classmethod
+    def validate_query_relevance_mode(cls, v: str) -> str:
+        value = v.lower().strip()
+        if value not in {"strict", "warn", "off"}:
+            raise ValueError("QUERY_RELEVANCE_MODE must be one of: strict, warn, off")
+        return value
 
 
 # Module-level singleton — import this everywhere

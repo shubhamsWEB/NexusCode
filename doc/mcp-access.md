@@ -1,18 +1,25 @@
 # MCP Server Access & Authentication
 
-NexusCode exposes all 8 codebase intelligence tools via the **Model Context Protocol (MCP)** using **Streamable HTTP** at `/mcp`. This page explains how to generate auth tokens, connect Claude Desktop or Cursor-compatible clients, and use each tool.
+NexusCode exposes a **core codebase-context MCP profile** by default at `/mcp`, and a **full MCP profile** at `/mcp/full`. This page explains how to generate auth tokens, connect Claude Desktop or Cursor-compatible clients, and use each profile.
 
 ---
 
 ## MCP Endpoint
 
+Core profile:
 ```
 http://localhost:8000/mcp
 ```
 
+Full profile:
+```
+http://localhost:8000/mcp/full
+```
+
 The MCP server uses **Streamable HTTP** (MCP 2025-03-26 spec).
 
-- Primary endpoint: `POST http://localhost:8000/mcp`
+- Primary core endpoint: `POST http://localhost:8000/mcp`
+- Full endpoint: `POST http://localhost:8000/mcp/full`
 - Legacy SSE docs elsewhere in the repo are outdated for local client setup.
 
 ---
@@ -169,7 +176,27 @@ Auth:         Authorization: Bearer <token>
 
 ---
 
-## Available MCP Tools (8 total)
+## MCP Profiles
+
+### Core profile (`/mcp`)
+
+This is the default endpoint intended for Cursor, Claude Desktop, and other external agents that mainly need grounded codebase context.
+
+Available tools:
+- `search_codebase`
+- `get_symbol`
+- `find_callers`
+- `get_file_context`
+- `get_agent_context`
+- `get_semantic_context`
+
+### Full profile (`/mcp/full`)
+
+This preserves the broader NexusCode MCP surface for advanced/internal clients.
+
+Available tools include the full planning, Q&A, and admin/evolution surface in addition to the core tools.
+
+## Core MCP Tools
 
 ### 1. `search_codebase`
 Hybrid semantic + keyword search with intelligent cross-repo routing.
@@ -234,7 +261,9 @@ get_agent_context(
 )
 ```
 
-### 6. `plan_implementation`
+## Full-only MCP Tools
+
+### `plan_implementation`
 Full grounded implementation plan: web research + codebase context → exact file paths, steps, pseudocode, risks.
 
 ```
@@ -246,7 +275,7 @@ plan_implementation(
 )
 ```
 
-### 7. `ask_codebase`
+### `ask_codebase`
 Answer natural-language questions in mentor tone with inline code citations.
 
 ```
@@ -258,7 +287,7 @@ ask_codebase(
 )
 ```
 
-### 8. `list_skills`
+### `list_skills`
 Discover available skills by name and description.
 
 ```
