@@ -28,7 +28,7 @@ from src.api.workflows import router as workflows_router
 from src.api.workflows import webhook_router as workflow_webhook_router
 from src.github.webhook import router as webhook_router
 from src.mcp.auth import router as auth_router
-from src.mcp.server import mcp_server
+from src.mcp.server import core_mcp_server, mcp_server
 from src.storage.db import get_index_stats
 
 
@@ -59,16 +59,18 @@ async def lifespan(application: FastAPI):
 
     await EventBus._get_redis()
 
-    # Run the MCP Streamable HTTP session manager for the full server lifetime.
+    # Run the MCP Streamable HTTP session managers for the full server lifetime.
     # streamable_http_app() lazily creates _session_manager at mount time (below);
-    # this context manager creates the anyio task group that all MCP sessions need.
-    # Without it every POST /mcp raises RuntimeError("Task group not initialized").
-    async with mcp_server._session_manager.run():
-        yield
+    # these context managers create the anyio task groups that all MCP sessions need.
+    # Without them every POST to the mounted MCP routes raises
+    # RuntimeError("Task group not initialized").
+    async with core_mcp_server._session_manager.run():
+        async with mcp_server._session_manager.run():
+            yield
 
 
 class _MCPPathNormalizer:
-    """Pure ASGI middleware: rewrites POST /mcp → /mcp/ before routing.
+    """Pure ASGI middleware: rewrites mounted MCP paths to include a trailing slash.
 
     Starlette's Mount regex for ``app.mount("/mcp", ...)`` is ``^/mcp/(?P<path>.*)$``.
     A request to ``POST /mcp`` (no trailing slash) misses that regex, falls through
@@ -76,17 +78,18 @@ class _MCPPathNormalizer:
     MCP clients (Cursor, Claude Desktop) do **not** follow POST redirects, so they
     never receive the tools list and the server appears broken.
 
-    This middleware normalises the path to ``/mcp/`` before routing so the Mount
-    matches directly — no redirect, no client-side workaround needed.
+    This middleware normalises the path to ``/mcp/`` and ``/mcp/full/`` before
+    routing so the Mount matches directly — no redirect, no client-side workaround
+    needed.
     """
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] == "http" and scope.get("path") == "/mcp":
+        if scope["type"] == "http" and scope.get("path") in {"/mcp", "/mcp/full"}:
             scope = dict(scope)
-            scope["path"] = "/mcp/"
+            scope["path"] = scope["path"] + "/"
         await self.app(scope, receive, send)
 
 
@@ -120,11 +123,14 @@ app.include_router(evolution_router)
 
 
 # ── MCP Streamable HTTP transport (MCP 2025-03-26 spec) ──────────────────────
-# Endpoint: POST /mcp  (stateless_http=True in server.py → no session-ID needed)
-# Starlette Mount redirects POST /mcp → POST /mcp/ (307) which Cursor follows.
-# IMPORTANT: streamable_http_app() here creates mcp_server._session_manager
-# before the lifespan's  async with mcp_server._session_manager.run()  runs.
-app.mount("/mcp", mcp_server.streamable_http_app())
+# Full endpoint:    POST /mcp/full  → complete NexusCode MCP surface
+# Default endpoint: POST /mcp       → core context tools only
+# Mount the more-specific path first so Starlette does not route /mcp/full
+# through the broader /mcp mount.
+# IMPORTANT: streamable_http_app() here creates each server's _session_manager
+# before the lifespan's async with ... _session_manager.run() contexts run.
+app.mount("/mcp/full", mcp_server.streamable_http_app())
+app.mount("/mcp", core_mcp_server.streamable_http_app())
 
 
 # ── Health ────────────────────────────────────────────────────────────────────
