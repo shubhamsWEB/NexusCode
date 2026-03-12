@@ -1175,14 +1175,14 @@ curl -X DELETE http://localhost:8000/api-keys/1
 
 **Using a scoped key with MCP:**
 
-Configure your MCP client to pass the key via the SSE URL query param (useful for clients that can't set custom headers):
+Configure your MCP client to pass the key via the MCP URL query param (useful for clients that can't set custom headers):
 
 ```json
 {
   "mcpServers": {
     "nexuscode": {
-      "type": "sse",
-      "url":  "http://nexuscode-server:8000/mcp/sse?api_key=abc123..."
+      "type": "streamable-http",
+      "url":  "http://nexuscode-server:8000/mcp?api_key=abc123..."
     }
   }
 }

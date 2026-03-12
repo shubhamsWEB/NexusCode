@@ -101,7 +101,7 @@ Query Path:
   POST /ask     → AgentLoop → tools → retrieval → LLM → markdown answer + citations
   POST /plan    → AgentLoop → retrieval + web research → LLM → ImplementationPlan
   POST /workflows/{id}/run  → DAG executor → multi-agent steps → SSE stream
-  GET  /mcp/sse → 8 MCP tools for Claude Code / Cursor / Claude Desktop
+  POST /mcp     → MCP tools for Claude Code / Cursor / Claude Desktop
 
 PDF reports, knowledge graphs, workflow automation, and external MCP tools all
 run through the same shared infrastructure.

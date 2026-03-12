@@ -954,11 +954,20 @@ async def plan_implementation(
 @mcp_server.tool()
 async def ask_codebase(
     question: Annotated[
-        str,
-        "Natural-language question about the codebase (min 5 chars). "
+        str | None,
+        "Preferred field: natural-language question about the codebase (min 5 chars). "
         "You may mention a repo name to target a specific repo "
         "(e.g. 'How does auth-service handle token refresh?').",
-    ],
+    ] = None,
+    query: Annotated[
+        str | None,
+        "Compatibility alias for question. Accepted because some MCP clients/models "
+        "send 'query' for text prompts.",
+    ] = None,
+    text: Annotated[
+        str | None,
+        "Secondary compatibility alias for question.",
+    ] = None,
     repo: Annotated[
         str | None,
         "Scope to 'owner/name'. Omit to let cross-repo routing find the relevant repos. "
@@ -994,13 +1003,30 @@ async def ask_codebase(
     """
     from src.ask.ask_agent import generate_answer
 
+    resolved_question = question or query or text or ""
+    if not resolved_question or len(resolved_question.strip()) < 5:
+        return json.dumps({
+            "error": "ask_codebase requires a 'question' field (min 5 chars). "
+                     "Compatibility aliases 'query' and 'text' are also accepted.",
+            "received_keys": [
+                key for key, value in {
+                    "question": question,
+                    "query": query,
+                    "text": text,
+                    "repo": repo,
+                    "model": model,
+                }.items()
+                if value is not None
+            ],
+        })
+
     repo_owner = repo_name = None
     if repo and "/" in repo:
         repo_owner, repo_name = repo.split("/", 1)
 
     try:
         result = await generate_answer(
-            query=question,
+            query=resolved_question,
             repo_owner=repo_owner,
             repo_name=repo_name,
             model=model,

@@ -1,6 +1,6 @@
 # MCP Server Access & Authentication
 
-NexusCode exposes all 8 codebase intelligence tools via the **Model Context Protocol (MCP)** using SSE transport. This page explains how to generate auth tokens, connect Claude Desktop, and use each tool.
+NexusCode exposes all 8 codebase intelligence tools via the **Model Context Protocol (MCP)** using **Streamable HTTP** at `/mcp`. This page explains how to generate auth tokens, connect Claude Desktop or Cursor-compatible clients, and use each tool.
 
 ---
 
@@ -10,10 +10,10 @@ NexusCode exposes all 8 codebase intelligence tools via the **Model Context Prot
 http://localhost:8000/mcp
 ```
 
-The MCP server uses **SSE (Server-Sent Events)** transport — the same protocol used by Claude Desktop and most MCP clients.
+The MCP server uses **Streamable HTTP** (MCP 2025-03-26 spec).
 
-- SSE stream: `GET  http://localhost:8000/mcp/sse`
-- Message posting: `POST http://localhost:8000/mcp/messages/`
+- Primary endpoint: `POST http://localhost:8000/mcp`
+- Legacy SSE docs elsewhere in the repo are outdated for local client setup.
 
 ---
 
@@ -65,14 +65,14 @@ curl -X POST http://localhost:8000/api-keys \
 
 ### Connect MCP client with a scoped key
 
-Append `?api_key=<key>` to the SSE URL:
+Append `?api_key=<key>` to the MCP URL:
 
 ```json
 {
   "mcpServers": {
     "nexuscode": {
-      "type": "sse",
-      "url": "http://localhost:8000/mcp/sse?api_key=abc123xyz..."
+      "type": "streamable-http",
+      "url": "http://localhost:8000/mcp?api_key=abc123xyz..."
     }
   }
 }
@@ -158,13 +158,13 @@ curl http://localhost:8000/auth/verify \
 
 ## Connecting Any MCP Client
 
-NexusCode follows the MCP SSE transport spec. Any compliant client can connect:
+NexusCode follows the MCP Streamable HTTP transport spec. Any compliant client can connect:
 
 ```
-Transport:    SSE
-Base URL:     http://localhost:8000/mcp
-SSE stream:   GET /mcp/sse        (Authorization: Bearer <token>)
-Messages:     POST /mcp/messages/ (Authorization: Bearer <token>)
+Transport:    Streamable HTTP
+Endpoint:     POST http://localhost:8000/mcp
+Auth:         Authorization: Bearer <token>
+              or ?api_key=<key>
 ```
 
 ---
@@ -251,7 +251,8 @@ Answer natural-language questions in mentor tone with inline code citations.
 
 ```
 ask_codebase(
-  question: "How does the webhook processing pipeline work?"
+  question: "How does the webhook processing pipeline work?"  # preferred
+  query:    "How does the webhook processing pipeline work?"  # compatibility alias
   repo:     "owner/name"  # optional
   model:    "claude-sonnet-4-6"  # optional
 )
