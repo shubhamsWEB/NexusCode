@@ -11,6 +11,7 @@ from typing import Literal
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from src.api.agent_roles import router as agent_roles_router
 from src.api.evolution import router as evolution_router
@@ -66,12 +67,39 @@ async def lifespan(application: FastAPI):
         yield
 
 
+class _MCPPathNormalizer:
+    """Pure ASGI middleware: rewrites POST /mcp → /mcp/ before routing.
+
+    Starlette's Mount regex for ``app.mount("/mcp", ...)`` is ``^/mcp/(?P<path>.*)$``.
+    A request to ``POST /mcp`` (no trailing slash) misses that regex, falls through
+    to the Router's redirect_slashes logic, and gets a 307 Temporary Redirect.
+    MCP clients (Cursor, Claude Desktop) do **not** follow POST redirects, so they
+    never receive the tools list and the server appears broken.
+
+    This middleware normalises the path to ``/mcp/`` before routing so the Mount
+    matches directly — no redirect, no client-side workaround needed.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and scope.get("path") == "/mcp":
+            scope = dict(scope)
+            scope["path"] = "/mcp/"
+        await self.app(scope, receive, send)
+
+
 app = FastAPI(
     title="Codebase Intelligence MCP Server",
     version="0.2.0",
     description="Centralized, always-fresh codebase knowledge service.",
     lifespan=lifespan,
 )
+
+# Normalise /mcp → /mcp/ so Cursor/Claude Desktop don't need the trailing slash.
+# Must be added AFTER app is constructed so it wraps the full middleware stack.
+app.add_middleware(_MCPPathNormalizer)
 
 
 app.include_router(webhook_router)

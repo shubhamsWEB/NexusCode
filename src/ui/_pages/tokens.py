@@ -88,18 +88,14 @@ def render():
 
     with tab_claude:
         st.markdown(
-            "Add this to `~/Library/Application Support/Claude/claude_desktop_config.json`:"
+            "Add this to `~/Library/Application Support/Claude/claude_desktop_config.json`  \n"
+            "*(requires [mcp-remote](https://www.npmjs.com/package/mcp-remote) or Claude Desktop ≥ 0.10 with HTTP MCP support)*:"
         )
         claude_config = {
             "mcpServers": {
-                "codebase": {
-                    "command": "curl",
-                    "args": [
-                        "-N",
-                        "-H",
-                        "Accept: text/event-stream",
-                        f"{api_url}/mcp/sse",
-                    ],
+                "nexuscode": {
+                    "type": "streamable-http",
+                    "url": f"{api_url}/mcp",
                 }
             }
         }
@@ -109,9 +105,9 @@ def render():
     with tab_python:
         python_snippet = f'''\
 from mcp import ClientSession
-from mcp.client.sse import sse_client
+from mcp.client.streamable_http import streamablehttp_client
 
-async with sse_client("{api_url}/mcp/sse") as (read, write):
+async with streamablehttp_client("{api_url}/mcp") as (read, write, _):
     async with ClientSession(read, write) as session:
         await session.initialize()
 
@@ -133,7 +129,7 @@ async with sse_client("{api_url}/mcp/sse") as (read, write):
         print(result.content[0].text)
 '''
         st.code(python_snippet, language="python")
-        st.caption("Install: `pip install mcp`")
+        st.caption("Install: `pip install mcp`  |  Transport: Streamable HTTP (MCP 2025-03-26 spec)")
 
     with tab_rest:
         rest_snippet = f"""\
@@ -166,6 +162,13 @@ curl -s -X POST {api_url}/auth/token \\
 | `find_callers` | Who calls this function? | `symbol`, `depth`, `repo` |
 | `get_file_context` | Full structural map of a file | `path`, `repo`, `include_deps` |
 | `get_agent_context` | Pre-assembled context for a coding task | `task`, `focal_files`, `token_budget` |
+| `plan_implementation` | Web research + codebase context → implementation plan | `query`, `repo`, `web_research` |
+| `ask_codebase` | Mentor-style conversational Q&A with citations | `question`, `repo`, `model` |
+| `get_semantic_context` | Architectural relationships between symbols | `symbols`, `repo`, `concept` |
+| `list_skills` | List available NexusCode skills and workflows | `filter` |
+| `get_evolution_metrics` | Retrieval quality metrics and evolution status | `repo`, `days` |
+| `get_repo_worldview` | LLM-generated semantic worldview of a repo | `repo` |
+| `reflect_and_improve` | Trigger self-reflection and improvement cycle | `repo`, `lookback_days`, `force` |
 """
     )
 
@@ -174,18 +177,30 @@ curl -s -X POST {api_url}/auth/token \\
     # ── Section 4: Test Connection ────────────────────────────────────────────
     st.subheader("Test MCP Server")
 
-    st.markdown("**MCP SSE endpoint:**")
-    st.code(f"{api_url}/mcp/sse", language="text")
+    st.markdown("**MCP endpoint (Streamable HTTP):**")
+    st.code(f"{api_url}/mcp", language="text")
 
     if st.button("Test Connection", type="secondary"):
-        with st.spinner("Checking server..."):
-            data, err = api_get("/health", timeout=5)
-        if err:
-            st.error(f"Cannot reach server: {err}")
-        else:
-            chunks = data.get("chunks", 0)
-            repos = data.get("repos", 0)
-            st.success(
-                f"MCP server is reachable at `{api_url}/mcp/sse`  \n"
-                f"{repos} repo(s) indexed · {chunks:,} active chunks"
+        with st.spinner("Connecting to MCP server and listing tools…"):
+            result, err = api_post(
+                "/mcp-servers/test-url",
+                json={"url": f"{api_url}/mcp", "auth_type": "none", "auth_header": None},
+                timeout=15,
             )
+        if err:
+            st.error(f"Cannot reach MCP server: {err}")
+        elif result and result.get("ok"):
+            tools = result.get("tools", [])
+            transport = result.get("transport_used", "unknown")
+            st.success(
+                f"MCP server reachable · **{len(tools)} tool(s)** available  \n"
+                f"Transport: `{transport}`"
+            )
+            if tools:
+                st.markdown("**Available tools:**")
+                cols = st.columns(3)
+                for i, tool_name in enumerate(tools):
+                    cols[i % 3].markdown(f"• `{tool_name}`")
+        else:
+            err_msg = result.get("error", "unknown error") if result else "no response"
+            st.error(f"MCP server test failed: {err_msg}")
