@@ -119,7 +119,8 @@
       "Bash(.venv/bin/pip index:*)",
       "WebFetch(domain:docs.cursor.com)",
       "Bash(bash:*)",
-      "Bash(/tmp/test_mcp.sh:*)"
+      "Bash(/tmp/test_mcp.sh:*)",
+      "Bash(docker build:*)"
     ]
   }
 }
