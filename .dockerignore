@@ -36,3 +36,6 @@ tests/
 .editorconfig
 .vscode/
 .idea/
+
+# Claude Code workspace files
+.claude/
