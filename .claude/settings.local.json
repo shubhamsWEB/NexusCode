@@ -117,7 +117,9 @@
       "Bash(python:*)",
       "WebFetch(domain:support.atlassian.com)",
       "Bash(.venv/bin/pip index:*)",
-      "WebFetch(domain:docs.cursor.com)"
+      "WebFetch(domain:docs.cursor.com)",
+      "Bash(bash:*)",
+      "Bash(/tmp/test_mcp.sh:*)"
     ]
   }
 }

@@ -38,13 +38,22 @@ def _escape_ilike(value: str) -> str:
 
 mcp_server = FastMCP(
     name="codebase-intelligence",
-    # Streamable HTTP transport (MCP 2025-03-26 spec).
-    # streamable_http_path="/" so that when FastAPI mounts this sub-app at
-    # /mcp the single handler endpoint lands at POST /mcp (not /mcp/mcp).
+    # ── Streamable HTTP transport (MCP 2025-03-26 spec) ─────────────────────
+    # streamable_http_path="/" → when FastAPI mounts this sub-app at /mcp
+    # the single handler endpoint lands at POST /mcp (not /mcp/mcp).
     streamable_http_path="/",
-    # Disable localhost-only DNS rebinding protection — this server is a public
-    # production service (Railway), not a local dev tool, so the Host header
-    # check must not be restricted to 127.0.0.1/localhost.
+    # stateless_http=True → no session-ID tracking per request.
+    # Cursor (and most MCP clients) do NOT echo the MCP-Session-ID header
+    # from the initialize response back on notifications/initialized and
+    # subsequent calls.  In stateful mode this triggers "Bad Request: Missing
+    # session ID" on every non-initialize request.  Stateless mode sets
+    # mcp_session_id=None in the transport so _validate_session() returns
+    # True unconditionally — each POST is a self-contained MCP exchange.
+    stateless_http=True,
+    # ── Disable localhost-only DNS rebinding protection ──────────────────────
+    # FastMCP defaults host="127.0.0.1" which auto-enables DNS rebinding
+    # protection restricted to 127.0.0.1/localhost only.  This server is a
+    # public production service on Railway, so reject that restriction.
     transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
     instructions=(
         "A live, always-fresh index of one or more GitHub repositories. "
