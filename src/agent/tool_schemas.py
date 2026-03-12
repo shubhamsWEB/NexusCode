@@ -466,16 +466,23 @@ ASK_CODEBASE_SCHEMA: dict = {
             "question": {
                 "type": "string",
                 "description": (
-                    "Natural-language question about the codebase (min 5 chars). "
-                    "Examples: "
+                    "Preferred field: natural-language question about the codebase "
+                    "(min 5 chars). Examples: "
                     "'How does the webhook HMAC verification work?', "
                     "'Where is user authentication handled and how does the JWT flow work?', "
                     "'What is the RRF merge algorithm and where is it implemented?', "
                     "'Explain how the embedding pipeline indexes a new file'."
                 ),
             },
+            "query": {
+                "type": "string",
+                "description": "Compatibility alias for 'question'.",
+            },
+            "text": {
+                "type": "string",
+                "description": "Secondary compatibility alias for 'question'.",
+            },
         },
-        "required": ["question"],
     },
 }
 

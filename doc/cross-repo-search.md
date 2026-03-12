@@ -188,14 +188,14 @@ curl -X DELETE http://localhost:8000/api-keys/3
 
 ### Using a Key — MCP Client
 
-Embed the key in the SSE URL (works with any MCP client that passes the URL as-is):
+Embed the key in the MCP URL (works with Streamable HTTP clients such as Cursor and Claude Code):
 
 ```json
 {
   "mcpServers": {
     "nexuscode": {
-      "type": "sse",
-      "url": "http://nexuscode-server:8000/mcp/sse?api_key=abc123xyz..."
+      "type": "streamable-http",
+      "url": "http://nexuscode-server:8000/mcp?api_key=abc123xyz..."
     }
   }
 }
@@ -264,8 +264,8 @@ Frontend developer configures Claude Code:
   {
     "mcpServers": {
       "nexuscode": {
-        "type": "sse",
-        "url": "http://nexuscode:8000/mcp/sse?api_key=abc123..."
+        "type": "streamable-http",
+        "url": "http://nexuscode:8000/mcp?api_key=abc123..."
       }
     }
   }

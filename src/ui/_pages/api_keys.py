@@ -138,14 +138,14 @@ def render():
         api_url = st.session_state.get("api_url", "http://localhost:8000")
         st.markdown(
             f"""
-Configure your MCP client (e.g. Claude Code `~/.claude/settings.json`) with the key in the SSE URL:
+Configure your MCP client (e.g. Claude Code, Cursor-compatible HTTP MCP clients) with the key on the Streamable HTTP URL:
 
 ```json
 {{
   "mcpServers": {{
     "nexuscode": {{
-      "type": "sse",
-      "url": "{api_url}/mcp/sse?api_key=YOUR_KEY_HERE"
+      "type": "streamable-http",
+      "url": "{api_url}/mcp?api_key=YOUR_KEY_HERE"
     }}
   }}
 }}
