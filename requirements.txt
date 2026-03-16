@@ -15,7 +15,7 @@ rq==2.7.0
 
 # GitHub API client
 httpx==0.28.1
-httpx-sse==0.4.0            # MCP SSE transport
+httpx-sse==0.4.3            # MCP SSE transport
 
 # AST parsing
 tree-sitter==0.25.2
