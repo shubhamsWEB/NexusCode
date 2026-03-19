@@ -283,8 +283,24 @@ async def _search_codebase(
             }
         )
 
+    # Graph expansion: add structurally related chunks (callees, callers,
+    # imported-file chunks) that vector/keyword search may have missed.
+    try:
+        from src.retrieval.graph_expander import expand_with_graph
+
+        graph_neighbors = await expand_with_graph(
+            results,
+            repo_owner=repo_owner,
+            repo_name=repo_name,
+            max_neighbors=15,
+        )
+        if graph_neighbors:
+            results = results + graph_neighbors
+    except Exception as _gex:
+        logger.debug("graph expansion skipped: %s", sanitize_log(_gex))
+
     if mode in ("semantic", "hybrid"):
-        results = rerank(query, results, top_n=top_k)
+        results = rerank(query, results, top_n=top_k + 10)
 
     # 6K token budget per tool call — keeps individual results focused
     ctx = assemble(results, token_budget=6000, query=query)
@@ -390,14 +406,135 @@ async def _get_symbol(
 # ── find_callers ──────────────────────────────────────────────────────────────
 
 
+async def _find_callers_from_graph(
+    symbol: str,
+    depth: int,
+    repo_owner: str | None,
+    repo_name: str | None,
+) -> dict:
+    """
+    BFS over the kg_edges CALLS graph to find callers of `symbol`.
+
+    This is the primary path for find_callers.  It uses the pre-built
+    call graph (written by build_calls_from_parsed during indexing) so
+    results are deterministic and have zero false positives from text
+    matching.
+
+    Returns a dict compatible with the find_callers JSON response shape.
+    Returns {"total_callers": 0, "hops": []} if the graph has no data
+    (triggers keyword-search fallback in _find_callers).
+    """
+    from sqlalchemy import text as sql_text
+
+    from src.storage.db import AsyncSessionLocal
+
+    all_hops: list[dict] = []
+    frontier: set[str] = {symbol}
+    seen: set[str] = {symbol}
+
+    # Build repo filter once
+    base_params: dict = {}
+    repo_filter = ""
+    if repo_owner:
+        base_params["owner"] = repo_owner
+        repo_filter += " AND e.repo_owner = :owner"
+    if repo_name:
+        base_params["name"] = repo_name
+        repo_filter += " AND e.repo_name = :name"
+
+    for hop_num in range(1, depth + 1):
+        if not frontier:
+            break
+
+        params = {**base_params, "targets": list(frontier)}
+
+        # One query: find caller symbols + their chunk location
+        query = sql_text(f"""
+            SELECT DISTINCT
+                e.source_id          AS caller_sym,
+                e.target_id          AS callee_sym,
+                e.confidence,
+                c.file_path,
+                c.start_line,
+                c.end_line,
+                c.symbol_kind
+            FROM kg_edges e
+            LEFT JOIN chunks c
+              ON c.symbol_name = e.source_id
+             AND c.repo_owner  = e.repo_owner
+             AND c.repo_name   = e.repo_name
+             AND c.is_deleted  = FALSE
+             AND c.symbol_kind IN ('function', 'method', 'class')
+            WHERE e.edge_type = 'calls'
+              AND e.target_id = ANY(:targets)
+              {repo_filter}
+            ORDER BY e.confidence DESC
+            LIMIT 60
+        """)
+
+        try:
+            async with AsyncSessionLocal() as session:
+                rows = (await session.execute(query, params)).fetchall()
+        except Exception as exc:
+            logger.warning("find_callers graph query failed: %s", sanitize_log(exc))
+            break
+
+        if not rows:
+            break
+
+        hop_callers: list[dict] = []
+        next_frontier: set[str] = set()
+
+        for caller_sym, callee_sym, confidence, file_path, start_line, end_line, sym_kind in rows:
+            if not caller_sym:
+                continue
+            entry: dict = {
+                "file": file_path or "unknown",
+                "symbol_context": caller_sym,
+                "lines": f"{start_line or 0}-{end_line or 0}",
+                "calls": callee_sym,
+                "confidence": round(float(confidence or 0.8), 2),
+                "call_sites": [],  # graph edges don't carry line-level call sites
+            }
+            hop_callers.append(entry)
+
+            # Expand frontier — but only for symbols not yet seen
+            if caller_sym not in seen:
+                next_frontier.add(caller_sym)
+                seen.add(caller_sym)
+
+        if hop_callers:
+            all_hops.append({"hop": hop_num, "callers": hop_callers})
+
+        frontier = next_frontier
+
+    return {
+        "symbol": symbol,
+        "total_callers": sum(len(h["callers"]) for h in all_hops),
+        "hops": all_hops,
+        "source": "call_graph",
+    }
+
+
 async def _find_callers(
     inp: dict,
     repo_owner: str | None,
     repo_name: str | None,
     allowed_repos: list[str] | None = None,
 ) -> str:
-    from src.retrieval.searcher import _keyword_search
+    """
+    Find all callers of a symbol using a two-phase strategy:
 
+    Phase 1 — Graph BFS (fast, accurate, zero false positives):
+        Query the kg_edges CALLS table built during AST indexing.
+        This is deterministic: only actual function-call edges are traversed.
+
+    Phase 2 — Keyword search fallback (legacy):
+        If the graph returns no results (repo not yet fully indexed, or
+        the symbol has no recorded call edges), fall back to the original
+        text-matching BFS.  This maintains backwards compatibility for
+        repos indexed before the call-graph feature.
+    """
     symbol = inp.get("symbol") or inp.get("name") or inp.get("function") or ""
     if not symbol:
         return json.dumps({
@@ -406,6 +543,18 @@ async def _find_callers(
             "received_keys": list(inp.keys()),
         })
     depth = max(1, min(2, int(inp.get("depth", 1))))
+
+    # ── Phase 1: graph BFS ────────────────────────────────────────────────────
+    graph_result = await _find_callers_from_graph(symbol, depth, repo_owner, repo_name)
+    if graph_result["total_callers"] > 0:
+        return json.dumps(graph_result, indent=2)
+
+    # ── Phase 2: keyword-search fallback ─────────────────────────────────────
+    logger.info(
+        "find_callers: graph returned 0 results for %r — falling back to keyword search",
+        sanitize_log(symbol),
+    )
+    from src.retrieval.searcher import _keyword_search
 
     _DEFINITION_PREFIXES = (
         "def ",
@@ -487,6 +636,7 @@ async def _find_callers(
                 "symbol": symbol,
                 "hops": [],
                 "total_callers": 0,
+                "source": "keyword_fallback",
                 "message": f"No call sites found for '{symbol}' in the indexed codebase.",
             }
         )
@@ -496,6 +646,7 @@ async def _find_callers(
             "symbol": symbol,
             "total_callers": sum(len(h["callers"]) for h in all_hops),
             "hops": all_hops,
+            "source": "keyword_fallback",
         },
         indent=2,
     )
@@ -747,14 +898,32 @@ async def _get_agent_context(
             "message": "No relevant context found. Try a different task description or check that repos are indexed.",
         })
 
-    # 3. Rerank (focal chunks keep top priority, others get reranked)
+    # 3. Graph expansion: add structurally related chunks not yet in the set
+    if all_results:
+        try:
+            from src.retrieval.graph_expander import expand_with_graph
+
+            graph_neighbors = await expand_with_graph(
+                all_results,
+                repo_owner=repo_owner,
+                repo_name=repo_name,
+                max_neighbors=20,
+            )
+            for r in graph_neighbors:
+                if r.chunk_id not in seen_ids:
+                    seen_ids.add(r.chunk_id)
+                    all_results.append(r)
+        except Exception as _gex:
+            logger.debug("get_agent_context: graph expansion skipped: %s", sanitize_log(_gex))
+
+    # 4. Rerank (focal chunks keep top priority, others get reranked)
     focal_chunks = [r for r in all_results if r.rerank_score == 10.0]
     search_chunks = [r for r in all_results if r.rerank_score != 10.0]
     if search_chunks:
-        search_chunks = rerank(task, search_chunks, top_n=10)
+        search_chunks = rerank(task, search_chunks, top_n=15)
     final_results = focal_chunks + search_chunks
 
-    # 4. Assemble within token budget
+    # 5. Assemble within token budget
     ctx = assemble(final_results, token_budget=token_budget, query=task)
 
     return json.dumps({

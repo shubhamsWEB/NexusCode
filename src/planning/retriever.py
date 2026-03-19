@@ -328,9 +328,14 @@ def _compute_budgets(analysis: QueryAnalysis) -> dict:
     Compute adaptive token budgets based on query complexity.
 
     Simple queries get the base budget; complex queries scale up.
+
+    Raised caps (v2):
+    - base: 10K → 12K      (more context even for simple queries)
+    - max_budget: 30K → 60K (2x context for complex queries — allows
+      the LLM to see many more relevant chunks before generating a plan)
     """
-    base = 10_000
-    max_budget = 30_000
+    base = 12_000
+    max_budget = 60_000
 
     if analysis.complexity == "complex":
         total = max_budget
@@ -364,14 +369,26 @@ def _compute_candidates(analysis: QueryAnalysis, codebase_size: int) -> dict:
     Scale candidate counts based on query complexity and codebase size.
 
     codebase_size: approximate number of active chunks in the repo.
-    """
-    base_candidates = 15
-    max_candidates = 40
-    base_rerank = 10
-    max_rerank = 25
 
-    # Scale factor: 1.0 for small repos, up to 2.0 for large ones
-    if codebase_size > 5000:
+    Raised caps (v2):
+    - max_candidates: 40 → 100  (broader initial recall from vector index)
+    - max_rerank: 25 → 50       (more candidates evaluated by cross-encoder)
+    - base_candidates: 15 → 20  (better baseline for small repos)
+    - base_rerank: 10 → 15      (better baseline reranking)
+
+    For large repos (>5K chunks) with complex queries this means up to
+    100 candidates are retrieved and 50 are cross-encoder reranked,
+    compared to the old 40/25. This is the primary accuracy lever.
+    """
+    base_candidates = 20
+    max_candidates = 100
+    base_rerank = 15
+    max_rerank = 50
+
+    # Scale factor: 1.0 for small repos, up to 3.0 for very large ones
+    if codebase_size > 10_000:
+        size_factor = 3.0
+    elif codebase_size > 5000:
         size_factor = 2.0
     elif codebase_size > 1000:
         size_factor = 1.5
@@ -380,7 +397,7 @@ def _compute_candidates(analysis: QueryAnalysis, codebase_size: int) -> dict:
 
     complexity_factor = {"simple": 1.0, "moderate": 1.5, "complex": 2.0}[analysis.complexity]
 
-    combined = min(size_factor * complexity_factor, 2.5)  # cap at 2.5x
+    combined = min(size_factor * complexity_factor, 5.0)  # cap at 5.0x (was 2.5x)
 
     candidates = min(int(base_candidates * combined), max_candidates)
     rerank_n = min(int(base_rerank * combined), max_rerank)
@@ -455,10 +472,15 @@ async def retrieve_planning_context(
     # ── Phase 2: hybrid search (adaptive candidates) ────────────────────
     num_candidates = candidate_config["candidates"]
 
-    # Primary search — enable HyDE for concept queries AND cross-cutting additive
-    # queries (e.g. "add rate limiting to endpoints") so the vector represents
-    # "what the modified file would look like" rather than just the query text.
-    use_hyde = analysis.is_concept or analysis.is_cross_cutting
+    # Primary search — enable HyDE for concept queries AND cross-cutting/complex
+    # queries so the vector represents "what the relevant code looks like" rather
+    # than just the query text.  Previously opt-in only for concept queries;
+    # now also active for moderate/complex to boost architectural-question recall.
+    use_hyde = (
+        analysis.is_concept
+        or analysis.is_cross_cutting
+        or analysis.complexity in ("moderate", "complex")
+    )
 
     if repo_owner is None and settings.cross_repo_enabled:
         cross_results_by_repo, _ = await search_cross_repo(
@@ -486,14 +508,16 @@ async def retrieve_planning_context(
     if sub_query_vectors:
 
         async def _sub_search(sq: str, sv: list[float]):
+            # Use the FULL candidate pool (not half) for sub-queries.
+            # Each decomposed concern deserves as much coverage as the primary query.
             return await search(
                 query=sq,
                 query_vector=sv,
-                top_k=num_candidates // 2,
+                top_k=num_candidates,
                 mode="hybrid",
                 repo_owner=repo_owner,
                 repo_name=repo_name,
-                hyde=analysis.is_concept,
+                hyde=use_hyde,  # inherit HyDE setting from primary (not just concept)
                 search_quality="thorough",
             )
 
@@ -529,14 +553,77 @@ async def retrieve_planning_context(
     if candidates:
         candidates = rerank(query, candidates, top_n=rerank_n)
 
-    # ── Phase 4: file structure maps ────────────────────────────────────
-    file_limit = min(8, 5 + len(analysis.sub_queries))  # more files for complex queries
+    # ── Phase 3b: query reformulation on low-quality retrieval (Gap 8) ──
+    # If the BEST reranked candidate still has a low quality score, the
+    # initial query embedding likely missed the intent. Try a heuristic
+    # reformulation (remove filler words, focus on technical terms) and
+    # merge any new candidates before continuing.
+    if (
+        settings.retrieval_reformulate_threshold > 0
+        and candidates
+        and candidates[0].quality_score < settings.retrieval_reformulate_threshold
+    ):
+        reformulated = _reformulate_query(query)
+        if reformulated and reformulated != query:
+            try:
+                reform_vector = await embed_query(reformulated)
+                reform_results = await search(
+                    query=reformulated,
+                    query_vector=reform_vector,
+                    top_k=num_candidates,
+                    mode="hybrid",
+                    repo_owner=repo_owner,
+                    repo_name=repo_name,
+                    search_quality="thorough",
+                )
+                if reform_results:
+                    seen_reform = {r.chunk_id for r in candidates}
+                    new_from_reform = [r for r in reform_results if r.chunk_id not in seen_reform]
+                    if new_from_reform:
+                        candidates = rerank(
+                            query,
+                            candidates + new_from_reform,
+                            top_n=rerank_n,
+                        )
+                        logger.info(
+                            "planning retriever: reformulation added %d new candidates "
+                            "(original quality=%.3f, query=%r → %r)",
+                            len(new_from_reform),
+                            candidates[0].quality_score,
+                            sanitize_log(query[:60]),
+                            sanitize_log(reformulated[:60]),
+                        )
+            except Exception as _ref_exc:
+                logger.debug("reformulation search failed: %s", sanitize_log(_ref_exc))
+
+    # ── Phase 4: file structure maps ─────────────────────────────────────
+    # Complexity-aware file limit (Gap 2 fix):
+    #   simple:  up to 8  files  (unchanged behaviour)
+    #   moderate: up to 12 files
+    #   complex / cross-cutting: up to 20 files  (was always 8 — blind to 60%+ of touched files)
+    if analysis.is_cross_cutting or analysis.complexity == "complex":
+        file_limit = min(20, 8 + len(analysis.sub_queries) * 2)
+    elif analysis.complexity == "moderate":
+        file_limit = min(12, 6 + len(analysis.sub_queries))
+    else:
+        file_limit = min(8, 5 + len(analysis.sub_queries))
     top_files = _unique_paths(candidates, limit=file_limit)
     file_maps = await _get_file_structure_maps(top_files, repo_owner, repo_name)
 
-    # ── Phase 5: caller context ─────────────────────────────────────────
-    top_symbols = [r.symbol_name for r in candidates[:8] if r.symbol_name]
-    top_symbols = list(dict.fromkeys(top_symbols))[:5]  # deduplicate, keep order
+    # ── Phase 5: caller context ───────────────────────────────────────────
+    # Complexity-aware caller limit (Gap 3 fix):
+    #   simple:  5 symbols  (unchanged)
+    #   moderate: 10 symbols
+    #   complex / cross-cutting: 15 symbols (blast-radius analysis for core utilities)
+    if analysis.is_cross_cutting or analysis.complexity == "complex":
+        caller_limit = 15
+    elif analysis.complexity == "moderate":
+        caller_limit = 10
+    else:
+        caller_limit = 5
+
+    top_symbols = [r.symbol_name for r in candidates[:caller_limit * 2] if r.symbol_name]
+    top_symbols = list(dict.fromkeys(top_symbols))[:caller_limit]
 
     # Include any explicitly-mentioned symbols
     for sym in analysis.mentioned_symbols:
@@ -544,11 +631,15 @@ async def retrieve_planning_context(
             top_symbols.append(sym)
 
     caller_ctx_text = await _get_caller_contexts(
-        top_symbols[:5], budgets["caller"], repo_owner, repo_name
+        top_symbols[:caller_limit], budgets["caller"], repo_owner, repo_name
     )
 
-    # ── Phase 5b: import-chain following (dependency context) ───────────
-    # Skip for simple queries — import chains add noise, not signal
+    # ── Phase 5b: import-chain following (dependency context) ────────────
+    # Complexity-aware depth (Gap 4 fix):
+    #   simple:   skip (unchanged)
+    #   moderate: 2 hops  (unchanged)
+    #   complex:  3 hops  (follows controller→service→repository→util chains)
+    import_depth = 3 if analysis.complexity == "complex" else 2
     dependency_context = ""
     if analysis.complexity != "simple" and budgets["dependency"] > 0 and top_files:
         dependency_context = await _follow_import_chains(
@@ -556,9 +647,8 @@ async def retrieve_planning_context(
             repo_owner=repo_owner,
             repo_name=repo_name,
             token_budget=budgets["dependency"],
-            max_depth=2,
+            max_depth=import_depth,
         )
-        pass  # dependency_context loaded
 
     # ── Second semantic pass using discovered symbols (parallel) ─────────
     expansion_results = []
@@ -576,7 +666,10 @@ async def retrieve_planning_context(
             search_quality="thorough",
         )
 
-    expand_symbols = top_symbols[:3]  # more expansion for complex queries
+    # Expand more symbols for complex/moderate queries to surface related chunks
+    # that the primary search may have missed (second-pass recall improvement).
+    expand_limit = 5 if analysis.complexity in ("complex", "moderate") else 3
+    expand_symbols = top_symbols[:expand_limit]
     if expand_symbols:
         expansion_tasks = [_expand_symbol(sym) for sym in expand_symbols]
         expansion_task_results = await asyncio.gather(*expansion_tasks, return_exceptions=True)
@@ -592,6 +685,33 @@ async def retrieve_planning_context(
                 if r.chunk_id not in seen_ids:
                     seen_ids.add(r.chunk_id)
                     expansion_results.append(r)
+
+    # ── Phase 5c: graph neighborhood expansion ──────────────────────────
+    # After vector/keyword retrieval + semantic expansion, add 1-hop graph
+    # neighbors (callees, callers, imported files) that may not be semantically
+    # similar to the query but are structurally essential.
+    # Skip for simple queries to keep latency low.
+    if analysis.complexity != "simple" and candidates:
+        try:
+            from src.retrieval.graph_expander import expand_with_graph
+
+            graph_neighbors = await expand_with_graph(
+                candidates,
+                repo_owner=repo_owner,
+                repo_name=repo_name,
+                max_neighbors=20,
+            )
+            for r in graph_neighbors:
+                if r.chunk_id not in seen_ids:
+                    seen_ids.add(r.chunk_id)
+                    expansion_results.append(r)
+            if graph_neighbors:
+                logger.debug(
+                    "planning retriever: +%d graph-expanded chunks added",
+                    len(graph_neighbors),
+                )
+        except Exception as _gex:
+            logger.debug("planning retriever: graph expansion skipped: %s", sanitize_log(_gex))
 
     # ── Assemble context strings ────────────────────────────────────────
     primary_ctx = assemble(candidates, token_budget=budgets["primary"], query=query)
@@ -635,6 +755,66 @@ async def retrieve_planning_context(
             "planning retriever: grounding warnings: %s",
             "; ".join(grounding_warnings),
         )
+
+    # ── Phase 7b: grounding retry for MISSING_SYMBOL / MISSING_PATH ─────
+    # If validation found specific missing symbols or paths, fire targeted
+    # keyword searches to attempt recovery before surfacing the warning.
+    missing_symbols = [
+        w.split("'")[1]
+        for w in grounding_warnings
+        if w.startswith("MISSING_SYMBOL:") and "'" in w
+    ]
+    missing_paths = [
+        w.split("'")[1]
+        for w in grounding_warnings
+        if w.startswith("MISSING_PATH:") and "'" in w
+    ]
+    recovery_targets = [f"symbol:{s}" for s in missing_symbols] + [
+        f"path:{p}" for p in missing_paths
+    ]
+    if recovery_targets:
+        try:
+            recovery_queries = missing_symbols + missing_paths
+            seen_recovery = {r.chunk_id for r in candidates}
+            new_recovery: list = []
+            for rq in recovery_queries[:4]:  # cap at 4 targeted searches
+                rq_vector = await embed_query(rq)
+                rq_results = await search(
+                    query=rq,
+                    query_vector=rq_vector,
+                    top_k=10,
+                    mode="hybrid",
+                    repo_owner=repo_owner,
+                    repo_name=repo_name,
+                    search_quality="thorough",
+                )
+                for r in rq_results:
+                    if r.chunk_id not in seen_recovery:
+                        seen_recovery.add(r.chunk_id)
+                        new_recovery.append(r)
+
+            if new_recovery:
+                candidates = rerank(
+                    query,
+                    candidates + new_recovery,
+                    top_n=rerank_n,
+                )
+                # Re-validate to clear any warnings that are now resolved
+                grounding_warnings = _validate_grounding(
+                    query=query,
+                    analysis=analysis,
+                    candidates=candidates,
+                    top_files=top_files,
+                    component_context=component_context,
+                )
+                logger.info(
+                    "planning retriever: grounding retry added %d chunks; "
+                    "remaining warnings: %d",
+                    len(new_recovery),
+                    len(grounding_warnings),
+                )
+        except Exception as _grnd_exc:
+            logger.debug("grounding retry failed: %s", sanitize_log(_grnd_exc))
 
     retrieval_log = (
         f"{primary_ctx.retrieval_log}\n"
@@ -1137,6 +1317,73 @@ def _resolve_import_to_path(import_stmt: str) -> str | None:
         return path
 
     return None
+
+
+# ── Query reformulation ───────────────────────────────────────────────────────
+
+_FILLER_WORDS = frozenset({
+    "how", "to", "do", "the", "a", "an", "in", "on", "for", "of", "and", "or",
+    "is", "are", "was", "were", "be", "been", "being", "have", "has", "had",
+    "it", "its", "this", "that", "these", "those", "with", "from", "by",
+    "what", "where", "when", "which", "who", "can", "could", "should", "would",
+    "implement", "create", "make", "add", "build", "write", "update", "change",
+    "please", "help", "me", "want", "need", "i", "we", "us", "you",
+})
+
+_TECH_TERM_PATTERN = re.compile(
+    r"(?:[A-Z][a-z]+[A-Z]\w*|"      # camelCase or PascalCase
+    r"[a-z]+_[a-z_]+|"              # snake_case
+    r"[A-Z]{2,}(?:[A-Z][a-z]+)*|"  # ALLCAPS or ACRONYMs
+    r"\w+(?:Controller|Service|Handler|Manager|Factory|Repository|Provider|"
+    r"Middleware|Schema|Model|Router|Hook|Reducer|Action|Selector|Store|"
+    r"Config|Client|Server|API|DB|Cache|Queue|Worker|Task|Job|Event|"
+    r"Listener|Dispatcher|Serializer|Validator|Formatter|Parser|Builder|"
+    r"Executor|Pipeline|Registry|Resolver|Gateway|Adapter|Bridge|Proxy))"
+)
+
+
+def _reformulate_query(query: str) -> str:
+    """
+    Heuristic query reformulation for low-quality retrieval.
+
+    Strategy:
+    1. Extract explicit technical terms (camelCase, snake_case, known suffixes)
+    2. Strip filler words from the remainder
+    3. If we identified fewer than 2 meaningful tokens, return the original query
+
+    This helps when users ask prose questions like "how do I implement user
+    authentication?" — the reformulated form "user authentication implement" has
+    a better embedding alignment with code chunk content.
+    """
+    # Preserve quoted phrases verbatim
+    quoted = re.findall(r'"([^"]+)"', query)
+    cleaned = re.sub(r'"[^"]+"', "", query)
+
+    # Extract explicit technical identifiers
+    tech_terms = _TECH_TERM_PATTERN.findall(cleaned)
+
+    # Remove filler words from remaining tokens
+    tokens = re.findall(r"\b\w+\b", cleaned.lower())
+    meaningful = [t for t in tokens if t not in _FILLER_WORDS and len(t) > 2]
+
+    # Combine: quoted phrases + tech terms + meaningful tokens (deduped)
+    seen: set[str] = set()
+    parts: list[str] = []
+    for item in quoted + tech_terms + meaningful:
+        if item.lower() not in seen:
+            seen.add(item.lower())
+            parts.append(item)
+
+    if len(parts) < 2:
+        return query  # not enough signal — keep original
+
+    reformulated = " ".join(parts)
+    logger.debug(
+        "query reformulation: %r → %r",
+        sanitize_log(query[:80]),
+        sanitize_log(reformulated[:80]),
+    )
+    return reformulated
 
 
 # ── Grounding validation ──────────────────────────────────────────────────────

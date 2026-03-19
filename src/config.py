@@ -62,10 +62,10 @@ class Settings(BaseSettings):
         False, description="Whether to extract and index LLM file summaries"
     )
     # Agent loop settings
-    ask_max_iterations: int = Field(3, description="Max retrieval iterations for Ask Mode")
-    plan_max_iterations: int = Field(5, description="Max retrieval iterations for Plan Mode")
+    ask_max_iterations: int = Field(5, description="Max retrieval iterations for Ask Mode")
+    plan_max_iterations: int = Field(10, description="Max retrieval iterations for Plan Mode (complex queries)")
     agent_token_budget: int = Field(
-        35_000, description="Max cumulative tokens across all tool results in an agent loop"
+        50_000, description="Max cumulative tokens across all tool results in an agent loop"
     )
     planning_thinking_budget: int = Field(
         0, description="Token budget for extended thinking in Plan Mode (0 to disable)"
@@ -92,10 +92,19 @@ class Settings(BaseSettings):
     github_oauth_client_secret: str | None = Field(None)
 
     # ── Indexing ─────────────────────────────────────────────────────────────
-    chunk_target_tokens: int = Field(512)
-    chunk_overlap_tokens: int = Field(128)
+    chunk_target_tokens: int = Field(
+        768,
+        description=(
+            "Target tokens per chunk. 768 fits most functions whole and reduces "
+            "truncation of large methods. Changing this requires re-indexing all repos."
+        ),
+    )
+    chunk_overlap_tokens: int = Field(
+        128,
+        description="Overlap tokens between adjacent chunks for context continuity.",
+    )
     chunk_min_tokens: int = Field(50)
-    context_token_budget: int = Field(8000)
+    context_token_budget: int = Field(12000)
 
     supported_extensions: str = Field(
         ".py,.ts,.tsx,.js,.jsx,.java,.go,.rs,.cpp,.c,.cs,.rb,.swift,.kt,"
@@ -111,7 +120,24 @@ class Settings(BaseSettings):
 
     # ── Reranker ─────────────────────────────────────────────────────────────
     reranker_model: str = Field("cross-encoder/ms-marco-MiniLM-L-6-v2")
-    reranker_top_n: int = Field(20, description="Candidates passed to reranker")
+    reranker_top_n: int = Field(30, description="Candidates passed to reranker")
+    reranker_content_chars: int = Field(
+        4000,
+        description=(
+            "Max characters of raw_content passed to the cross-encoder per scoring window. "
+            "Code at ~4 chars/token fills ~1000 tokens; the model truncates to its 512-token "
+            "limit. Larger values ensure the tokenizer sees more relevant code. "
+            "Was 1500 — increasing to 4000 reduces truncation of large functions."
+        ),
+    )
+    reranker_max_windows: int = Field(
+        2,
+        description=(
+            "Max sliding windows per chunk for large-chunk reranking. "
+            "1 = legacy single window. 2 = score beginning + tail and take MAX. "
+            "Fixes mis-ranking of large functions where the critical code is mid-body."
+        ),
+    )
 
     # ── Retrieval ────────────────────────────────────────────────────────────
     retrieval_rrf_k: int = Field(60, description="RRF K constant")
@@ -125,8 +151,24 @@ class Settings(BaseSettings):
         0.3, description="Weight for trigram match in keyword search"
     )
     hnsw_ef_search: int = Field(
-        40,
+        80,
         description="HNSW ef_search parameter — higher = better recall, slower query (range: 10-200)",
+    )
+    retrieval_min_quality_score: float = Field(
+        0.10,
+        description=(
+            "Minimum sigmoid-normalized rerank quality score (0.0-1.0) for a chunk to be "
+            "included in assembled context once the budget is >50% consumed. "
+            "Set to 0.0 to disable quality filtering."
+        ),
+    )
+    retrieval_reformulate_threshold: float = Field(
+        0.40,
+        description=(
+            "If the best reranked candidate has quality_score below this threshold, "
+            "the retriever attempts a heuristic query reformulation and re-searches. "
+            "Set to 0.0 to disable reformulation entirely."
+        ),
     )
 
     # ── Query relevance gate ──────────────────────────────────────────────────
@@ -179,18 +221,22 @@ class Settings(BaseSettings):
     )
     plan_max_iterations_simple: int = Field(
         5,
-        description="Max retrieval iterations for simple plan queries. Defaults to plan_max_iterations behavior.",
+        description="Max retrieval iterations for simple plan queries.",
     )
     plan_max_iterations_moderate: int = Field(
-        5,
-        description="Max retrieval iterations for moderate plan queries. Defaults to plan_max_iterations behavior.",
+        7,
+        description="Max retrieval iterations for moderate plan queries.",
+    )
+    ask_max_iterations_complex: int = Field(
+        8,
+        description="Max retrieval iterations for Ask Mode when query is detected as complex.",
     )
     agent_token_budget_simple: int = Field(
-        35_000,
+        50_000,
         description="Cumulative planner tool-result token budget for simple queries.",
     )
     agent_token_budget_moderate: int = Field(
-        35_000,
+        50_000,
         description="Cumulative planner tool-result token budget for moderate queries.",
     )
 

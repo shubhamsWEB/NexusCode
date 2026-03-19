@@ -131,8 +131,11 @@ async def _async_incremental_index(payload: dict[str, Any]) -> dict[str, Any]:
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
 
-    # Enrich semantic graph (non-blocking, best-effort)
-    sem_task = asyncio.create_task(_trigger_semantic_enrichment(owner, repo))
+    # Enrich semantic graph — incremental for changed files, full for first index
+    # (non-blocking, best-effort)
+    sem_task = asyncio.create_task(
+        _trigger_semantic_enrichment(owner, repo, changed_files=files_to_upsert or [])
+    )
     _background_tasks.add(sem_task)
     sem_task.add_done_callback(_background_tasks.discard)
 
@@ -205,13 +208,40 @@ async def _update_repo_summary(owner: str, name: str) -> None:
 # ── Semantic enrichment helper ────────────────────────────────────────────────
 
 
-async def _trigger_semantic_enrichment(owner: str, repo: str) -> None:
-    """Non-blocking helper: run LLM semantic enrichment after a successful index."""
-    try:
-        from src.graph.semantic_enricher import enrich_repo_semantic_graph
+async def _trigger_semantic_enrichment(
+    owner: str,
+    repo: str,
+    changed_files: list[str] | None = None,
+) -> None:
+    """
+    Non-blocking helper: run LLM semantic enrichment after a successful index.
 
-        edges, syms = await enrich_repo_semantic_graph(owner, repo)
-        logger.info("semantic_enrichment.done", repo=f"{owner}/{repo}", edges=edges, symbols=syms)
+    Uses incremental enrichment (only changed files) when `changed_files` is
+    provided and non-empty.  Falls back to full enrichment for the initial
+    index run or when changed_files is not provided.
+    """
+    try:
+        if changed_files:
+            from src.graph.semantic_enricher import enrich_changed_symbols
+
+            edges, syms = await enrich_changed_symbols(owner, repo, changed_files)
+            logger.info(
+                "semantic_enrichment.incremental_done",
+                repo=f"{owner}/{repo}",
+                edges=edges,
+                symbols=syms,
+                files=len(changed_files),
+            )
+        else:
+            from src.graph.semantic_enricher import enrich_repo_semantic_graph
+
+            edges, syms = await enrich_repo_semantic_graph(owner, repo)
+            logger.info(
+                "semantic_enrichment.full_done",
+                repo=f"{owner}/{repo}",
+                edges=edges,
+                symbols=syms,
+            )
     except Exception as exc:
         logger.warning("semantic_enrichment.failed", repo=f"{owner}/{repo}", error=str(exc))
 

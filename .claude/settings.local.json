@@ -122,7 +122,8 @@
       "Bash(/tmp/test_mcp.sh:*)",
       "Bash(docker build:*)",
       "Bash(docker run:*)",
-      "Bash(docker image:*)"
+      "Bash(docker image:*)",
+      "Bash(env:*)"
     ]
   }
 }
