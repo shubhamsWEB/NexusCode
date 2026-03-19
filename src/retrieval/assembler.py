@@ -86,8 +86,24 @@ def assemble(
     chunks_used: list[dict] = []
     tokens_used = 0
 
+    from src.config import settings as _settings
+
+    _min_quality = _settings.retrieval_min_quality_score
+
     for result in results:
         if result.chunk_id in seen_ids:
+            continue
+
+        # Quality gate: once budget is >50% consumed and we have enough good
+        # chunks, skip very low quality candidates to prevent noise diluting
+        # the context that the LLM receives.
+        if (
+            _min_quality > 0
+            and result.quality_score > 0  # 0.0 means not yet reranked — don't gate
+            and result.quality_score < _min_quality
+            and tokens_used > token_budget * 0.5
+            and len(selected) >= 5
+        ):
             continue
 
         section_tokens = count_tokens(result.raw_content) + _estimate_header_tokens(result)

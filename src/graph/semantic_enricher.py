@@ -27,7 +27,7 @@ logger = get_secure_logger(__name__)
 _HAIKU_MODEL = "claude-haiku-4-5-20251001"
 _CONFIDENCE_THRESHOLD = 0.7
 _BATCH_SIZE = 25
-_MAX_SYMBOLS = 80
+_MAX_SYMBOLS = 200  # was 80 — covers more of the codebase's important symbols
 
 
 # ── Pydantic models ────────────────────────────────────────────────────────────
@@ -121,9 +121,21 @@ async def enrich_repo_semantic_graph(
 
 
 async def _fetch_candidate_symbols(owner: str, repo_name: str) -> list[dict]:
-    """Fetch top in-degree symbols + exported symbols, capped at _MAX_SYMBOLS."""
+    """
+    Fetch the most architecturally significant symbols for semantic enrichment.
+
+    Priority order (merged up to _MAX_SYMBOLS):
+    1. Top 80 by call IN-degree  — heavily-used symbols are key abstractions
+    2. Top 60 by call OUT-degree — symbols that call many others coordinate flow
+    3. All exported symbols      — public API surface always matters
+    4. All class symbols         — classes are architectural boundaries
+
+    This expands coverage from the old top-80 to up to 200 symbols,
+    ensuring that both heavily-used utilities AND high-level orchestrators
+    get semantic edges in the graph.
+    """
     async with AsyncSessionLocal() as session:
-        # Top 50 by call in-degree
+        # 1. Top 80 by call in-degree (most-called = key abstractions)
         indegree_rows = (
             await session.execute(
                 text("""
@@ -137,13 +149,34 @@ async def _fetch_candidate_symbols(owner: str, repo_name: str) -> list[dict]:
                       AND s.qualified_name IS NOT NULL
                     GROUP BY s.qualified_name, s.signature, s.docstring
                     ORDER BY COUNT(*) DESC
-                    LIMIT 50
+                    LIMIT 80
                 """),
                 {"owner": owner, "name": repo_name},
             )
         ).fetchall()
 
-        # All exported symbols
+        # 2. Top 60 by call out-degree (orchestrators that call many things)
+        outdegree_rows = (
+            await session.execute(
+                text("""
+                    SELECT s.qualified_name, s.signature, s.docstring
+                    FROM symbols s
+                    JOIN kg_edges e ON e.source_id = s.qualified_name
+                        AND e.repo_owner = s.repo_owner
+                        AND e.repo_name = s.repo_name
+                        AND e.edge_type = 'calls'
+                    WHERE s.repo_owner = :owner AND s.repo_name = :name
+                      AND s.qualified_name IS NOT NULL
+                    GROUP BY s.qualified_name, s.signature, s.docstring
+                    HAVING COUNT(*) >= 2
+                    ORDER BY COUNT(*) DESC
+                    LIMIT 60
+                """),
+                {"owner": owner, "name": repo_name},
+            )
+        ).fetchall()
+
+        # 3. All exported symbols (public API surface)
         exported_rows = (
             await session.execute(
                 text("""
@@ -152,7 +185,22 @@ async def _fetch_candidate_symbols(owner: str, repo_name: str) -> list[dict]:
                     WHERE repo_owner = :owner AND repo_name = :name
                       AND is_exported = TRUE
                       AND qualified_name IS NOT NULL
-                    LIMIT 60
+                    LIMIT 80
+                """),
+                {"owner": owner, "name": repo_name},
+            )
+        ).fetchall()
+
+        # 4. Class symbols (architectural boundaries)
+        class_rows = (
+            await session.execute(
+                text("""
+                    SELECT qualified_name, signature, docstring
+                    FROM symbols
+                    WHERE repo_owner = :owner AND repo_name = :name
+                      AND kind = 'class'
+                      AND qualified_name IS NOT NULL
+                    LIMIT 40
                 """),
                 {"owner": owner, "name": repo_name},
             )
@@ -160,9 +208,9 @@ async def _fetch_candidate_symbols(owner: str, repo_name: str) -> list[dict]:
 
     seen: set[str] = set()
     result: list[dict] = []
-    for rows in (indegree_rows, exported_rows):
+    for rows in (indegree_rows, outdegree_rows, exported_rows, class_rows):
         for qname, sig, doc in rows:
-            if qname not in seen:
+            if qname and qname not in seen:
                 seen.add(qname)
                 result.append({
                     "qualified_name": qname,
@@ -297,6 +345,150 @@ async def _insert_semantic_edges(
         await session.commit()
 
     return len(edges)
+
+
+# ── Incremental enrichment ────────────────────────────────────────────────────
+
+
+async def delete_stale_semantic_edges_for_files(
+    owner: str,
+    repo_name: str,
+    file_paths: list[str],
+) -> int:
+    """
+    Delete semantic edges whose source or target symbol belongs to any of
+    the given changed/deleted file paths.
+
+    Called before re-enriching changed files so stale edges don't persist.
+    Returns the number of deleted edges.
+    """
+    if not file_paths:
+        return 0
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text("""
+                DELETE FROM kg_edges
+                WHERE repo_owner = :owner
+                  AND repo_name  = :name
+                  AND edge_type  = 'semantic'
+                  AND (
+                    source_id IN (
+                        SELECT qualified_name FROM symbols
+                        WHERE repo_owner = :owner AND repo_name = :name
+                          AND file_path  = ANY(:files)
+                    )
+                    OR
+                    target_id IN (
+                        SELECT qualified_name FROM symbols
+                        WHERE repo_owner = :owner AND repo_name = :name
+                          AND file_path  = ANY(:files)
+                    )
+                  )
+            """),
+            {"owner": owner, "name": repo_name, "files": file_paths},
+        )
+        deleted = result.rowcount
+        await session.commit()
+
+    logger.info(
+        "semantic_enricher: deleted %d stale semantic edges for %d changed files",
+        deleted,
+        len(file_paths),
+        extra={"repo": f"{owner}/{repo_name}"},
+    )
+    return deleted
+
+
+async def enrich_changed_symbols(
+    owner: str,
+    repo_name: str,
+    changed_file_paths: list[str],
+) -> tuple[int, int]:
+    """
+    Incremental semantic enrichment for a set of changed files.
+
+    Instead of re-enriching all _MAX_SYMBOLS on every index run, this:
+    1. Deletes stale semantic edges for symbols in the changed files.
+    2. Fetches only the symbols in those files (+ their call graph neighbors).
+    3. Re-enriches that focused set (much faster for incremental updates).
+
+    Falls back to full enrichment if the changed-symbol set is empty or too
+    large (>80 symbols, which indicates a large initial index or rename).
+
+    Returns (edges_inserted, symbols_processed).
+    """
+    if not changed_file_paths:
+        return 0, 0
+
+    # Step 1: delete stale edges for changed files
+    await delete_stale_semantic_edges_for_files(owner, repo_name, changed_file_paths)
+
+    # Step 2: fetch symbols belonging to changed files
+    async with AsyncSessionLocal() as session:
+        rows = (
+            await session.execute(
+                text("""
+                    SELECT qualified_name, signature, docstring
+                    FROM symbols
+                    WHERE repo_owner = :owner AND repo_name = :name
+                      AND file_path  = ANY(:files)
+                      AND qualified_name IS NOT NULL
+                    LIMIT 120
+                """),
+                {"owner": owner, "name": repo_name, "files": changed_file_paths},
+            )
+        ).fetchall()
+
+    if not rows:
+        logger.info(
+            "semantic_enricher: no symbols in changed files, skipping incremental enrichment",
+            extra={"repo": f"{owner}/{repo_name}"},
+        )
+        return 0, 0
+
+    # If too many symbols changed (bulk import / rename), fall back to full enrichment
+    if len(rows) > 80:
+        logger.info(
+            "semantic_enricher: %d changed symbols > 80, running full enrichment",
+            len(rows),
+            extra={"repo": f"{owner}/{repo_name}"},
+        )
+        return await enrich_repo_semantic_graph(owner, repo_name)
+
+    symbols = [
+        {
+            "qualified_name": qname,
+            "signature": sig or "",
+            "docstring": (doc or "")[:150],
+        }
+        for qname, sig, doc in rows
+        if qname
+    ]
+
+    from src.llm.client import get_client
+
+    client = get_client()
+    total_edges = 0
+
+    for batch_start in range(0, len(symbols), _BATCH_SIZE):
+        batch = symbols[batch_start : batch_start + _BATCH_SIZE]
+        relations = await _extract_relations_for_batch(client, owner, repo_name, batch)
+        if relations:
+            edges = _relations_to_edges(relations, owner, repo_name)
+            inserted = await _insert_semantic_edges(edges, owner, repo_name)
+            total_edges += inserted
+
+    logger.info(
+        "semantic_enricher: incremental enrichment complete",
+        extra={
+            "repo": f"{owner}/{repo_name}",
+            "files_changed": len(changed_file_paths),
+            "symbols_processed": len(symbols),
+            "edges_inserted": total_edges,
+        },
+    )
+    return total_edges, len(symbols)
 
 
 # ── Context retrieval ─────────────────────────────────────────────────────────

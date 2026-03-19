@@ -273,6 +273,22 @@ async def generate_answer(
 
     worldview_preamble = await _fetch_worldview_context(repo_owner, repo_name)
 
+    # Complexity-adaptive iteration limit (Gap 9)
+    # Heuristic: long queries, multiple sub-questions, or "explain/how/why/trace"
+    # framing suggest cross-cutting analysis that benefits from more iterations.
+    _complex_keywords = {"explain", "how", "why", "trace", "flow", "all", "every", "end-to-end", "across", "compare", "difference", "relationship"}
+    _query_lower = query.lower()
+    _is_complex_ask = (
+        len(query) > 150
+        or "?" in query[query.find("?") + 1:]  # multiple question marks
+        or any(kw in _query_lower for kw in _complex_keywords)
+    )
+    _ask_iterations = (
+        getattr(settings, "ask_max_iterations_complex", settings.ask_max_iterations)
+        if _is_complex_ask
+        else settings.ask_max_iterations
+    )
+
     tool_block, stats = await AgentLoop().run(
         model=effective_model,
         system=_build_system_prompt(
@@ -282,7 +298,7 @@ async def generate_answer(
         retrieval_tools=all_retrieval,
         final_answer_tools=[_ASK_ANSWER_TOOL],
         config=AgentLoopConfig(
-            max_iterations=settings.ask_max_iterations,
+            max_iterations=_ask_iterations,
             cumulative_token_budget=settings.agent_token_budget,
             require_search_before_answer=True,
             thinking_budget=0,
@@ -358,6 +374,20 @@ async def stream_generate_answer(
 
     worldview_preamble = await _fetch_worldview_context(repo_owner, repo_name)
 
+    # Complexity-adaptive iteration limit (Gap 9)
+    _complex_keywords = {"explain", "how", "why", "trace", "flow", "all", "every", "end-to-end", "across", "compare", "difference", "relationship"}
+    _query_lower = query.lower()
+    _is_complex_ask = (
+        len(query) > 150
+        or "?" in query[query.find("?") + 1:]
+        or any(kw in _query_lower for kw in _complex_keywords)
+    )
+    _ask_iterations = (
+        getattr(settings, "ask_max_iterations_complex", settings.ask_max_iterations)
+        if _is_complex_ask
+        else settings.ask_max_iterations
+    )
+
     async for event in AgentLoop().stream(
         model=effective_model,
         system=_build_system_prompt(
@@ -367,7 +397,7 @@ async def stream_generate_answer(
         retrieval_tools=all_retrieval,
         final_answer_tools=[_ASK_ANSWER_TOOL],
         config=AgentLoopConfig(
-            max_iterations=settings.ask_max_iterations,
+            max_iterations=_ask_iterations,
             cumulative_token_budget=settings.agent_token_budget,
             require_search_before_answer=True,
             thinking_budget=0,
