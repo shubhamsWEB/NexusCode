@@ -72,7 +72,9 @@ class TestCheckQueryRelevance:
 
     @pytest.mark.asyncio
     async def test_ambiguous_score_returns_ambiguous(self):
-        # Score between threshold (0.35) and soft_threshold (0.50)
+        # Score between moderate threshold (0.30) and soft_threshold (0.50).
+        # Use a moderately-long query (> 40 chars) so it's classified as "moderate"
+        # rather than "simple" (which now has a stricter 0.50 threshold).
         mid_results = [_make_result(0.42)]
         with (
             patch("src.retrieval.searcher.embed_query", new_callable=AsyncMock, return_value=[0.1] * 1536),
@@ -82,7 +84,7 @@ class TestCheckQueryRelevance:
 
             import src.retrieval.relevance as mod
             reload(mod)
-            result = await mod.check_query_relevance("general software architecture question")
+            result = await mod.check_query_relevance("finding the user login and registration related code")
 
         assert result.is_relevant is True
         assert result.reason == "ambiguous"

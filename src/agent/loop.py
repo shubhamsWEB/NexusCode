@@ -25,6 +25,7 @@ import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
+from src.config import settings
 from src.utils.logging import get_secure_logger
 
 logger = get_secure_logger(__name__)
@@ -220,6 +221,26 @@ def _truncate_prior_tool_results(messages: list[dict]) -> None:
                 result["content"] = text[:_MAX_PRIOR_RESULT_CHARS] + "\n[...truncated]"
 
 
+def _build_wm_preamble(wm: dict) -> str:
+    """Build a working memory summary string to prepend to the system prompt.
+
+    Returns an empty string if there is nothing meaningful to show.
+    """
+    lines = ["## Working Memory (accumulated so far)"]
+    found_files = wm.get("found_files", [])
+    if found_files:
+        lines.append(f"Found files: {', '.join(found_files[:10])}")
+    found_symbols = wm.get("found_symbols", [])
+    if found_symbols:
+        lines.append(f"Found symbols: {', '.join(found_symbols[:10])}")
+    visited_paths = wm.get("visited_paths", [])
+    if visited_paths:
+        lines.append(f"Visited paths: {', '.join(visited_paths[:8])}")
+    if len(lines) == 1:
+        return ""  # nothing meaningful to add
+    return "\n".join(lines) + "\n\n"
+
+
 def _coerce_to_dict(raw: object) -> dict:
     """Ensure a tool block's input is always a plain dict.
 
@@ -282,12 +303,12 @@ class AgentLoop:
         Returns:
             (tool_block_dict, agent_stats)
             tool_block_dict: {"name": str, "input": dict} — the final answer tool call
-            agent_stats: {iterations, tool_calls, context_tokens, elapsed_ms}
+            agent_stats: {iterations, tool_calls, context_tokens, elapsed_ms, session_id}
         """
         import anthropic
 
         from src.agent.tool_executor import execute_tool
-        from src.agent.tool_schemas import THINK_TOOL_SCHEMA
+        from src.agent.tool_schemas import LOAD_ARTIFACT_SCHEMA, THINK_TOOL_SCHEMA
         from src.llm.client import (
             MAX_RETRIES,
             RateLimitOrOverloadError,
@@ -300,16 +321,28 @@ class AgentLoop:
         client = get_client_for_model(model)
         _use_caching = not is_ollama_model(model)  # Ollama doesn't support prompt caching
 
+        # ── Artifact store setup ───────────────────────────────────────────────
+        artifact_store = None
+        if settings.agent_session_enabled:
+            from src.agent.artifact_store import ArtifactStore
+
+            artifact_store = ArtifactStore(ttl=settings.artifact_ttl_seconds)
+            extra_context = dict(extra_context or {})
+            extra_context["_artifact_store"] = artifact_store
+
         # Enhance final-answer tool descriptions to invite early calling
         # (Vercel AI SDK / pydantic-ai pattern).
         final_answer_tools = _enhance_final_answer_tools(list(final_answer_tools))
 
-        # Inject the "think" tool into retrieval tools (Anthropic engineering pattern).
-        # It is side-effect-free so it must NOT count toward search_tools_called.
-        retrieval_tools_with_think = [*list(retrieval_tools), THINK_TOOL_SCHEMA]
+        # Inject the "think" tool (and load_artifact when store is active) into retrieval tools.
+        # think is side-effect-free so it must NOT count toward search_tools_called.
+        _extra_tools = [THINK_TOOL_SCHEMA]
+        if artifact_store is not None:
+            _extra_tools.append(LOAD_ARTIFACT_SCHEMA)
+        retrieval_tools_with_think = [*list(retrieval_tools), *_extra_tools]
 
         final_tool_names = {t["name"] for t in final_answer_tools}
-        retrieval_tool_names = {t["name"] for t in retrieval_tools}  # excludes "think" intentionally
+        retrieval_tool_names = {t["name"] for t in retrieval_tools}  # excludes "think"/"load_artifact"
         all_tools = retrieval_tools_with_think + final_answer_tools
 
         messages: list[dict] = [{"role": "user", "content": initial_message}]
@@ -325,10 +358,13 @@ class AgentLoop:
         # +2 safety headroom for the forced-final-answer turn
         for iteration in range(config.max_iterations + 2):
             # ── Gate 1 & 2: decide whether to force a final answer this turn ────
-            force_final = (
-                iteration >= config.max_iterations
-                or total_context_tokens > config.cumulative_token_budget
+            # Gate 2 (token budget) is bypassed when token_budgeting_enabled=False,
+            # allowing the LLM to consume the full retrieved context.
+            _budget_gate = (
+                settings.token_budgeting_enabled
+                and total_context_tokens > config.cumulative_token_budget
             )
+            force_final = iteration >= config.max_iterations or _budget_gate
 
             if force_final:
                 tools_this_turn = final_answer_tools
@@ -356,9 +392,21 @@ class AgentLoop:
                 if _use_caching
                 else list(tools_this_turn)
             )
+
+            # ── Working memory: inject accumulated context into system prompt ──
+            effective_system = system
+            if iteration > 0 and artifact_store is not None:
+                try:
+                    wm = await artifact_store.get_working_memory()
+                    wm_prefix = _build_wm_preamble(wm)
+                    if wm_prefix:
+                        effective_system = wm_prefix + system
+                except Exception:
+                    pass  # non-fatal: fall back to original system prompt
+
             params: dict = {
                 "model": model,
-                "system": system,
+                "system": effective_system,
                 "messages": messages,
                 "tools": tools_for_turn,
                 "tool_choice": tool_choice,
@@ -441,6 +489,9 @@ class AgentLoop:
                     logger.warning("agent_loop: nudging Claude to call answer tool (iter=%d)", iteration)
                     continue
                 stats = _make_stats(iteration, total_tool_calls, total_context_tokens, t0, search_tools_called)
+                if artifact_store is not None:
+                    stats["session_id"] = artifact_store.session_id
+                    await artifact_store.close()
                 return {"name": "_text_fallback", "input": {"answer": text, "cited_files": [], "follow_up_hints": []}}, stats
 
             # Check if Claude called a final answer tool
@@ -453,6 +504,9 @@ class AgentLoop:
                         "This is a grounding violation — the answer would be based on training data only."
                     )
                 stats = _make_stats(iteration + 1, total_tool_calls, total_context_tokens, t0, search_tools_called)
+                if artifact_store is not None:
+                    stats["session_id"] = artifact_store.session_id
+                    await artifact_store.close()
                 final_b = final_blocks[0]
                 return {"name": final_b.name, "input": _coerce_to_dict(final_b.input)}, stats
 
@@ -545,14 +599,14 @@ class AgentLoop:
 
             # ── Soft nudge: invite Claude to answer when context is rich enough ──
             # Triggers on the second-to-last normal iteration OR when token usage
-            # crosses soft_answer_threshold of the budget. This avoids exhausting
-            # all max_iterations when sufficient context was already retrieved.
+            # crosses soft_answer_threshold of the budget. Token-threshold nudge is
+            # skipped when token_budgeting_enabled=False so Claude can keep searching.
             if (
                 not soft_nudge_added
                 and not force_final
                 and search_tools_called >= 1
                 and (
-                    total_context_tokens > config.cumulative_token_budget * config.soft_answer_threshold
+                    (settings.token_budgeting_enabled and total_context_tokens > config.cumulative_token_budget * config.soft_answer_threshold)
                     or iteration >= config.max_iterations - 1
                 )
             ):
@@ -566,6 +620,8 @@ class AgentLoop:
 
             messages.append({"role": "user", "content": tool_results})
 
+        if artifact_store is not None:
+            await artifact_store.close()
         raise AgentMaxIterationsError("Agent loop exhausted all iterations without a final answer.")
 
     async def stream(
@@ -593,7 +649,7 @@ class AgentLoop:
         import anthropic
 
         from src.agent.tool_executor import execute_tool
-        from src.agent.tool_schemas import THINK_TOOL_SCHEMA
+        from src.agent.tool_schemas import LOAD_ARTIFACT_SCHEMA, THINK_TOOL_SCHEMA
         from src.llm.client import (
             MAX_RETRIES,
             RateLimitOrOverloadError,
@@ -606,14 +662,26 @@ class AgentLoop:
         client = get_client_for_model(model)
         _use_caching = not is_ollama_model(model)
 
+        # ── Artifact store setup ───────────────────────────────────────────────
+        artifact_store = None
+        if settings.agent_session_enabled:
+            from src.agent.artifact_store import ArtifactStore
+
+            artifact_store = ArtifactStore(ttl=settings.artifact_ttl_seconds)
+            extra_context = dict(extra_context or {})
+            extra_context["_artifact_store"] = artifact_store
+
         # Enhance final-answer tool descriptions to invite early calling.
         final_answer_tools = _enhance_final_answer_tools(list(final_answer_tools))
 
-        # Inject the "think" tool alongside retrieval tools.
-        retrieval_tools_with_think = [*list(retrieval_tools), THINK_TOOL_SCHEMA]
+        # Inject the "think" tool (and load_artifact when store is active) alongside retrieval tools.
+        _extra_tools = [THINK_TOOL_SCHEMA]
+        if artifact_store is not None:
+            _extra_tools.append(LOAD_ARTIFACT_SCHEMA)
+        retrieval_tools_with_think = [*list(retrieval_tools), *_extra_tools]
 
         final_tool_names = {t["name"] for t in final_answer_tools}
-        retrieval_tool_names = {t["name"] for t in retrieval_tools}  # excludes "think" intentionally
+        retrieval_tool_names = {t["name"] for t in retrieval_tools}  # excludes "think"/"load_artifact"
         all_tools = retrieval_tools_with_think + final_answer_tools
 
         messages: list[dict] = [{"role": "user", "content": initial_message}]
@@ -627,10 +695,11 @@ class AgentLoop:
         t0 = time.monotonic()
 
         for iteration in range(config.max_iterations + 2):
-            force_final = (
-                iteration >= config.max_iterations
-                or total_context_tokens > config.cumulative_token_budget
+            _budget_gate = (
+                settings.token_budgeting_enabled
+                and total_context_tokens > config.cumulative_token_budget
             )
+            force_final = iteration >= config.max_iterations or _budget_gate
 
             if force_final:
                 tools_this_turn = final_answer_tools
@@ -652,9 +721,21 @@ class AgentLoop:
                 if _use_caching
                 else list(tools_this_turn)
             )
+
+            # ── Working memory: inject accumulated context into system prompt ──
+            effective_system = system
+            if iteration > 0 and artifact_store is not None:
+                try:
+                    wm = await artifact_store.get_working_memory()
+                    wm_prefix = _build_wm_preamble(wm)
+                    if wm_prefix:
+                        effective_system = wm_prefix + system
+                except Exception:
+                    pass  # non-fatal
+
             params: dict = {
                 "model": model,
-                "system": system,
+                "system": effective_system,
                 "messages": messages,
                 "tools": tools_for_turn,
                 "tool_choice": tool_choice,
@@ -782,6 +863,9 @@ class AgentLoop:
                     logger.warning("agent_loop stream: nudging Claude to call answer tool (iter=%d)", iteration)
                     continue
                 stats = _make_stats(iteration, total_tool_calls, total_context_tokens, t0, search_tools_called)
+                if artifact_store is not None:
+                    stats["session_id"] = artifact_store.session_id
+                    await artifact_store.close()
                 yield {
                     "type": "done",
                     "tool_block": {"name": "_text_fallback", "input": {"answer": text, "cited_files": [], "follow_up_hints": []}},
@@ -796,6 +880,9 @@ class AgentLoop:
                         "Claude answered without searching the codebase first."
                     )
                 stats = _make_stats(iteration + 1, total_tool_calls, total_context_tokens, t0, search_tools_called)
+                if artifact_store is not None:
+                    stats["session_id"] = artifact_store.session_id
+                    await artifact_store.close()
                 final_b = final_blocks[0]
                 yield {
                     "type": "done",
@@ -896,7 +983,7 @@ class AgentLoop:
                 and not force_final
                 and search_tools_called >= 1
                 and (
-                    total_context_tokens > config.cumulative_token_budget * config.soft_answer_threshold
+                    (settings.token_budgeting_enabled and total_context_tokens > config.cumulative_token_budget * config.soft_answer_threshold)
                     or iteration >= config.max_iterations - 1
                 )
             ):
@@ -910,6 +997,8 @@ class AgentLoop:
 
             messages.append({"role": "user", "content": tool_results})
 
+        if artifact_store is not None:
+            await artifact_store.close()
         raise AgentMaxIterationsError("Agent loop exhausted all iterations without a final answer.")
 
 

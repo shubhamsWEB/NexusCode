@@ -763,6 +763,39 @@ async def generate_plan(
 
     plan = _parse_tool_block(tool_block, query, stats, ctx.effective_model)
     _annotate_plan_metadata(plan, ctx)
+
+    # Propagate session_id from agent loop stats to plan metadata
+    if plan.metadata and stats.get("session_id"):
+        plan.metadata.session_id = stats["session_id"]
+
+    # ── Optional verification pass ──────────────────────────────────────────
+    if settings.answer_verification_enabled:
+        from src.planning.verifier import verify_answer
+
+        # Fix chunks_used: populate from working memory when artifact store is active
+        chunks_used = stats.get("chunks_used", [])
+        session_id = stats.get("session_id", "")
+        if not chunks_used and session_id and settings.agent_session_enabled:
+            try:
+                from src.agent.artifact_store import ArtifactStore
+
+                _tmp_store = ArtifactStore(session_id=session_id)
+                wm = await _tmp_store.get_working_memory()
+                await _tmp_store.close()
+                chunks_used = wm.get("found_files", [])
+            except Exception:
+                pass
+
+        answer_text = plan.answer or (plan.analysis or "") or str(plan.query)
+        verification = await verify_answer(
+            query=query,
+            answer=answer_text,
+            context_chunks=chunks_used,
+        )
+        if plan.metadata:
+            plan.metadata.verification_confidence = verification.confidence
+            plan.metadata.low_confidence_warning = verification.warning_message
+
     _log_planning_complete(ctx, stats, tool_block.get("name"), mode="sync")
     return plan
 

@@ -31,6 +31,40 @@ class RelevanceResult:
     best_score: float
     reason: str  # "relevant" | "out_of_scope" | "no_index" | "ambiguous"
     top_file: str | None = None  # best matching file path (for debugging)
+    query_complexity: str = "default"  # "simple" | "moderate" | "complex" | "default"
+
+
+# ── Query complexity heuristic ────────────────────────────────────────────────
+
+_COMPLEX_KW = frozenset({
+    "how", "why", "explain", "trace", "flow", "all", "every",
+    "end-to-end", "across", "compare", "difference", "relationship",
+    "architecture", "dependencies", "integration", "pipeline",
+})
+
+
+def _detect_relevance_complexity(query: str) -> str:
+    """
+    Quick heuristic to classify query complexity for adaptive threshold selection.
+
+    Returns "simple", "moderate", or "complex".
+
+    Simple:  short, highly specific (symbol lookup, direct file question)
+    Complex: long, multi-part, or uses natural-language framing that scores
+             lower against code embeddings even for valid codebase queries
+    """
+    q = query.strip()
+    word_count = len(q.split())
+    if len(q) < 40 and word_count < 5 and "?" not in q:
+        return "simple"
+    q_lower = q.lower()
+    if (
+        len(q) > 150
+        or q.count("?") > 1
+        or any(kw in q_lower for kw in _COMPLEX_KW)
+    ):
+        return "complex"
+    return "moderate"
 
 
 async def check_query_relevance(
@@ -42,13 +76,31 @@ async def check_query_relevance(
     Fast relevance pre-flight: single embedding + single DB query.
     No LLM call, no reranking. Typical latency: 50-150ms (embedding cached).
 
+    Uses adaptive per-complexity thresholds:
+    - Simple queries get a stricter threshold (less forgiving of weak matches)
+    - Complex / natural-language queries get a looser threshold (they naturally
+      score lower against code embeddings even when clearly codebase-related)
+
     Returns a RelevanceResult with is_relevant=False when the query should
     be short-circuited without running the full agent loop.
     """
     from src.retrieval.searcher import _semantic_search, embed_query
 
-    threshold = settings.query_relevance_threshold
-    soft_threshold = settings.query_relevance_soft_threshold
+    complexity = _detect_relevance_complexity(query)
+    if complexity == "simple":
+        threshold = settings.query_relevance_threshold_simple
+        soft_threshold = max(threshold + 0.10, settings.query_relevance_soft_threshold)
+    elif complexity == "complex":
+        threshold = settings.query_relevance_threshold_complex
+        soft_threshold = max(threshold + 0.10, settings.query_relevance_soft_threshold * 0.6)
+    else:
+        threshold = settings.query_relevance_threshold_moderate
+        soft_threshold = settings.query_relevance_soft_threshold
+
+    logger.debug(
+        "relevance_gate: complexity=%s threshold=%.2f soft=%.2f",
+        complexity, threshold, soft_threshold,
+    )
 
     try:
         query_vector = await embed_query(query)
@@ -79,10 +131,11 @@ async def check_query_relevance(
     top_file = results[0].file_path if results else None
 
     logger.debug(
-        "relevance_gate: best_score=%.3f threshold=%.2f soft=%.2f file=%s",
+        "relevance_gate: best_score=%.3f threshold=%.2f soft=%.2f complexity=%s file=%s",
         best_score,
         threshold,
         soft_threshold,
+        complexity,
         top_file,
     )
 
@@ -92,15 +145,16 @@ async def check_query_relevance(
             best_score=best_score,
             reason="out_of_scope",
             top_file=top_file,
+            query_complexity=complexity,
         )
 
     if best_score < soft_threshold:
-        # Ambiguous zone — proceed but mark it
         return RelevanceResult(
             is_relevant=True,
             best_score=best_score,
             reason="ambiguous",
             top_file=top_file,
+            query_complexity=complexity,
         )
 
     return RelevanceResult(
@@ -108,6 +162,7 @@ async def check_query_relevance(
         best_score=best_score,
         reason="relevant",
         top_file=top_file,
+        query_complexity=complexity,
     )
 
 

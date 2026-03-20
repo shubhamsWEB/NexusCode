@@ -123,7 +123,12 @@
       "Bash(docker build:*)",
       "Bash(docker run:*)",
       "Bash(docker image:*)",
-      "Bash(env:*)"
+      "Bash(env:*)",
+      "WebFetch(domain:factory.ai)",
+      "WebFetch(domain:blog.langchain.com)",
+      "WebFetch(domain:google.github.io)",
+      "WebFetch(domain:developers.googleblog.com)",
+      "WebFetch(domain:www.flowhunt.io)"
     ]
   }
 }

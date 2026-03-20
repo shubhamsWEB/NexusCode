@@ -329,11 +329,25 @@ def _compute_budgets(analysis: QueryAnalysis) -> dict:
 
     Simple queries get the base budget; complex queries scale up.
 
+    When token_budgeting_enabled=False, all sections receive an effectively
+    unlimited budget so the assembler includes all ranked chunks.
+
     Raised caps (v2):
     - base: 10K → 12K      (more context even for simple queries)
     - max_budget: 30K → 60K (2x context for complex queries — allows
       the LLM to see many more relevant chunks before generating a plan)
     """
+    _UNLIMITED = 10_000_000
+    if not settings.token_budgeting_enabled:
+        return {
+            "total": _UNLIMITED,
+            "primary": _UNLIMITED,
+            "component": _UNLIMITED,
+            "caller": _UNLIMITED,
+            "expansion": _UNLIMITED,
+            "dependency": _UNLIMITED,
+        }
+
     base = 12_000
     max_budget = 60_000
 
@@ -482,26 +496,33 @@ async def retrieve_planning_context(
         or analysis.complexity in ("moderate", "complex")
     )
 
+    # Exhaustive search quality for cross-cutting/complex queries — removes the
+    # 200 ef_search cap and uses retrieval_exhaustive_top_k candidates for maximum
+    # recall. Adds reranking latency but significantly improves coverage.
+    _is_deep = analysis.is_cross_cutting or analysis.complexity == "complex"
+    _search_quality = "exhaustive" if _is_deep else "thorough"
+    _deep_top_k = settings.retrieval_exhaustive_top_k if _is_deep else num_candidates
+
     if repo_owner is None and settings.cross_repo_enabled:
         cross_results_by_repo, _ = await search_cross_repo(
             query,
             query_vector,
-            top_k=num_candidates,
+            top_k=_deep_top_k,
             token_budget=budgets.get("primary", 10000),
             allowed_repos=allowed_repos,
-            search_quality="thorough",
+            search_quality=_search_quality,
         )
         candidates = [r for rlist in cross_results_by_repo.values() for r in rlist]
     else:
         candidates = await search(
             query=query,
             query_vector=query_vector,
-            top_k=num_candidates,
+            top_k=_deep_top_k,
             mode="hybrid",
             repo_owner=repo_owner,
             repo_name=repo_name,
             hyde=use_hyde,
-            search_quality="thorough",
+            search_quality=_search_quality,
         )
 
     # Sub-query searches (parallel) — merge results
@@ -517,8 +538,8 @@ async def retrieve_planning_context(
                 mode="hybrid",
                 repo_owner=repo_owner,
                 repo_name=repo_name,
-                hyde=use_hyde,  # inherit HyDE setting from primary (not just concept)
-                search_quality="thorough",
+                hyde=use_hyde,
+                search_quality=_search_quality,
             )
 
         sub_search_tasks = [_sub_search(sq, sv) for sq, sv in sub_query_vectors.items()]
@@ -595,6 +616,29 @@ async def retrieve_planning_context(
                         )
             except Exception as _ref_exc:
                 logger.debug("reformulation search failed: %s", sanitize_log(_ref_exc))
+
+    # ── Phase 3c: module coverage enforcement ────────────────────────────
+    # Ensures key modules/directories mentioned in the query are represented.
+    # Fires targeted searches for any missing subsystems before continuing.
+    if analysis.complexity != "simple" and candidates:
+        try:
+            from src.retrieval.coverage import enforce_module_coverage
+
+            coverage_new = await enforce_module_coverage(
+                query=query,
+                mentioned_paths=analysis.mentioned_paths or [],
+                candidates=candidates,
+                repo_owner=repo_owner,
+                repo_name=repo_name,
+            )
+            if coverage_new:
+                candidates = rerank(query, candidates + coverage_new, top_n=rerank_n)
+                logger.info(
+                    "planning retriever: coverage enforcement added %d chunks",
+                    len(coverage_new),
+                )
+        except Exception as _cov_exc:
+            logger.debug("coverage enforcement failed: %s", sanitize_log(_cov_exc))
 
     # ── Phase 4: file structure maps ─────────────────────────────────────
     # Complexity-aware file limit (Gap 2 fix):
@@ -690,16 +734,22 @@ async def retrieve_planning_context(
     # After vector/keyword retrieval + semantic expansion, add 1-hop graph
     # neighbors (callees, callers, imported files) that may not be semantically
     # similar to the query but are structurally essential.
+    # Scale max_neighbors with complexity: complex/cross-cutting queries need
+    # broader traversal to capture the full dependency surface.
     # Skip for simple queries to keep latency low.
     if analysis.complexity != "simple" and candidates:
         try:
             from src.retrieval.graph_expander import expand_with_graph
 
+            _graph_max = (
+                40 if (analysis.is_cross_cutting or analysis.complexity == "complex")
+                else 25
+            )
             graph_neighbors = await expand_with_graph(
                 candidates,
                 repo_owner=repo_owner,
                 repo_name=repo_name,
-                max_neighbors=20,
+                max_neighbors=_graph_max,
             )
             for r in graph_neighbors:
                 if r.chunk_id not in seen_ids:
@@ -707,11 +757,88 @@ async def retrieve_planning_context(
                     expansion_results.append(r)
             if graph_neighbors:
                 logger.debug(
-                    "planning retriever: +%d graph-expanded chunks added",
+                    "planning retriever: +%d graph-expanded chunks added (max_neighbors=%d)",
                     len(graph_neighbors),
+                    _graph_max,
                 )
         except Exception as _gex:
             logger.debug("planning retriever: graph expansion skipped: %s", sanitize_log(_gex))
+
+    # ── Phase 5d: dependency completeness verification ───────────────────
+    # For complex/cross-cutting queries, verify that the direct callers and
+    # callees of the top retrieved symbols are present in the candidate set.
+    # Fetches missing direct neighbors from the DB (up to 3 per symbol, capped
+    # at 5 symbols) to ensure the plan covers the full affected surface.
+    if (analysis.is_cross_cutting or analysis.complexity == "complex") and candidates and repo_owner and repo_name:
+        try:
+            from sqlalchemy import text
+
+            from src.storage.db import AsyncSessionLocal
+
+            # Collect unique symbol names from top candidates
+            dep_symbols = list(dict.fromkeys(
+                r.symbol_name for r in candidates[:20] if r.symbol_name
+            ))[:5]
+
+            if dep_symbols:
+                async with AsyncSessionLocal() as session:
+                    rows = await session.execute(
+                        text("""
+                            SELECT DISTINCT c.chunk_id, c.file_path, c.raw_content,
+                                   c.start_line, c.end_line, c.symbol_name,
+                                   c.symbol_kind, c.scope_chain, c.language,
+                                   c.token_count, c.commit_sha, c.commit_author,
+                                   c.enriched_content, c.parent_chunk_id,
+                                   0.0::float AS score
+                            FROM kg_edges e
+                            JOIN chunks c ON (
+                                c.symbol_name = e.target_id
+                                OR c.symbol_name = e.source_id
+                            )
+                            WHERE e.repo_owner = :owner
+                              AND e.repo_name  = :repo
+                              AND e.edge_type  = 'calls'
+                              AND (
+                                e.source_id = ANY(:syms)
+                                OR e.target_id = ANY(:syms)
+                              )
+                              AND c.repo_owner = :owner
+                              AND c.repo_name  = :repo
+                            LIMIT 30
+                        """),
+                        {"owner": repo_owner, "repo": repo_name, "syms": dep_symbols},
+                    )
+                    from src.retrieval.searcher import SearchResult as SR
+                    for row in rows:
+                        rd = dict(row._mapping)
+                        cid = str(rd.get("chunk_id") or "")
+                        if cid and cid not in seen_ids:
+                            seen_ids.add(cid)
+                            expansion_results.append(SR(
+                                chunk_id=cid,
+                                file_path=str(rd.get("file_path") or ""),
+                                raw_content=str(rd.get("raw_content") or ""),
+                                start_line=int(rd.get("start_line") or 0),
+                                end_line=int(rd.get("end_line") or 0),
+                                symbol_name=rd.get("symbol_name"),
+                                symbol_kind=rd.get("symbol_kind"),
+                                scope_chain=rd.get("scope_chain"),
+                                language=rd.get("language"),
+                                token_count=int(rd.get("token_count") or 0),
+                                commit_sha=rd.get("commit_sha"),
+                                commit_author=rd.get("commit_author"),
+                                enriched_content=rd.get("enriched_content"),
+                                parent_chunk_id=rd.get("parent_chunk_id"),
+                                score=0.0,
+                                repo_owner=repo_owner,
+                                repo_name=repo_name,
+                            ))
+                logger.debug(
+                    "planning retriever: Phase 5d added dependency neighbors for symbols %s",
+                    sanitize_log(str(dep_symbols)),
+                )
+        except Exception as _dep_exc:
+            logger.debug("planning retriever: Phase 5d skipped: %s", sanitize_log(_dep_exc))
 
     # ── Assemble context strings ────────────────────────────────────────
     primary_ctx = assemble(candidates, token_budget=budgets["primary"], query=query)

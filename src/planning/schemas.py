@@ -80,6 +80,9 @@ class PlanMetadata(BaseModel):
     sub_queries_count: int = 0  # number of decomposed sub-queries
     grounding_warnings: list[str] = Field(default_factory=list)  # post-retrieval gaps
     quality_score: float = Field(0.0, description="Context retrieval confidence (0.0-1.0 scale)")
+    verification_confidence: int = Field(10, description="Verifier confidence score 0-10 (10=max)")
+    low_confidence_warning: str = Field("", description="Populated when verification confidence < 6")
+    session_id: str = Field("", description="Agent loop session ID (artifact store key prefix)")
 
 
 # ── SPARC summary ─────────────────────────────────────────────────────────────

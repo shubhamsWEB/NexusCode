@@ -154,25 +154,39 @@ async def execute_tool(
 
     allowed_repos = (extra_context or {}).get("allowed_repos")
 
+    artifact_store = (extra_context or {}).get("_artifact_store")
+
+    # ── load_artifact: retrieve a stored result by ID ────────────────────────
+    if name == "load_artifact":
+        artifact_id = inp.get("artifact_id", "")
+        if not artifact_id:
+            return json.dumps({"error": "load_artifact requires an 'artifact_id' field."})
+        if artifact_store is None:
+            return json.dumps({"error": "Artifact store not available in this session."})
+        content = await artifact_store.load(artifact_id)
+        if content is None:
+            return json.dumps({"error": f"Artifact '{artifact_id}' not found or expired."})
+        return content
+
     try:
         if name == "search_codebase":
-            return await _search_codebase(inp, repo_owner, repo_name, allowed_repos)
+            result = await _search_codebase(inp, repo_owner, repo_name, allowed_repos)
         elif name == "get_symbol":
-            return await _get_symbol(inp, repo_owner, repo_name, allowed_repos)
+            result = await _get_symbol(inp, repo_owner, repo_name, allowed_repos)
         elif name == "find_callers":
-            return await _find_callers(inp, repo_owner, repo_name, allowed_repos)
+            result = await _find_callers(inp, repo_owner, repo_name, allowed_repos)
         elif name == "get_semantic_context":
-            return await _get_semantic_context(inp, repo_owner, repo_name, allowed_repos)
+            result = await _get_semantic_context(inp, repo_owner, repo_name, allowed_repos)
         elif name == "get_file_context":
-            return await _get_file_context(inp, repo_owner, repo_name, allowed_repos)
+            result = await _get_file_context(inp, repo_owner, repo_name, allowed_repos)
         elif name == "get_agent_context":
-            return await _get_agent_context(inp, repo_owner, repo_name, allowed_repos)
+            result = await _get_agent_context(inp, repo_owner, repo_name, allowed_repos)
         elif name == "plan_implementation":
-            return await _plan_implementation(inp, repo_owner, repo_name, allowed_repos)
+            result = await _plan_implementation(inp, repo_owner, repo_name, allowed_repos)
         elif name == "ask_codebase":
-            return await _ask_codebase(inp, repo_owner, repo_name, allowed_repos)
+            result = await _ask_codebase(inp, repo_owner, repo_name, allowed_repos)
         elif name == "generate_pdf":
-            return await _generate_pdf(inp, extra_context)
+            result = await _generate_pdf(inp, extra_context)
         elif name == "think":
             # Side-effect-free scratchpad: echo thought back so it appears in conversation history.
             # Claude uses this to reason about whether it has sufficient context before deciding
@@ -182,11 +196,38 @@ async def execute_tool(
             from src.agent.mcp_bridge import call_external_tool, is_external_tool
 
             if is_external_tool(name):
-                return await call_external_tool(name, inp)
-            return json.dumps({"error": f"Unknown tool: {name}"})
+                result = await call_external_tool(name, inp)
+            else:
+                return json.dumps({"error": f"Unknown tool: {name}"})
     except Exception as exc:
         logger.exception("tool_executor: %s failed", sanitize_log(name))
         return json.dumps({"error": f"Tool {name} failed: {exc}"})
+
+    # ── Artifact store: compress result and update working memory ─────────────
+    if artifact_store is not None:
+        from src.config import settings as _settings
+
+        if _settings.agent_session_enabled:
+            try:
+                artifact_id, summary = await artifact_store.save(name, result)
+
+                # Update working memory with discovered paths and symbols
+                from src.agent.artifact_store import _extract_file_paths, _extract_symbol_names
+
+                file_paths = _extract_file_paths(name, result)
+                if file_paths:
+                    await artifact_store.update_working_memory("found_files", file_paths)
+                    await artifact_store.update_working_memory("visited_paths", file_paths)
+                sym_names = _extract_symbol_names(name, result)
+                if sym_names:
+                    await artifact_store.update_working_memory("found_symbols", sym_names)
+                await artifact_store.update_working_memory("iteration_count", 1)
+
+                return f"[artifact:{artifact_id}]\n{summary}"
+            except Exception as exc:
+                logger.warning("artifact_store: wrapping failed (%s) — returning raw result", exc)
+
+    return result
 
 
 # ── search_codebase ────────────────────────────────────────────────────────────
@@ -211,7 +252,7 @@ async def _search_codebase(
             "received_keys": list(inp.keys()),
         })
     language = inp.get("language")
-    top_k = max(1, min(15, int(inp.get("top_k", 8))))
+    top_k = max(1, min(30, int(inp.get("top_k", 8))))
     mode = inp.get("mode", "hybrid")
 
     query_vector: list[float] = []
