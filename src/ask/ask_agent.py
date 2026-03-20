@@ -106,11 +106,14 @@ class AskResult:
     __slots__ = (
         "answer",
         "cited_files",
+        "confidence_score",
         "context_tokens",
         "elapsed_ms",
         "follow_up_hints",
         "iterations",
+        "low_confidence_warning",
         "quality_score",
+        "session_id",
         "tool_calls_count",
     )
 
@@ -124,6 +127,9 @@ class AskResult:
         context_tokens: int = 0,
         tool_calls_count: int = 0,
         iterations: int = 0,
+        confidence_score: int = 10,
+        low_confidence_warning: str = "",
+        session_id: str = "",
     ):
         self.answer = answer
         self.cited_files = cited_files
@@ -132,7 +138,10 @@ class AskResult:
         self.quality_score = quality_score
         self.context_tokens = context_tokens
         self.tool_calls_count = tool_calls_count
+        self.confidence_score = confidence_score
+        self.low_confidence_warning = low_confidence_warning
         self.iterations = iterations
+        self.session_id = session_id
 
     def to_dict(self) -> dict:
         return {
@@ -144,6 +153,7 @@ class AskResult:
             "context_tokens": self.context_tokens,
             "tool_calls_count": self.tool_calls_count,
             "iterations": self.iterations,
+            "session_id": self.session_id,
         }
 
 
@@ -224,6 +234,7 @@ def _parse_tool_block(tool_block: dict, stats: dict) -> AskResult:
         context_tokens=stats.get("context_tokens", 0),
         tool_calls_count=stats.get("tool_calls", 0),
         iterations=stats.get("iterations", 0),
+        session_id=stats.get("session_id", ""),
     )
 
 
@@ -309,6 +320,35 @@ async def generate_answer(
     )
 
     result = _parse_tool_block(tool_block, stats)
+
+    # ── Optional verification pass ──────────────────────────────────────────
+    if settings.answer_verification_enabled:
+        from src.planning.verifier import verify_answer
+
+        # Fix chunks_used: populate from working memory when artifact store is active
+        chunks_used = stats.get("chunks_used", [])
+        if not chunks_used and result.session_id and settings.agent_session_enabled:
+            try:
+                from src.agent.artifact_store import ArtifactStore
+
+                _tmp_store = ArtifactStore(session_id=result.session_id)
+                wm = await _tmp_store.get_working_memory()
+                await _tmp_store.close()
+                chunks_used = wm.get("found_files", [])
+            except Exception:
+                pass
+
+        verification = await verify_answer(
+            query=query,
+            answer=result.answer,
+            context_chunks=chunks_used,
+            model=getattr(settings, "verification_model", None) or effective_model,
+        )
+        result.confidence_score = verification.confidence
+        result.low_confidence_warning = verification.warning_message
+        if verification.low_confidence:
+            result.answer = result.answer + verification.warning_message
+
     logger.info(
         "ask: %s answered in %.0fms (iter=%d, tool_calls=%d, tokens=%d)",
         effective_model,

@@ -48,9 +48,12 @@ class SearchResult:
 # ── ef_search quality presets ─────────────────────────────────────────────────
 
 _EF_PRESETS = {
-    "fast":     lambda base: max(10, base // 2),
-    "balanced": lambda base: base,
-    "thorough": lambda base: min(200, base * 2),
+    "fast":      lambda base: max(10, base // 2),
+    "balanced":  lambda base: base,
+    "thorough":  lambda base: min(200, base * 2),
+    # exhaustive: removes the 200 cap — use for complex / cross-cutting queries
+    # where missing a relevant chunk costs more than extra search latency.
+    "exhaustive": lambda base: min(400, base * 4),
 }
 
 # ── Public entry point ────────────────────────────────────────────────────────

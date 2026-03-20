@@ -88,6 +88,11 @@ def assemble(
 
     from src.config import settings as _settings
 
+    # When token budgeting is disabled, use an effectively unlimited budget so
+    # all ranked chunks are included and the LLM gets the full context.
+    _UNLIMITED = 10_000_000
+    _budgeting = _settings.token_budgeting_enabled
+    _effective_budget = token_budget if _budgeting else _UNLIMITED
     _min_quality = _settings.retrieval_min_quality_score
 
     for result in results:
@@ -97,17 +102,19 @@ def assemble(
         # Quality gate: once budget is >50% consumed and we have enough good
         # chunks, skip very low quality candidates to prevent noise diluting
         # the context that the LLM receives.
+        # (Skipped when token budgeting is disabled — include all reranked chunks.)
         if (
-            _min_quality > 0
+            _budgeting
+            and _min_quality > 0
             and result.quality_score > 0  # 0.0 means not yet reranked — don't gate
             and result.quality_score < _min_quality
-            and tokens_used > token_budget * 0.5
+            and tokens_used > _effective_budget * 0.5
             and len(selected) >= 5
         ):
             continue
 
         section_tokens = count_tokens(result.raw_content) + _estimate_header_tokens(result)
-        if tokens_used + section_tokens > token_budget:
+        if tokens_used + section_tokens > _effective_budget:
             # Try to keep going — maybe a later chunk is shorter
             continue
 
@@ -144,7 +151,7 @@ def assemble(
                 section_tokens = count_tokens(p_result.raw_content) + _estimate_header_tokens(
                     p_result
                 )
-                if tokens_used + section_tokens > token_budget:
+                if tokens_used + section_tokens > _effective_budget:
                     continue  # Stop if budget full
 
                 seen_ids.add(pid)
@@ -220,7 +227,7 @@ def assemble(
     if sections:
         context_text += f"\n{divider_heavy}"
 
-    retrieval_log = _build_log(query, chunks_used, tokens_used, token_budget)
+    retrieval_log = _build_log(query, chunks_used, tokens_used, _effective_budget)
     logger.debug(
         "assembler: %d/%d chunks included across %d files, %d tokens used",
         len(chunks_used),

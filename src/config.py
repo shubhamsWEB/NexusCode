@@ -61,6 +61,20 @@ class Settings(BaseSettings):
     enable_file_summaries: bool = Field(
         False, description="Whether to extract and index LLM file summaries"
     )
+    # ── Token Budgeting ───────────────────────────────────────────────────────
+    token_budgeting_enabled: bool = Field(
+        True,
+        description=(
+            "Master switch for all token budget limits. "
+            "When True (default), context assembly, agent loop Gate 2, and planning "
+            "retriever all enforce their configured token budgets. "
+            "When False, all budget caps are removed — the LLM receives the full "
+            "ranked context it needs for maximum accuracy. "
+            "Disable only if your LLM context window is large enough to absorb "
+            "uncapped retrieval results (e.g. claude-3-7-sonnet with 200K context)."
+        ),
+    )
+
     # Agent loop settings
     ask_max_iterations: int = Field(5, description="Max retrieval iterations for Ask Mode")
     plan_max_iterations: int = Field(10, description="Max retrieval iterations for Plan Mode (complex queries)")
@@ -154,6 +168,13 @@ class Settings(BaseSettings):
         80,
         description="HNSW ef_search parameter — higher = better recall, slower query (range: 10-200)",
     )
+    retrieval_exhaustive_top_k: int = Field(
+        200,
+        description=(
+            "top_k used for the 'exhaustive' search quality tier in complex/cross-cutting "
+            "planning queries. Higher = better recall at the cost of reranking latency."
+        ),
+    )
     retrieval_min_quality_score: float = Field(
         0.10,
         description=(
@@ -175,16 +196,35 @@ class Settings(BaseSettings):
     query_relevance_threshold: float = Field(
         0.35,
         description=(
-            "Min cosine similarity for a query to be considered relevant to the indexed codebase. "
-            "Queries scoring below this are rejected before the agent loop runs. "
+            "Default min cosine similarity for a query to be considered relevant. "
+            "Used when no per-complexity threshold matches. "
             "Range: 0.0-1.0. Lower = more permissive, higher = stricter."
         ),
     )
     query_relevance_soft_threshold: float = Field(
         0.50,
         description=(
-            "Cosine similarity above which the query is considered clearly relevant "
-            "and skips the ambiguous zone. Range: must be > query_relevance_threshold."
+            "Cosine similarity above which the query is clearly relevant (skips ambiguous zone). "
+            "Must be > query_relevance_threshold."
+        ),
+    )
+    query_relevance_threshold_simple: float = Field(
+        0.50,
+        description=(
+            "Stricter relevance threshold for short/simple queries (< 40 chars, < 5 words). "
+            "Simple queries that match weakly are more likely to be off-topic."
+        ),
+    )
+    query_relevance_threshold_moderate: float = Field(
+        0.30,
+        description="Relevance threshold for moderate-length queries (default zone).",
+    )
+    query_relevance_threshold_complex: float = Field(
+        0.15,
+        description=(
+            "Looser relevance threshold for long/multi-part queries. "
+            "Complex queries often use natural-language framing that scores lower "
+            "against code embeddings even when the intent is clearly codebase-related."
         ),
     )
     query_relevance_enabled: bool = Field(
@@ -247,6 +287,35 @@ class Settings(BaseSettings):
         300, description="TTL in seconds for full search result cache in Redis"
     )
 
+    # ── Module Coverage Enforcement ──────────────────────────────────────────
+    coverage_enforcement_enabled: bool = Field(
+        True,
+        description=(
+            "When True, after the primary rerank the retriever checks whether "
+            "key modules/directories mentioned in the query are represented in the "
+            "candidate set. Missing modules get a targeted search to fill the gap. "
+            "Reduces the risk of missing entire subsystems."
+        ),
+    )
+
+    # ── Answer Verification ───────────────────────────────────────────────────
+    answer_verification_enabled: bool = Field(
+        False,
+        description=(
+            "When True, run a lightweight second LLM call after each answer to "
+            "rate grounding confidence and flag unsupported claims. "
+            "Adds ~300-600ms latency. Off by default."
+        ),
+    )
+    verification_model: str = Field(
+        "",
+        description=(
+            "Model to use for the verification pass. "
+            "Defaults to default_model when empty. "
+            "Recommended: a fast/cheap model like claude-haiku-4-5-20251001."
+        ),
+    )
+
     # ── Custom Skills ─────────────────────────────────────────────────────────
     custom_skills_dirs: str = Field(
         "", description="Comma-separated paths to custom skill directories"
@@ -285,6 +354,20 @@ class Settings(BaseSettings):
     )
     workflow_max_parallel_steps: int = Field(
         4, description="Max steps that can run in parallel within a single wave"
+    )
+
+    # ── Agent Session / Artifact Store ───────────────────────────────────────
+    agent_session_enabled: bool = Field(
+        True, description="Enable Redis artifact store for agent loop"
+    )
+    artifact_ttl_seconds: int = Field(
+        1800, description="TTL for artifact keys in Redis (seconds)"
+    )
+    artifact_summary_max_tokens: int = Field(
+        200, description="Max tokens in a compressed artifact summary"
+    )
+    artifact_working_memory_prefix: str = Field(
+        "session:wm", description="Redis key prefix for working memory"
     )
 
     # ── Self-Evolution ────────────────────────────────────────────────────────

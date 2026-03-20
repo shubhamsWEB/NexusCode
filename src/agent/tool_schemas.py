@@ -572,6 +572,28 @@ GENERATE_PDF_SCHEMA: dict = {
 }
 
 
+# ── Tool 9: load_artifact ─────────────────────────────────────────────────────
+
+LOAD_ARTIFACT_SCHEMA: dict = {
+    "name": "load_artifact",
+    "description": (
+        "Retrieve the full content of a previously stored tool result by its artifact ID. "
+        "Use this when a compressed summary was insufficient and you need the raw data. "
+        "Artifact IDs appear in tool results formatted as [artifact:<id>]."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "artifact_id": {
+                "type": "string",
+                "description": "The artifact ID returned in the summary (e.g. 'a1b2c3d4').",
+            }
+        },
+        "required": ["artifact_id"],
+    },
+}
+
+
 # ── Think tool (meta-loop self-evaluation) ────────────────────────────────────
 # Based on Anthropic's "think" tool pattern (engineering blog, 2025):
 # A side-effect-free scratchpad that lets Claude explicitly reason about whether
@@ -638,8 +660,8 @@ EXTENDED_TOOL_SCHEMAS: list[dict] = [
     ASK_CODEBASE_SCHEMA,
 ]
 
-# All internal tools combined (includes generate_pdf)
-ALL_INTERNAL_TOOL_SCHEMAS: list[dict] = RETRIEVAL_TOOL_SCHEMAS + EXTENDED_TOOL_SCHEMAS + [GENERATE_PDF_SCHEMA]
+# All internal tools combined (includes generate_pdf and load_artifact)
+ALL_INTERNAL_TOOL_SCHEMAS: list[dict] = RETRIEVAL_TOOL_SCHEMAS + EXTENDED_TOOL_SCHEMAS + [GENERATE_PDF_SCHEMA, LOAD_ARTIFACT_SCHEMA]
 
 # Trimmed set for Ask Mode — drops get_file_context to save ~300 tokens/turn
 ASK_RETRIEVAL_TOOL_SCHEMAS: list[dict] = [
