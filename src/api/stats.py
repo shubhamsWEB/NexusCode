@@ -1,40 +1,48 @@
+from typing import Optional
+
 from fastapi import APIRouter
-from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 from src.storage.db import get_index_stats
 from src.utils.logging import get_secure_logger
 
-router = APIRouter()
 logger = get_secure_logger(__name__)
+router = APIRouter(tags=["stats"])
 
 
-@router.get("/stats")
-async def get_stats() -> JSONResponse:
+class StatsResponse(BaseModel):
+    """Response model for /stats endpoint."""
+
+    repos: int = Field(..., description="Total number of indexed repositories")
+    files: int = Field(..., description="Total number of indexed files")
+    chunks: int = Field(..., description="Total number of indexed chunks")
+    last_indexed: Optional[str] = Field(
+        None, description="ISO 8601 timestamp of last index update, or null"
+    )
+
+
+@router.get("/stats", response_model=StatsResponse)
+async def get_stats() -> StatsResponse:
     """
-    Return aggregated database statistics.
+    Get indexing statistics.
 
-    Returns:
-        {
-            "repos": int,
-            "files": int,
-            "chunks": int,
-            "last_indexed": str (ISO 8601) or null
-        }
+    Returns total counts of indexed repos, files, and chunks from the database.
+    No authentication required.
+
+    **Response:**
+    ```json
+    {
+      "repos": 5,
+      "files": 150,
+      "chunks": 3000,
+      "last_indexed": "2024-01-15T10:30:00Z"
+    }
+    ```
     """
-    try:
-        stats = await get_index_stats()
-        # Filter to spec: only repos, files, chunks, last_indexed
-        filtered = {
-            "repos": stats["repos"],
-            "files": stats["files"],
-            "chunks": stats["chunks"],
-            "last_indexed": stats["last_indexed"],
-        }
-        logger.debug("GET /stats called successfully")
-        return JSONResponse(filtered)
-    except Exception as e:
-        logger.exception("get_stats failed: %s", e)
-        return JSONResponse(
-            {"error": str(e)},
-            status_code=500,
-        )
+    stats = await get_index_stats()
+    return StatsResponse(
+        repos=stats.get("repos", 0),
+        files=stats.get("files", 0),
+        chunks=stats.get("chunks", 0),
+        last_indexed=stats.get("last_indexed"),
+    )

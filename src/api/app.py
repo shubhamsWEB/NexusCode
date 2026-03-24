@@ -1,10 +1,3 @@
-"""
-Main FastAPI application.
-Mounts: webhook receiver, health check, search endpoint, MCP server (Day 6).
-"""
-
-from __future__ import annotations
-
 from contextlib import asynccontextmanager
 from typing import Literal
 
@@ -24,6 +17,7 @@ from src.api.mcp_servers import router as mcp_servers_router
 from src.api.plan import router as plan_router
 from src.api.repos import router as repos_router
 from src.api.skills import router as skills_router
+from src.api.stats import router as stats_router
 from src.api.workflows import router as workflows_router
 from src.api.workflows import webhook_router as workflow_webhook_router
 from src.github.webhook import router as webhook_router
@@ -95,57 +89,22 @@ class _MCPPathNormalizer:
 
 app = FastAPI(
     title="Codebase Intelligence MCP Server",
-    version="0.2.0",
-    description="Centralized, always-fresh codebase knowledge service.",
+    description="Search, analyze, and understand codebases with semantic search and MCP tools.",
+    version="1.0.0",
     lifespan=lifespan,
 )
 
-# Normalise /mcp → /mcp/ so Cursor/Claude Desktop don't need the trailing slash.
-# Must be added AFTER app is constructed so it wraps the full middleware stack.
+# Apply MCP path normalizer middleware
 app.add_middleware(_MCPPathNormalizer)
 
 
-app.include_router(webhook_router)
-app.include_router(auth_router)
-app.include_router(repos_router)
-app.include_router(plan_router)
-app.include_router(ask_router)
-app.include_router(history_router)
-app.include_router(skills_router)
-app.include_router(mcp_servers_router)
-app.include_router(graph_router)
-app.include_router(workflows_router)
-app.include_router(workflow_webhook_router)
-app.include_router(agent_roles_router)
-app.include_router(documents_router)
-app.include_router(api_keys_router)
-app.include_router(evolution_router)
-
-
-# ── MCP Streamable HTTP transport (MCP 2025-03-26 spec) ──────────────────────
-# Full endpoint:    POST /mcp/full  → complete NexusCode MCP surface
-# Default endpoint: POST /mcp       → core context tools only
-# Mount the more-specific path first so Starlette does not route /mcp/full
-# through the broader /mcp mount.
-# IMPORTANT: streamable_http_app() here creates each server's _session_manager
-# before the lifespan's async with ... _session_manager.run() contexts run.
-app.mount("/mcp/full", mcp_server.streamable_http_app())
-app.mount("/mcp", core_mcp_server.streamable_http_app())
-
-
-# ── Health ────────────────────────────────────────────────────────────────────
-
-
-@app.get("/health", tags=["ops"])
+@app.get("/health")
 async def health() -> JSONResponse:
     stats = await get_index_stats()
     return JSONResponse({"status": "ok", **stats})
 
 
-# ── Available LLM models ─────────────────────────────────────────────────────
-
-
-@app.get("/models", tags=["ops"])
+@app.get("/models")
 async def available_models() -> JSONResponse:
     """Return available models across all configured providers."""
     from src.config import settings
@@ -168,9 +127,6 @@ async def available_models() -> JSONResponse:
     return JSONResponse(models)
 
 
-# ── Search ────────────────────────────────────────────────────────────────────
-
-
 class SearchRequest(BaseModel):
     query: str = Field(..., min_length=1, description="Natural language or identifier query")
     repo: str | None = Field(None, description="Scope to a repo: 'owner/name'")
@@ -181,7 +137,7 @@ class SearchRequest(BaseModel):
     token_budget: int = Field(8000, description="Max tokens in assembled context")
 
 
-@app.post("/search", tags=["retrieval"])
+@app.post("/search")
 async def search_endpoint(req: SearchRequest) -> JSONResponse:
     from src.retrieval.assembler import assemble
     from src.retrieval.reranker import rerank
@@ -245,10 +201,7 @@ async def search_endpoint(req: SearchRequest) -> JSONResponse:
     )
 
 
-# ── Webhook events feed ───────────────────────────────────────────────────────
-
-
-@app.get("/events", tags=["ops"])
+@app.get("/events")
 async def list_events(
     limit: int = 20,
     repo_owner: str | None = None,
@@ -293,10 +246,7 @@ async def list_events(
     return JSONResponse([_fmt(r) for r in rows])
 
 
-# ── Stats endpoints ───────────────────────────────────────────────────────────
-
-
-@app.get("/stats/repos", tags=["ops"])
+@app.get("/stats/repos")
 async def stats_repos() -> JSONResponse:
     """Per-repository chunk/file breakdown."""
     from sqlalchemy import text
@@ -325,7 +275,7 @@ async def stats_repos() -> JSONResponse:
     return JSONResponse([_fmt(r) for r in rows])
 
 
-@app.get("/stats/recent-files", tags=["ops"])
+@app.get("/stats/recent-files")
 async def stats_recent_files(limit: int = 20) -> JSONResponse:
     """Recently indexed files ordered by indexed_at DESC."""
     from sqlalchemy import text
@@ -352,7 +302,7 @@ async def stats_recent_files(limit: int = 20) -> JSONResponse:
     return JSONResponse([_fmt(r) for r in rows])
 
 
-@app.get("/stats/chunk-distribution", tags=["ops"])
+@app.get("/stats/chunk-distribution")
 async def stats_chunk_distribution() -> JSONResponse:
     """Token-count bucket distribution for active chunks."""
     from sqlalchemy import text
@@ -365,7 +315,7 @@ async def stats_chunk_distribution() -> JSONResponse:
                    WHEN token_count < 200 THEN '100-199'
                    WHEN token_count < 300 THEN '200-299'
                    WHEN token_count < 400 THEN '300-399'
-                   WHEN token_count < 512 THEN '400-511'
+                   WHEN token_count < 400 THEN '400-511'
                    ELSE '512+'
                END AS bucket,
                COUNT(*) AS count
@@ -379,9 +329,30 @@ async def stats_chunk_distribution() -> JSONResponse:
     return JSONResponse([dict(r) for r in rows])
 
 
-# ── Root ──────────────────────────────────────────────────────────────────────
-
-
-@app.get("/", include_in_schema=False)
+@app.get("/")
 async def root():
     return {"message": "Codebase Intelligence MCP Server — see /docs"}
+
+
+# Include routers
+app.include_router(agent_roles_router)
+app.include_router(evolution_router)
+app.include_router(api_keys_router)
+app.include_router(ask_router)
+app.include_router(documents_router)
+app.include_router(graph_router)
+app.include_router(history_router)
+app.include_router(mcp_servers_router)
+app.include_router(plan_router)
+app.include_router(repos_router)
+app.include_router(skills_router)
+app.include_router(stats_router)
+app.include_router(workflows_router)
+app.include_router(workflow_webhook_router)
+app.include_router(webhook_router)
+app.include_router(auth_router)
+
+# Mount MCP servers
+app.add_middleware(_MCPPathNormalizer)
+app.mount("/mcp", core_mcp_server.streamable_http_app())
+app.mount("/mcp/full", mcp_server.streamable_http_app())
