@@ -1,0 +1,258 @@
+---
+# Feature Development — Full Enterprise Workflow
+#
+# Covers the complete PM → Designer → Dev → Review → QA → DevOps pipeline.
+# Uses conditional routing so agents loop back for revisions until quality gates pass.
+#
+# Trigger payload fields:
+#   feature_request:  string — the raw feature request or Jira ticket key
+#   repo_owner:       string — GitHub owner (for NexusCode knowledge lookup)
+#   repo_name:        string — GitHub repository name
+#   jira_issue_key:   string (optional) — existing Jira issue to link
+#   slack_channel:    string (optional) — channel for status updates
+#
+# Graph routing:
+#   pm_human_review  → approved       → designer_agent
+#                    → needs_revision → pm_agent      (up to 2 loops)
+#
+#   code_review      → approved       → qa_agent
+#                    → needs_revision → coder_agent   (up to 3 loops)
+#                    → escalate       → supervisor_step
+#
+#   qa_validation    → approved       → devops_agent
+#                    → needs_revision → coder_agent   (looped back)
+#
+#   devops_agent     → END            (notify, open PR, close Jira)
+
+name: feature_development
+description: |
+  Full enterprise feature development workflow.
+  PM writes PRD → Designer specs UI → Planner plans implementation →
+  Coder writes code → Reviewer approves → QA validates → DevOps deploys.
+version: 2
+
+trigger:
+  type: manual
+  # Also supports webhook: type: webhook, webhook_path: /webhooks/feature-dev
+
+context:
+  repo_context: "{{ trigger.repo_owner }}/{{ trigger.repo_name }}"
+  feature_summary: "{{ trigger.feature_request }}"
+
+steps:
+
+  # ── 1. PM writes the PRD ────────────────────────────────────────────────────
+  - id: pm_agent
+    type: agent
+    role: pm_agent
+    state_output_key: prd
+    task: |
+      Write a complete Product Requirements Document for the following feature request:
+
+      **Feature Request:** {{ trigger.feature_request }}
+
+      Repository: {{ context.repo_context }}
+      Jira Issue: {{ trigger.jira_issue_key }}
+
+      Search the codebase to understand the existing product capabilities before writing
+      the PRD. Your output will be reviewed by a human stakeholder before proceeding.
+    context_inject:
+      - "Existing Jira Issue": "{{ trigger.jira_issue_key }}"
+
+  # ── 2. Human reviews and approves the PRD ───────────────────────────────────
+  - id: pm_human_review
+    type: human_checkpoint
+    depends_on: [pm_agent]
+    prompt: |
+      Please review the PRD written by the PM agent:
+
+      {{ steps.pm_agent.output }}
+
+      Do you approve this PRD for design and development?
+    options:
+      - approved
+      - needs_revision
+    timeout_hours: 48
+    on_timeout: skip
+    routes:
+      - condition: "step_outputs.get('pm_human_review', '') == 'approved' or step_outputs.get('pm_human_review', '') == 'timeout:skipped'"
+        goto: designer_agent
+      - condition: "loop_counts.get('pm_agent', 0) >= 2"
+        goto: designer_agent   # proceed after 2 revision cycles
+      - goto: pm_agent          # loop back for revision
+
+  # ── 3. Designer specs the UI components ─────────────────────────────────────
+  - id: designer_agent
+    type: agent
+    role: designer_agent
+    depends_on: [pm_human_review]
+    state_output_key: component_spec
+    task: |
+      Based on the approved PRD, create a detailed UI component specification.
+
+      **PRD:**
+      {{ state.prd }}
+
+      Repository: {{ context.repo_context }}
+
+      Search the codebase for existing UI components and design patterns before
+      specifying new ones. Prefer extending existing components over creating new ones.
+
+  # ── 4. Planner creates the implementation plan ───────────────────────────────
+  - id: planner_agent
+    type: agent
+    role: planner
+    depends_on: [designer_agent]
+    state_output_key: implementation_plan
+    task: |
+      Create a detailed implementation plan for this feature.
+
+      **PRD:**
+      {{ state.prd }}
+
+      **Component Specification:**
+      {{ state.component_spec }}
+
+      Repository: {{ context.repo_context }}
+
+      Use plan_implementation to get a deep codebase-grounded plan. Identify
+      every file that needs to change, in what order, and why.
+
+  # ── 5. Coder implements the feature ─────────────────────────────────────────
+  - id: coder_agent
+    type: agent
+    role: coder
+    depends_on: [planner_agent]
+    state_output_key: code_diff
+    task: |
+      Implement the feature according to the implementation plan.
+
+      **Implementation Plan:**
+      {{ state.implementation_plan }}
+
+      **Component Spec:**
+      {{ state.component_spec }}
+
+      **Review Notes (if revision):**
+      {{ state.review_notes }}
+
+      Repository: {{ context.repo_context }}
+
+      Search the codebase deeply before writing any code. Write complete,
+      production-ready code. No placeholders. Follow existing patterns exactly.
+
+  # ── 6. Reviewer checks the code ─────────────────────────────────────────────
+  - id: reviewer_agent
+    type: agent
+    role: reviewer
+    depends_on: [coder_agent]
+    state_output_key: review_verdict
+    task: |
+      Perform a thorough code review of the implementation.
+
+      **Implementation Plan:**
+      {{ state.implementation_plan }}
+
+      **Code Changes:**
+      {{ state.code_diff }}
+
+      **PRD Acceptance Criteria:**
+      {{ state.prd }}
+
+      Repository: {{ context.repo_context }}
+
+      Review for: correctness, security, performance, test coverage, adherence to plan.
+      Your verdict must be exactly one of: "approved", "needs_revision", or "escalate".
+      Output your verdict on the first line, followed by detailed review notes.
+    routes:
+      - condition: "review_verdict.startswith('approved')"
+        goto: qa_agent
+      - condition: "review_verdict.startswith('escalate')"
+        goto: supervisor_step
+      - condition: "loop_counts.get('coder_agent', 0) >= 3"
+        goto: supervisor_step   # escalate after 3 revision cycles
+      - goto: coder_agent       # default: request revision
+
+  # ── 7. QA validates against acceptance criteria ──────────────────────────────
+  - id: qa_agent
+    type: agent
+    role: qa_agent
+    depends_on: [reviewer_agent]
+    state_output_key: test_plan
+    task: |
+      Create a comprehensive test plan and validate the implementation against
+      all acceptance criteria in the PRD.
+
+      **PRD (with Acceptance Criteria):**
+      {{ state.prd }}
+
+      **Implementation Plan:**
+      {{ state.implementation_plan }}
+
+      **Code Changes:**
+      {{ state.code_diff }}
+
+      Repository: {{ context.repo_context }}
+
+      Write executable test code. On the first line of your output, write either
+      "qa_approved" or "qa_needs_revision" followed by your full test plan.
+    routes:
+      - condition: "test_plan.startswith('qa_approved') or loop_counts.get('coder_agent', 0) >= 4"
+        goto: devops_agent
+      - goto: coder_agent   # loop back for fixes (QA found issues)
+
+  # ── 8. DevOps plans and executes deployment ──────────────────────────────────
+  - id: devops_agent
+    type: agent
+    role: devops_agent
+    depends_on: [qa_agent]
+    state_output_key: deployment_plan
+    task: |
+      Create the deployment plan and open the GitHub PR for this feature.
+
+      **Implementation Plan:**
+      {{ state.implementation_plan }}
+
+      **Code Changes:**
+      {{ state.code_diff }}
+
+      **Test Plan:**
+      {{ state.test_plan }}
+
+      Repository: {{ context.repo_context }}
+
+      Search for deployment configs (Dockerfile, CI, k8s manifests) before writing
+      the plan. Use github_create_pr to open the PR. Use slack_send_message to
+      notify the team in {{ trigger.slack_channel }}.
+
+  # ── 9. Supervisor synthesises and closes the loop ───────────────────────────
+  - id: supervisor_step
+    type: agent
+    role: supervisor
+    depends_on: [devops_agent]
+    state_output_key: final_report
+    task: |
+      Synthesise the complete feature development into a final report.
+
+      **PRD:** {{ state.prd }}
+      **Implementation Plan:** {{ state.implementation_plan }}
+      **Review Verdict:** {{ state.review_verdict }}
+      **Test Plan:** {{ state.test_plan }}
+      **Deployment Plan:** {{ state.deployment_plan }}
+      **GitHub PR:** {{ state.github_pr_url }}
+
+      Write a concise executive summary: what was built, key decisions made,
+      known risks, and recommended next steps. Update the Jira issue to Done.
+
+  # ── 10. Update Jira and send final Slack notification ───────────────────────
+  - id: notify_completion
+    type: integration
+    integration: slack.send_message
+    depends_on: [supervisor_step]
+    params:
+      channel: "{{ trigger.slack_channel }}"
+      text: |
+        Feature Development Complete: *{{ trigger.feature_request }}*
+        PR: {{ state.github_pr_url }}
+        Review: {{ state.review_verdict }}
+        Summary: {{ state.final_report }}

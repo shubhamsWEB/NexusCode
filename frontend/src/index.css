@@ -1,0 +1,44 @@
+/* ReactFlow canvas dark theme overrides */
+.react-flow__background {
+  background-color: #0f0f1a;
+}
+.react-flow__edge-path {
+  stroke: #334155;
+  stroke-width: 2;
+}
+.react-flow__edge.selected .react-flow__edge-path,
+.react-flow__edge:hover .react-flow__edge-path {
+  stroke: #6366f1;
+}
+.react-flow__edge-label {
+  font-size: 11px;
+  fill: #94a3b8;
+  background: #1e293b;
+}
+.react-flow__handle {
+  background: #475569;
+  border-color: #334155;
+  width: 10px;
+  height: 10px;
+}
+.react-flow__handle:hover {
+  background: #6366f1;
+}
+.react-flow__controls {
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 8px;
+}
+.react-flow__controls-button {
+  background: #1e293b;
+  border-bottom-color: #334155;
+  fill: #94a3b8;
+}
+.react-flow__controls-button:hover {
+  background: #334155;
+}
+.react-flow__minimap {
+  background: #0f0f1a;
+  border: 1px solid #334155;
+  border-radius: 8px;
+}

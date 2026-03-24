@@ -370,6 +370,45 @@ class Settings(BaseSettings):
         "session:wm", description="Redis key prefix for working memory"
     )
 
+    # ── LangSmith Observability ───────────────────────────────────────────────
+    langsmith_tracing: bool = Field(
+        False, description="Enable LangSmith tracing for all LangGraph workflows"
+    )
+    langsmith_api_key: str | None = Field(None, description="LangSmith API key")
+    langsmith_project: str = Field(
+        "nexuscode-enterprise", description="LangSmith project name for trace grouping"
+    )
+    langsmith_endpoint: str = Field(
+        "https://api.smith.langchain.com", description="LangSmith API endpoint"
+    )
+
+    # ── Enterprise Integration Gateway ────────────────────────────────────────
+    integration_encryption_key: str | None = Field(
+        None,
+        description=(
+            "32-byte hex key for AES-256-GCM encryption of integration credentials. "
+            "Generate with: python -c \"import secrets; print(secrets.token_hex(32))\""
+        ),
+    )
+    # Jira
+    jira_base_url: str | None = Field(None, description="Jira instance base URL (e.g. https://myco.atlassian.net)")
+    jira_api_token: str | None = Field(None, description="Jira API token for service account")
+    jira_email: str | None = Field(None, description="Service account email for Jira Basic Auth")
+    # Slack
+    slack_bot_token: str | None = Field(None, description="Slack bot token (xoxb-...)")
+    slack_signing_secret: str | None = Field(None, description="Slack signing secret for event verification")
+    # GitHub (enterprise integrations beyond indexing)
+    github_app_installation_id: int | None = Field(None, description="GitHub App installation ID")
+    # Figma
+    figma_access_token: str | None = Field(None, description="Figma personal access token or OAuth token")
+    # Notion
+    notion_api_key: str | None = Field(None, description="Notion integration token")
+    # OAuth redirect base
+    integration_oauth_callback_base_url: str = Field(
+        "http://localhost:8000",
+        description="Public base URL for integration OAuth callbacks",
+    )
+
     # ── Self-Evolution ────────────────────────────────────────────────────────
     evolution_enabled: bool = Field(
         True, description="Enable automatic self-evolution cycles"

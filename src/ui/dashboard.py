@@ -64,6 +64,7 @@ PAGES = [
     "🔌 MCP Servers",
     "🤖 Agent Roles",
     "⚡ Workflows",
+    "📊 Workflow Traces",
     "🗝️ API Key Scopes",
     "🧬 Evolution",
     "📚 Documentation",
@@ -541,6 +542,11 @@ elif page == "🤖 Agent Roles":
 
 elif page == "⚡ Workflows":
     from src.ui._pages.workflows import render
+
+    render()
+
+elif page == "📊 Workflow Traces":
+    from src.ui._pages.workflow_traces import render
 
     render()
 

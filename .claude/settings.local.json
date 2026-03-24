@@ -128,7 +128,24 @@
       "WebFetch(domain:blog.langchain.com)",
       "WebFetch(domain:google.github.io)",
       "WebFetch(domain:developers.googleblog.com)",
-      "WebFetch(domain:www.flowhunt.io)"
+      "WebFetch(domain:www.flowhunt.io)",
+      "Read(//proc/95560/fd/**)",
+      "Bash(jobs -l)",
+      "Bash(wait 95560)",
+      "Bash(npm run:*)",
+      "Bash(/Users/shubhamagr/Documents/nexusCode_server/.venv/bin/python3 -c \"\nimport langgraph\nprint\\('version:', langgraph.__version__\\)\ntry:\n    from langgraph.types import interrupt\n    print\\('interrupt: available'\\)\nexcept ImportError:\n    print\\('interrupt: NOT available'\\)\ntry:\n    from langgraph.types import Command\n    print\\('Command: available'\\)\nexcept ImportError:\n    print\\('Command: NOT available'\\)\nfrom langgraph.graph import START, END\nprint\\('START/END: available'\\)\n\" 2>&1)",
+      "Bash(/Users/shubhamagr/Documents/nexusCode_server/.venv/bin/pip show:*)",
+      "Bash(/Users/shubhamagr/Documents/nexusCode_server/.venv/bin/pip list:*)",
+      "Bash(/Users/shubhamagr/Documents/nexusCode_server/.venv/bin/python3 -c \"\nimport langgraph\nprint\\('langgraph version:', langgraph.__version__\\)\nfrom langgraph.graph import START, END, StateGraph\nfrom langgraph.checkpoint.memory import MemorySaver\nprint\\('Core imports: OK'\\)\ntry:\n    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver\n    print\\('Postgres checkpointer: OK'\\)\nexcept ImportError as e:\n    print\\('Postgres checkpointer: MISSING -', e\\)\n\" 2>&1)",
+      "Bash(/Users/shubhamagr/Documents/nexusCode_server/.venv/bin/python3 -c \"\nfrom langgraph.graph import START, END, StateGraph\nfrom langgraph.checkpoint.memory import MemorySaver\nprint\\('Core imports: OK'\\)\ntry:\n    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver\n    print\\('Postgres checkpointer: OK'\\)\nexcept Exception as e:\n    print\\('Postgres checkpointer: MISSING -', e\\)\n\" 2>&1)",
+      "Bash(RUN_ID=e5f54c9f-564b-4069-8de6-f5551a0adeec curl -s http://localhost:8000/workflows/runs/$RUN_ID)",
+      "Bash(RUN_ID=96e9940b-4fbc-4b9c-9144-cf2d0f3fb193 curl -s http://localhost:8000/workflows/runs/$RUN_ID)",
+      "Bash(sleep 15 RUN_ID=96e9940b-4fbc-4b9c-9144-cf2d0f3fb193 curl -s http://localhost:8000/workflows/runs/$RUN_ID)",
+      "Bash(sleep 20 RUN_ID=96e9940b-4fbc-4b9c-9144-cf2d0f3fb193 curl -s http://localhost:8000/workflows/runs/$RUN_ID)",
+      "Bash(/Users/shubhamagr/Documents/nexusCode_server/.venv/bin/python3 -c \"\nfrom langgraph.graph import START, END, StateGraph\nfrom langgraph.checkpoint.memory import MemorySaver\nprint\\('LangGraph available:', True\\)\nm = MemorySaver\\(\\)\nprint\\('MemorySaver:', m\\)\n\" 2>&1)",
+      "Bash(sleep 30 RUN_ID=10989857-710a-412e-bf48-bf4c852ed6e4 curl -s http://localhost:8000/workflows/runs/$RUN_ID)",
+      "Bash(RUN_ID=10989857-710a-412e-bf48-bf4c852ed6e4 curl -s http://localhost:8000/workflows/runs/$RUN_ID)",
+      "Bash(sleep 180 RUN_ID=10989857-710a-412e-bf48-bf4c852ed6e4 curl -s http://localhost:8000/workflows/runs/$RUN_ID)"
     ]
   }
 }

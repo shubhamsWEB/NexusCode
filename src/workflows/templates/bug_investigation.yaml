@@ -1,0 +1,154 @@
+---
+# Bug Investigation — Root Cause Analysis → Fix → Verification
+#
+# Trigger payload fields:
+#   bug_report:      string — description of the bug or Jira issue key
+#   repo_owner:      string
+#   repo_name:       string
+#   error_message:   string (optional) — stack trace or error output
+#   affected_users:  string (optional) — "5% of users", "all paid accounts", etc.
+#   jira_issue_key:  string (optional)
+#   slack_channel:   string (optional)
+
+name: bug_investigation
+description: |
+  Root cause analysis, fix, and verification for production bugs.
+  Searcher traces the root cause → Planner designs the fix →
+  Coder implements → Reviewer verifies → QA regression tests → DevOps deploys.
+version: 2
+
+trigger:
+  type: manual
+
+context:
+  repo_context: "{{ trigger.repo_owner }}/{{ trigger.repo_name }}"
+
+steps:
+
+  # ── 1. Searcher traces the root cause ───────────────────────────────────────
+  - id: root_cause_analysis
+    type: agent
+    role: searcher
+    state_output_key: implementation_plan
+    task: |
+      Investigate the root cause of this bug.
+
+      **Bug Report:** {{ trigger.bug_report }}
+      **Error Message/Stack Trace:** {{ trigger.error_message }}
+      **Affected Users:** {{ trigger.affected_users }}
+      Repository: {{ context.repo_context }}
+
+      Use search_codebase, find_callers, and get_symbol to trace the execution path
+      that leads to this error. Identify:
+      1. The exact line(s) of code causing the issue
+      2. Why the bug occurs (not just where)
+      3. All code paths that trigger this bug
+      4. Any related bugs in nearby code
+
+      Output your findings as a structured Root Cause Analysis (RCA) report.
+
+  # ── 2. Planner designs the minimal safe fix ──────────────────────────────────
+  - id: fix_planner
+    type: agent
+    role: planner
+    depends_on: [root_cause_analysis]
+    state_output_key: implementation_plan
+    task: |
+      Design a minimal, safe fix for the bug based on this RCA:
+
+      **Root Cause Analysis:**
+      {{ state.implementation_plan }}
+
+      Repository: {{ context.repo_context }}
+
+      Requirements for the fix plan:
+      - Minimal change — touch only what is necessary
+      - No regressions — identify all callers that might be affected
+      - Include a clear rollback procedure if the fix causes issues
+      - Specify regression tests that prove the fix works
+
+  # ── 3. Coder implements the fix ─────────────────────────────────────────────
+  - id: bug_fix_coder
+    type: agent
+    role: coder
+    depends_on: [fix_planner]
+    state_output_key: code_diff
+    task: |
+      Implement the bug fix according to this plan:
+
+      **Fix Plan:**
+      {{ state.implementation_plan }}
+
+      **Review Notes (if revision):**
+      {{ state.review_notes }}
+
+      Repository: {{ context.repo_context }}
+
+      Write the minimal correct fix. Do not refactor surrounding code.
+      Include inline comments explaining why the fix is correct.
+
+  # ── 4. Reviewer verifies the fix ────────────────────────────────────────────
+  - id: bug_fix_reviewer
+    type: agent
+    role: reviewer
+    depends_on: [bug_fix_coder]
+    state_output_key: review_verdict
+    task: |
+      Review this bug fix for correctness and safety.
+
+      **Fix Plan:**
+      {{ state.implementation_plan }}
+
+      **Code Changes:**
+      {{ state.code_diff }}
+
+      Repository: {{ context.repo_context }}
+
+      Verify: Does this fix actually solve the root cause? Does it introduce
+      any regressions? Is it safe to deploy? First line must be "approved",
+      "needs_revision", or "escalate".
+    routes:
+      - condition: "review_verdict.startswith('approved')"
+        goto: regression_qa
+      - condition: "loop_counts.get('bug_fix_coder', 0) >= 3"
+        goto: regression_qa   # proceed after 3 attempts
+      - goto: bug_fix_coder
+
+  # ── 5. QA writes regression tests ────────────────────────────────────────────
+  - id: regression_qa
+    type: agent
+    role: qa_agent
+    depends_on: [bug_fix_reviewer]
+    state_output_key: test_plan
+    task: |
+      Write regression tests that prove this bug is fixed and will not regress.
+
+      **Root Cause Analysis:**
+      {{ state.implementation_plan }}
+
+      **Fix:**
+      {{ state.code_diff }}
+
+      Repository: {{ context.repo_context }}
+
+      Write tests that would have caught this bug originally.
+      Include the specific failure case as a named test.
+
+  # ── 6. DevOps deploys the fix ────────────────────────────────────────────────
+  - id: bug_fix_deploy
+    type: agent
+    role: devops_agent
+    depends_on: [regression_qa]
+    state_output_key: deployment_plan
+    task: |
+      Create an expedited deployment plan for this bug fix.
+
+      **Fix:**
+      {{ state.code_diff }}
+      **Regression Tests:**
+      {{ state.test_plan }}
+      Repository: {{ context.repo_context }}
+
+      This is a bug fix — prioritise speed while maintaining safety.
+      Open the GitHub PR. If affected_users > 10%, flag for immediate hotfix.
+      Notify team in {{ trigger.slack_channel }}.

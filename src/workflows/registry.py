@@ -562,6 +562,45 @@ def _format_run(run: dict, steps: list[dict], checkpoints: list[dict] | None = N
             "timeout_at": _fmt_ts(c.get("timeout_at")),
         }
 
+    # Parse saved context (includes graph_state with code_context, typed state fields, etc.)
+    raw_ctx = run.get("context") or {}
+    if isinstance(raw_ctx, str):
+        try:
+            raw_ctx = json.loads(raw_ctx)
+        except Exception:
+            raw_ctx = {}
+    graph_state: dict = raw_ctx.get("graph_state") or {}
+
+    # Reconstruct artifacts from step outputs (artifacts are not stored separately)
+    artifacts = []
+    for s in steps:
+        out = s.get("output") or {}
+        if isinstance(out, str):
+            try:
+                out = json.loads(out)
+            except Exception:
+                out = {}
+        text = out.get("text", "") if isinstance(out, dict) else ""
+        artifacts.append({
+            "step_id": s.get("step_id"),
+            "role": s.get("agent_role"),
+            "type": s.get("step_type", "agent"),
+            "output": text[:500],
+            "tokens": s.get("tokens_used") or 0,
+        })
+
+    # Extract PR URL from pr_creator step output if not in graph_state
+    if not graph_state.get("github_pr_url"):
+        import re as _re
+        for s in steps:
+            if s.get("step_id") in ("pr_creator", "devops_agent"):
+                out = s.get("output") or {}
+                text = (out.get("text", "") if isinstance(out, dict) else str(out))
+                m = _re.search(r'https://github\.com/[^\s"<>]+/pull/\d+', text)
+                if m:
+                    graph_state["github_pr_url"] = m.group(0)
+                    break
+
     return {
         "id": str(run["id"]),
         "workflow_id": str(run["workflow_id"]),
@@ -575,6 +614,7 @@ def _format_run(run: dict, steps: list[dict], checkpoints: list[dict] | None = N
         "result": run["result"] if isinstance(run["result"], dict) else json.loads(run["result"] or "null"),
         "steps": [_fmt_step(s) for s in steps],
         "checkpoints": [_fmt_cp(c) for c in (checkpoints or [])],
+        "graph_state": {**graph_state, "artifacts": artifacts},
     }
 
 

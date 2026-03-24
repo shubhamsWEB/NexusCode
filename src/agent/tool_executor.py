@@ -127,6 +127,15 @@ def _normalize_input(raw: object, tool_name: str) -> dict:
     return {}
 
 
+try:
+    from langsmith import traceable as _traceable
+    _tool_traceable = _traceable(name="execute_tool", run_type="tool")
+except ImportError:
+    def _tool_traceable(fn):  # type: ignore[misc]
+        return fn
+
+
+@_tool_traceable
 async def execute_tool(
     name: str,
     tool_input: object,
@@ -193,12 +202,17 @@ async def execute_tool(
             # to search more or call the final answer tool (Anthropic "think" tool pattern).
             return json.dumps({"thought": inp.get("thought", ""), "status": "ok"})
         else:
-            from src.agent.mcp_bridge import call_external_tool, is_external_tool
+            from src.integrations.dispatcher import dispatch_tool, is_integration_tool
 
-            if is_external_tool(name):
-                result = await call_external_tool(name, inp)
+            if is_integration_tool(name):
+                result = await dispatch_tool(name, dict(inp))
             else:
-                return json.dumps({"error": f"Unknown tool: {name}"})
+                from src.agent.mcp_bridge import call_external_tool, is_external_tool
+
+                if is_external_tool(name):
+                    result = await call_external_tool(name, inp)
+                else:
+                    return json.dumps({"error": f"Unknown tool: {name}"})
     except Exception as exc:
         logger.exception("tool_executor: %s failed", sanitize_log(name))
         return json.dumps({"error": f"Tool {name} failed: {exc}"})

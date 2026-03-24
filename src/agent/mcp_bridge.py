@@ -252,10 +252,17 @@ async def _call_tool_stdio(command: str, args: list, env: dict, tool_name: str, 
         args=args or [],
         env={**os.environ, **(env or {})},
     )
-    async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
-        await session.initialize()
-        result = await session.call_tool(tool_name, tool_input)
-    return _extract_tool_result(result)
+    try:
+        async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
+            await session.initialize()
+            result = await session.call_tool(tool_name, tool_input)
+        return _extract_tool_result(result)
+    except BaseException as exc:
+        # Unwrap ExceptionGroup (Python 3.11+ anyio/TaskGroup) to surface the real error
+        real_exc = exc
+        while hasattr(real_exc, "exceptions") and real_exc.exceptions:
+            real_exc = real_exc.exceptions[0]
+        raise real_exc from None
 
 
 def _extract_tool_result(result) -> str:

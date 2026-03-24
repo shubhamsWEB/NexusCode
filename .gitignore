@@ -27,3 +27,6 @@ redis_data/
 
 # OS
 .DS_Store
+
+# Node
+node_modules/

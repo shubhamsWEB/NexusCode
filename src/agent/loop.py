@@ -285,6 +285,18 @@ class AgentLoop:
         )
     """
 
+    @staticmethod
+    def _traceable_run(func):
+        """
+        Wrap func with LangSmith @traceable if langsmith is available.
+        Gracefully no-ops if langsmith is not installed or tracing is disabled.
+        """
+        try:
+            from langsmith import traceable
+            return traceable(name="AgentLoop.run", run_type="chain")(func)
+        except ImportError:
+            return func
+
     async def run(
         self,
         model: str,
@@ -370,7 +382,21 @@ class AgentLoop:
                 tools_this_turn = final_answer_tools
                 tool_choice: dict = {"type": "any"}
                 if not force_message_added:
-                    messages.append({"role": "user", "content": _FORCE_ANSWER_MSG})
+                    # Avoid two consecutive user messages (violates Anthropic API message
+                    # alternation rules for tool-use conversations).  When the previous
+                    # iteration already appended a user message with tool results, extend
+                    # that message's content list instead of creating a new user turn.
+                    if messages and messages[-1]["role"] == "user":
+                        last_content = messages[-1]["content"]
+                        if isinstance(last_content, list):
+                            messages[-1]["content"].append({"type": "text", "text": _FORCE_ANSWER_MSG})
+                        else:
+                            messages[-1] = {"role": "user", "content": [
+                                {"type": "text", "text": str(last_content)},
+                                {"type": "text", "text": _FORCE_ANSWER_MSG},
+                            ]}
+                    else:
+                        messages.append({"role": "user", "content": _FORCE_ANSWER_MSG})
                     force_message_added = True
                     logger.warning(
                         "agent_loop: forcing final answer (iter=%d tokens=%d)",
@@ -511,11 +537,15 @@ class AgentLoop:
                 return {"name": final_b.name, "input": _coerce_to_dict(final_b.input)}, stats
 
             if force_final and not final_blocks:
-                # We forced but Claude still called retrieval tools — error
-                raise AgentMaxIterationsError(
-                    "Agent loop ended without Claude calling a final answer tool "
-                    "even after forcing it."
+                # Claude called retrieval tools even though only the answer tool was
+                # offered. Execute them so the conversation stays consistent, then
+                # the next loop iteration will force the answer again.
+                logger.warning(
+                    "agent_loop: force_final turn had non-final tool calls (iter=%d) — "
+                    "executing them and retrying forced answer",
+                    iteration,
                 )
+                # fall through to the normal tool execution path below
 
             # ── Execute retrieval tool calls and build tool_result messages ────
             # Add Claude's response to the conversation
@@ -622,6 +652,18 @@ class AgentLoop:
 
         if artifact_store is not None:
             await artifact_store.close()
+        # Last resort: extract the most recent assistant text and return it as the answer.
+        for msg in reversed(messages):
+            if msg.get("role") == "assistant":
+                content = msg.get("content") or []
+                text = " ".join(
+                    b.get("text", "") if isinstance(b, dict) else getattr(b, "text", "")
+                    for b in (content if isinstance(content, list) else [{"text": str(content)}])
+                ).strip()
+                if text:
+                    logger.warning("agent_loop: exhausted iterations — using last assistant text as fallback answer")
+                    stats = _make_stats(config.max_iterations, total_tool_calls, total_context_tokens, t0, search_tools_called)
+                    return {"name": "_text_fallback", "input": {"answer": text, "cited_files": [], "follow_up_hints": []}}, stats
         raise AgentMaxIterationsError("Agent loop exhausted all iterations without a final answer.")
 
     async def stream(
@@ -705,7 +747,17 @@ class AgentLoop:
                 tools_this_turn = final_answer_tools
                 tool_choice: dict = {"type": "any"}
                 if not force_message_added:
-                    messages.append({"role": "user", "content": _FORCE_ANSWER_MSG})
+                    if messages and messages[-1]["role"] == "user":
+                        last_content = messages[-1]["content"]
+                        if isinstance(last_content, list):
+                            messages[-1]["content"].append({"type": "text", "text": _FORCE_ANSWER_MSG})
+                        else:
+                            messages[-1] = {"role": "user", "content": [
+                                {"type": "text", "text": str(last_content)},
+                                {"type": "text", "text": _FORCE_ANSWER_MSG},
+                            ]}
+                    else:
+                        messages.append({"role": "user", "content": _FORCE_ANSWER_MSG})
                     force_message_added = True
             else:
                 tools_this_turn = all_tools
@@ -892,8 +944,10 @@ class AgentLoop:
                 return
 
             if force_final and not final_blocks:
-                raise AgentMaxIterationsError(
-                    "Agent loop ended without a final answer tool even after forcing it."
+                logger.warning(
+                    "agent_loop stream: force_final turn had non-final tool calls (iter=%d) — "
+                    "executing them and retrying forced answer",
+                    iteration,
                 )
 
             # ── Execute retrieval tools, emit tool events ─────────────────────

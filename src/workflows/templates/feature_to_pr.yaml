@@ -1,0 +1,650 @@
+---
+# Feature → Pull Request Workflow — v2 (Lead Developer Edition)
+#
+# Self-healing, multi-stage AI pipeline. Each step behaves like an expert
+# lead developer performing that role: reads before writing, self-verifies
+# output, passes structured context to the next step.
+#
+# Required trigger fields:
+#   feature_request:  string  — plain-English description of what to build
+#   repo_owner:       string  — GitHub owner (must be indexed in NexusCode)
+#   repo_name:        string  — GitHub repository name
+#   base_branch:      string  — branch to create the PR against (default: main)
+#
+# Optional trigger fields:
+#   pr_title:         string  — PR title (auto-generated if omitted)
+#   target_dir:       string  — subdirectory hint for where code should live
+#   reviewers:        string  — comma-separated GitHub usernames to request review
+#
+# Pipeline (self-healing):
+#
+#   analyzer → planner → coder ──[code_gate]──────────────────→ test_writer
+#                           ↑        ↓ invalid                       ↓
+#                           │   code_auto_fix ──[code_fix_gate]  reviewer
+#                           │        ↓ still invalid  ↓ valid    ↙approved  ↓needs_revision
+#                           │   human_code_review   ──┘      pr_creator    ──┘ (up to 3×)
+#                           │   retry↗ proceed↗ fail→END         ↓
+#                           └──────────── needs_revision ──────  END
+
+name: feature_to_pr
+version: 2
+description: |
+  Self-healing feature→PR pipeline. Deeply analyzes the codebase, creates a precise
+  implementation plan, writes production-ready code with automated self-debugging,
+  generates matching tests, performs a thorough code review, then opens a GitHub PR.
+  Each step behaves like an expert lead developer: reads before writing, verifies
+  output, and passes structured context forward.
+
+trigger:
+  type: manual
+
+steps:
+
+  # ══════════════════════════════════════════════════════════════════════════════
+  # STEP 1 — ANALYZE
+  # Lead developer deeply researches the codebase before any code is written.
+  # Output: structured analysis with exact files, patterns, and entry points.
+  # ══════════════════════════════════════════════════════════════════════════════
+  - id: analyzer
+    type: agent
+    role: searcher
+    state_output_key: codebase_analysis
+    task: |
+      You are the lead developer starting a new feature. Before a single line of code
+      is written, you must understand the codebase completely.
+
+      FEATURE REQUEST: {{ trigger.feature_request }}
+      REPOSITORY: {{ trigger.repo_owner }}/{{ trigger.repo_name }}
+      TARGET DIRECTORY HINT: {{ trigger.target_dir }}
+
+      ═══════════════════════════════════════
+      MANDATORY SEARCH PHASE (do all of these)
+      ═══════════════════════════════════════
+      Execute these searches in order. Use search_codebase for each:
+
+      1. Search the feature concept directly: what modules/files are most relevant?
+      2. Search for the API entry point (routes, endpoints, controllers)
+      3. Search for existing patterns similar to this feature (avoid reinventing)
+      4. Search for test files: "def test_" or "pytest" or "describe(" or "it("
+      5. Search for config/settings: "settings" or "config" or "env" or "environ"
+      6. Search for data models/schemas/types related to this feature
+      7. Search for error handling patterns: "HTTPException" or "raise" or "except"
+      8. Search for the auth/middleware layer if the feature touches protected paths
+
+      ═══════════════════════════════════════
+      MANDATORY READ PHASE (do all of these)
+      ═══════════════════════════════════════
+      Use get_file_context to read the COMPLETE content of:
+      - The primary file that will change (e.g., the route file or service file)
+      - The main settings/config file
+      - One existing test file (to capture exact test patterns)
+
+      ═══════════════════════════════════════
+      REQUIRED OUTPUT FORMAT
+      ═══════════════════════════════════════
+
+      ## Feature Summary
+      [One sentence: what is being built and where in the codebase it lives]
+
+      ## Files That Will Change
+      | File Path | Action (NEW/MODIFY) | Purpose |
+      |-----------|---------------------|---------|
+      [list every file, cite why]
+
+      ## Exact Changes Required
+      For EACH file in the table above:
+      ### `path/to/file.py`
+      - Function to ADD: `async def func_name(param: Type) -> ReturnType`
+      - Function to MODIFY: `existing_func()` — add X after line containing "Y"
+      - Import to ADD: `from module import ClassName`
+
+      ## Codebase Patterns (copy these exactly)
+      - **Import style**: [paste an exact import block from the code]
+      - **Async pattern**: [paste an exact async function signature]
+      - **Error handling**: [paste an exact try/except or HTTPException raise]
+      - **Type annotation style**: [paste an example with all type hints]
+      - **Router/endpoint pattern**: [paste an exact route definition]
+
+      ## Test Patterns (copy these exactly)
+      - **Framework**: [pytest / jest / mocha / etc.]
+      - **Test file location**: [e.g., tests/test_*.py]
+      - **Async test**: [paste exact async test function with decorator]
+      - **Mock/fixture pattern**: [paste exact fixture or mock setup]
+
+      ## Risks & Dependencies
+      - **DB migration needed**: [YES — describe the schema change | NO]
+      - **New env vars**: [YES — list them with descriptions | NO]
+      - **Breaking changes**: [YES — describe impact | NO]
+      - **Existing code to reuse**: [file:function or "none found"]
+
+  # ══════════════════════════════════════════════════════════════════════════════
+  # STEP 2 — PLAN
+  # Lead developer creates an unambiguous, file-by-file implementation blueprint.
+  # Output: machine-readable plan with exact signatures, branch name, PR title.
+  # ══════════════════════════════════════════════════════════════════════════════
+  - id: planner
+    type: agent
+    role: planner
+    state_output_key: implementation_plan
+    task: |
+      You are the tech lead writing the implementation plan. The coder will follow
+      this plan exactly. Make it so precise there are zero ambiguities.
+
+      FEATURE REQUEST: {{ trigger.feature_request }}
+      REPOSITORY: {{ trigger.repo_owner }}/{{ trigger.repo_name }}
+      BASE BRANCH: {{ trigger.base_branch }}
+
+      CODEBASE ANALYSIS:
+      {{ state.codebase_analysis }}
+
+      ═══════════════════════════════════════
+      VERIFICATION SEARCHES (do these first)
+      ═══════════════════════════════════════
+      Before writing the plan, verify with searches:
+      1. Confirm each file from the analysis actually exists (search its name)
+      2. Confirm the imports needed are available in the codebase
+      3. Check for any existing partial implementation to build on
+      4. Verify the exact test file naming pattern (test_*.py? *_test.py?)
+
+      ═══════════════════════════════════════
+      REQUIRED OUTPUT FORMAT
+      ═══════════════════════════════════════
+
+      ## Branch Name
+      feature/<short-kebab-slug>
+      [Must be: lowercase, hyphens only, 3-5 words, git-compatible]
+
+      ## PR Title
+      [Conventional commits format: feat: <description> or fix: <description>]
+      [If {{ trigger.pr_title }} is provided, use that instead]
+
+      ## Implementation Order
+      Execute in this exact order:
+      1. [What to do first — typically types/models/schemas]
+      2. [Core logic / service layer]
+      3. [API routes / entry points]
+      4. [Wire up in app/registry/config]
+      5. [Tests]
+
+      ## Files to CREATE
+      ### `path/to/new_file.py`
+      - **Purpose**: [one sentence]
+      - **Exports**: [list of public symbols]
+      - **Functions**:
+        - `async def func_name(param1: Type1, param2: Type2 = default) -> ReturnType:`
+          [one line description of what it does]
+
+      ## Files to MODIFY
+      ### `path/to/existing_file.py`
+      - **ADD import**: `from module import Class` — at top with other imports
+      - **ADD function** after `existing_anchor_function()`:
+        ```python
+        async def new_function(param: Type) -> ReturnType:
+        ```
+      - **MODIFY function** `existing_func()`: [exact change — add X, remove Y, change Z]
+
+      ## Test Plan
+      ### `tests/test_<feature_slug>.py`
+      Test cases:
+      - `test_<feature>_success`: [what valid input to use, what to assert]
+      - `test_<feature>_invalid_input`: [what invalid input, what error to expect]
+      - `test_<feature>_edge_case_empty`: [empty list/None input behavior]
+      - `test_<feature>_unauthorized`: [if auth-protected, 401 response]
+      Fixtures needed: [list from analysis, or "use existing conftest.py"]
+
+      ## Database / Config Changes
+      [Exact SQL for any new table/column/index — or "None required"]
+      [Exact env var names and descriptions — or "None required"]
+
+  # ══════════════════════════════════════════════════════════════════════════════
+  # STEP 3 — CODE
+  # Lead developer reads current file content, writes complete files, self-reviews.
+  # Output: === FILE: === blocks for every file in the plan.
+  # ══════════════════════════════════════════════════════════════════════════════
+  - id: coder
+    type: agent
+    role: coder
+    state_output_key: code_diff
+    task: |
+      You are the lead developer implementing this feature. Follow the plan exactly.
+      Write production-ready code that passes review on the first attempt.
+
+      FEATURE REQUEST: {{ trigger.feature_request }}
+      REPOSITORY: {{ trigger.repo_owner }}/{{ trigger.repo_name }}
+
+      IMPLEMENTATION PLAN:
+      {{ state.implementation_plan }}
+
+      REVIEWER FEEDBACK (empty on first pass — apply on revision):
+      {{ state.review_verdict }}
+
+      ═══════════════════════════════════════════════════════
+      MANDATORY PROCESS — execute every step before outputting
+      ═══════════════════════════════════════════════════════
+
+      STEP 1 — READ CURRENT FILE CONTENT
+      For every file you will create or modify:
+        → Use get_file_context to read the file's current content (if it exists)
+        → Note the exact: imports order, indentation style, naming convention,
+          error handling pattern, type annotation style
+        → For new files: read an adjacent file in the same directory for style reference
+
+      STEP 2 — IMPLEMENT
+      Write each file completely. Rules:
+        • COMPLETE FILES ONLY — include every line, even unchanged lines
+        • No ellipsis (...), no "# rest of file unchanged", no placeholders
+        • No TODO comments, no `pass` bodies in production functions
+        • All async functions must be properly awaited
+        • All DB/network/file operations must have try/except with logging
+        • All function parameters and return values must have type annotations
+        • Match the exact import grouping style (stdlib → third-party → local)
+
+      STEP 3 — SELF-REVIEW (check every file against this list)
+        □ All imports from the plan are present and in the right order?
+        □ All functions listed in the plan are implemented (none missing)?
+        □ Every public function has correct type annotations?
+        □ Every I/O operation (DB, HTTP, Redis) is in a try/except?
+        □ Async/await is correct (no sync calls inside async functions)?
+        □ No hardcoded secrets, credentials, or test-only values?
+        □ If modifying existing file: no existing functionality was broken?
+        □ File paths in the output match exactly what the plan specifies?
+
+      ═══════════════════════════════════════════════════════
+      OUTPUT FORMAT (mandatory — no other format accepted)
+      ═══════════════════════════════════════════════════════
+      Use EXACTLY this delimiter for every file. Every file. No exceptions.
+
+      === FILE: path/relative/to/repo/root/file.py ===
+      [complete file content — every single line]
+      === END FILE ===
+
+      === FILE: tests/test_feature.py ===
+      [complete file content]
+      === END FILE ===
+
+      Start your response with the first === FILE: line. No preamble.
+
+  # ══════════════════════════════════════════════════════════════════════════════
+  # GATE A — CODE QUALITY CHECK
+  # Validates that the coder produced properly formatted output.
+  # Valid → continue to tests. Invalid → auto-fix agent.
+  # ══════════════════════════════════════════════════════════════════════════════
+  - id: code_gate
+    type: router
+    routes:
+      - condition: "'=== FILE:' in (code_diff or '') and '=== END FILE ===' in (code_diff or '')"
+        goto: test_writer
+      - goto: code_auto_fix
+
+  # ══════════════════════════════════════════════════════════════════════════════
+  # STEP 3b — AUTO-FIX (self-debugging)
+  # If the coder produced invalid output, this agent diagnoses and corrects it.
+  # No human intervention needed for common failures.
+  # ══════════════════════════════════════════════════════════════════════════════
+  - id: code_auto_fix
+    type: agent
+    role: coder
+    state_output_key: code_diff
+    task: |
+      The previous code generation attempt did not produce valid output.
+      You must diagnose the failure and produce correct, complete code.
+
+      FEATURE REQUEST: {{ trigger.feature_request }}
+      REPOSITORY: {{ trigger.repo_owner }}/{{ trigger.repo_name }}
+
+      IMPLEMENTATION PLAN (what needs to be built):
+      {{ state.implementation_plan }}
+
+      PREVIOUS ATTEMPT OUTPUT (what went wrong — analyze this):
+      {{ state.code_diff }}
+
+      ═══════════════════════════════════════
+      DIAGNOSIS PHASE
+      ═══════════════════════════════════════
+      Examine the previous output above. Identify which failure mode occurred:
+
+      A) Empty or near-empty output
+         → The coder gave up. Solution: start fresh with a search to get context.
+
+      B) Output contains template syntax like `{{ ... }}`
+         → Template variables weren't substituted. Solution: the actual values
+           are in the IMPLEMENTATION PLAN above. Use those directly.
+
+      C) Output is explanation/analysis text, not code
+         → The coder described what to do instead of doing it.
+           Solution: write the actual code now.
+
+      D) Code exists but is missing === FILE: ... === END FILE === delimiters
+         → Wrong output format. Solution: re-emit the same code with correct delimiters.
+
+      E) Code is truncated (ends mid-file)
+         → Token budget issue. Solution: write one file at a time, prioritizing
+           the most important file. Make code concise but complete.
+
+      ═══════════════════════════════════════
+      RECOVERY PHASE
+      ═══════════════════════════════════════
+      1. Search aggressively for the context needed:
+         - Use get_file_context to read each file from the plan
+         - Search for 2-3 similar implementations as style references
+         - Find all necessary imports
+
+      2. Write the code, one file at a time if necessary.
+         Focus on: correct syntax, complete implementation, proper imports.
+
+      3. If failure mode was E (truncation): write the most critical file first
+         and note which files still need implementation.
+
+      ═══════════════════════════════════════
+      REQUIRED OUTPUT FORMAT
+      ═══════════════════════════════════════
+      === FILE: path/to/file.py ===
+      [complete file content]
+      === END FILE ===
+
+      Your first line MUST be `=== FILE:`. No diagnosis text in the output.
+
+  # ══════════════════════════════════════════════════════════════════════════════
+  # GATE B — AUTO-FIX QUALITY CHECK
+  # Validates the auto-fixed output. Still invalid → human escalation.
+  # ══════════════════════════════════════════════════════════════════════════════
+  - id: code_fix_gate
+    type: router
+    routes:
+      - condition: "'=== FILE:' in (code_diff or '') and '=== END FILE ===' in (code_diff or '')"
+        goto: test_writer
+      - condition: "loop_counts.get('code_auto_fix', 0) >= 2"
+        goto: human_code_review
+      - goto: code_auto_fix
+
+  # ══════════════════════════════════════════════════════════════════════════════
+  # STEP 3c — HUMAN ESCALATION
+  # Last resort: only reached after 2 auto-fix failures. Human decides next step.
+  # ══════════════════════════════════════════════════════════════════════════════
+  - id: human_code_review
+    type: human_checkpoint
+    state_output_key: human_code_decision
+    max_loops: 10
+    timeout_hours: 24
+    on_timeout: skip
+    prompt: |
+      Code generation has failed {{ loop_counts.get('code_auto_fix', 0) }} times.
+
+      Feature: {{ trigger.feature_request }}
+      Repository: {{ trigger.repo_owner }}/{{ trigger.repo_name }}
+
+      Last output preview (first 1000 chars):
+      {{ steps.code_auto_fix.output[:1000] }}
+
+      Choose an action:
+        retry   — Reset and re-run the coder agent from the beginning
+        proceed — Continue to testing with the current (incomplete) output
+        fail    — Abort this workflow run
+    options:
+      - retry
+      - proceed
+      - fail
+    routes:
+      - condition: "human_code_decision == 'retry'"
+        goto: coder
+      - condition: "human_code_decision == 'proceed'"
+        goto: test_writer
+      - goto: END
+
+  # ══════════════════════════════════════════════════════════════════════════════
+  # STEP 4 — TESTS
+  # QA lead reads the actual generated code and writes tests that will pass.
+  # Output: === FILE: === blocks for all test files.
+  # ══════════════════════════════════════════════════════════════════════════════
+  - id: test_writer
+    type: agent
+    role: tester
+    state_output_key: test_plan
+    task: |
+      Write comprehensive, runnable tests for the code that was just implemented.
+      These tests must PASS against the code in CODE CHANGES below.
+
+      FEATURE REQUEST: {{ trigger.feature_request }}
+      REPOSITORY: {{ trigger.repo_owner }}/{{ trigger.repo_name }}
+
+      IMPLEMENTATION PLAN:
+      {{ state.implementation_plan }}
+
+      CODE CHANGES (what you are writing tests for):
+      {{ state.code_diff }}
+
+      ═══════════════════════════════════════
+      MANDATORY PROCESS
+      ═══════════════════════════════════════
+
+      STEP 1 — STUDY EXISTING TEST PATTERNS
+      Search for and READ existing test files:
+        - Search "def test_" or "import pytest" to find test files
+        - Use get_file_context to read 2 existing test files completely
+        - Extract: exact import style, fixture definitions, mock patterns,
+          assert style, async test decorators, conftest usage
+
+      STEP 2 — ANALYZE THE CODE TO TEST
+      From the CODE CHANGES above, identify for each implemented function:
+        - Function name and signature (what parameters it takes)
+        - What it returns on success
+        - What exceptions/errors it raises on failure
+        - What external dependencies it has (DB, HTTP, Redis) — these need mocking
+
+      STEP 3 — PLAN TESTS (think before writing)
+      For each test case, complete this mental check:
+        "I call `func(input)`, the code will [do X], I assert [result Y]"
+      Only write tests you are confident will pass.
+
+      STEP 4 — WRITE TESTS
+      Coverage requirements:
+        □ Happy path: every public function called with valid inputs
+        □ Error path: invalid inputs, missing required fields, DB errors
+        □ Edge cases: empty lists, None values, zero/max boundary values
+        □ Auth: if any endpoint is protected, test the 401 response
+        □ Integration: at least one end-to-end flow (request → response)
+
+      Test file requirements:
+        □ All imports match the project's existing test import style exactly
+        □ All external dependencies (DB, Redis, HTTP) are mocked
+        □ Each test function has a one-line docstring
+        □ Fixtures reuse existing conftest.py fixtures where possible
+        □ No tests that require a live database or running services
+
+      === FILE: tests/test_<feature_slug>.py ===
+      [complete test file]
+      === END FILE ===
+
+  # ══════════════════════════════════════════════════════════════════════════════
+  # STEP 5 — REVIEW
+  # Principal engineer performs a thorough pre-merge review. Harsh but fair.
+  # Sends back to coder with specific actionable notes, or approves for PR.
+  # ══════════════════════════════════════════════════════════════════════════════
+  - id: reviewer
+    type: agent
+    role: reviewer
+    state_output_key: review_verdict
+    task: |
+      You are a principal engineer. This code goes to production after your review.
+      Be thorough. Be specific. Reject code that has real problems.
+
+      FEATURE REQUEST: {{ trigger.feature_request }}
+
+      IMPLEMENTATION PLAN:
+      {{ state.implementation_plan }}
+
+      CODE CHANGES:
+      {{ state.code_diff }}
+
+      TESTS:
+      {{ state.test_plan }}
+
+      ═══════════════════════════════════════
+      REVIEW PROCESS (work through all steps)
+      ═══════════════════════════════════════
+
+      STEP 1 — SEARCH FOR CONTEXT
+        - Search for similar code in the codebase to check consistency
+        - Find callers of any modified functions (breaking change check)
+        - Check if any new dependencies need to be added to requirements
+
+      STEP 2 — CORRECTNESS
+        □ Does it implement exactly what the feature request asked for?
+        □ Does the implementation match every item in the plan?
+        □ Are all edge cases handled (None, empty, zero, max)?
+        □ Are async operations awaited throughout?
+        □ Do DB writes use proper transactions with rollback?
+
+      STEP 3 — SECURITY
+        □ SQL injection: are ALL DB queries using parameterized values?
+        □ Are user-supplied inputs validated (Pydantic models, length limits)?
+        □ Are protected endpoints checking authentication?
+        □ Are there any hardcoded secrets, tokens, or credentials?
+        □ Is sensitive data logged or exposed in error messages?
+
+      STEP 4 — ROBUSTNESS
+        □ Does every I/O operation (DB, HTTP, Redis, file) have error handling?
+        □ Are error messages meaningful and not leaking internal details?
+        □ Are type annotations present on all function signatures?
+        □ Is there any blocking I/O inside async functions?
+
+      STEP 5 — TEST QUALITY
+        □ Do the tests actually test the new code (not just import it)?
+        □ Are the mocks set up correctly (mocking what the code actually calls)?
+        □ Are assertions specific (not just `assert result is not None`)?
+        □ Are failure scenarios tested, not just the happy path?
+
+      STEP 6 — COMPLETENESS
+        □ All files from the plan are present in the code output?
+        □ No placeholder code, no TODO comments, no `pass` in functions?
+
+      ═══════════════════════════════════════
+      OUTPUT FORMAT (strict)
+      ═══════════════════════════════════════
+      Line 1 MUST be exactly: `approved` OR `needs_revision`
+
+      If approved:
+      approved
+      ## Review Summary
+      [What was reviewed, why it passes, any minor suggestions for follow-up]
+
+      If needs_revision:
+      needs_revision
+      ## Required Changes (blocking — must fix before merge)
+      1. **File `path/to/file.py`, function `func_name()`**: [exact issue] — Fix: [exact fix]
+      2. ...
+
+      ## Suggestions (non-blocking — nice to have)
+      - ...
+
+      Vague feedback is useless. Write feedback specific enough that the coder
+      can make the exact change without asking any questions.
+
+    routes:
+      - condition: "review_verdict.startswith('approved')"
+        goto: pr_creator
+      - condition: "loop_counts.get('coder', 0) >= 3"
+        goto: pr_creator   # force-proceed after 3 revision cycles
+      - goto: coder        # default: send back for revision with notes
+
+  # ══════════════════════════════════════════════════════════════════════════════
+  # STEP 6 — PR CREATOR
+  # Creates the GitHub branch, pushes all files, opens the PR.
+  # Output: PR_URL, branch name, files pushed count.
+  # ══════════════════════════════════════════════════════════════════════════════
+  - id: pr_creator
+    type: agent
+    role: devops_agent
+    state_output_key: deployment_plan
+    task: |
+      Create the GitHub Pull Request. Use the GitHub MCP tools to execute each step.
+      Complete every step in order. Do not stop early.
+
+      FEATURE REQUEST: {{ trigger.feature_request }}
+      REPOSITORY: {{ trigger.repo_owner }}/{{ trigger.repo_name }}
+      BASE BRANCH: {{ trigger.base_branch }}
+      PR TITLE: {{ trigger.pr_title }}
+      REVIEWERS: {{ trigger.reviewers }}
+
+      IMPLEMENTATION PLAN:
+      {{ state.implementation_plan }}
+
+      CODE TO PUSH:
+      {{ state.code_diff }}
+
+      TESTS TO PUSH:
+      {{ state.test_plan }}
+
+      REVIEW VERDICT: {{ state.review_verdict }}
+
+      ══════════════════════════════════════
+      EXECUTION STEPS — complete all of them
+      ══════════════════════════════════════
+
+      ### STEP 1: Extract branch name
+      Find "## Branch Name" in the Implementation Plan.
+      Use that value as the branch name.
+      If not found: construct `feature/{{ trigger.repo_name }}-<3-word-slug>`
+
+      ### STEP 2: Create the branch
+      Call `create_branch`:
+        owner: {{ trigger.repo_owner }}
+        repo: {{ trigger.repo_name }}
+        branch: <branch from step 1>
+        from_branch: {{ trigger.base_branch }}
+      If the branch already exists, continue to step 3.
+
+      ### STEP 3: Push ALL files
+      Parse every block matching this pattern in CODE TO PUSH and TESTS TO PUSH:
+
+        === FILE: <path> ===
+        <content>
+        === END FILE ===
+
+      For EACH block found, call `push_files` or `create_or_update_file`:
+        owner: {{ trigger.repo_owner }}
+        repo: {{ trigger.repo_name }}
+        branch: <branch from step 1>
+        path: <exact path from the FILE header — do not modify it>
+        content: <exact content between the delimiters>
+        message: "feat: {{ trigger.feature_request[:72] }}"
+
+      Track how many files you pushed. If 0 files pushed, re-parse — something went wrong.
+
+      ### STEP 4: Create the Pull Request
+      Call `create_pull_request`:
+        owner: {{ trigger.repo_owner }}
+        repo: {{ trigger.repo_name }}
+        title: {{ trigger.pr_title }}  (use "## PR Title" from plan if this is empty)
+        head: <branch from step 1>
+        base: {{ trigger.base_branch }}
+        draft: false
+        body:
+          ## Summary
+          {{ trigger.feature_request }}
+
+          ## What Changed
+          [For each file pushed: `path/to/file.py` — one-line description]
+
+          ## Tests
+          [Summarise the test cases written and what they verify]
+
+          ## Review
+          {{ state.review_verdict }}
+
+          ## Deployment Notes
+          [Any env vars, migrations, or follow-up steps from the implementation plan]
+
+          ---
+          *Generated by NexusCode AI Workflow Engine*
+
+      ### STEP 5: Request reviews (if reviewers provided)
+      If `{{ trigger.reviewers }}` is not empty, split by comma and request review
+      from each username.
+
+      ### STEP 6: Output results
+      Output these lines exactly:
+      PR_URL: <full GitHub URL from the create_pull_request response>
+      BRANCH: <branch name used>
+      FILES_PUSHED: <total count of files pushed>
+      STATUS: success

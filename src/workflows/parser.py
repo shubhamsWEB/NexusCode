@@ -20,6 +20,10 @@ def parse_workflow(yaml_text: str) -> WorkflowDef:
     """
     Parse a YAML workflow definition into a WorkflowDef model.
     Raises WorkflowParseError on invalid YAML or schema violations.
+
+    Graph-style workflows (any step has `routes`) skip the cycle check because
+    intentional loop-backs are valid. They are validated by the graph engine
+    instead (checks that all goto targets reference known step IDs).
     """
     try:
         raw = yaml.safe_load(yaml_text)
@@ -34,8 +38,42 @@ def parse_workflow(yaml_text: str) -> WorkflowDef:
     except ValidationError as exc:
         raise WorkflowParseError(f"Schema validation failed: {exc}") from exc
 
-    _validate_dag(wf)
+    if wf.is_graph_style:
+        _validate_graph(wf)
+    else:
+        _validate_dag(wf)
     return wf
+
+
+def _validate_graph(wf: WorkflowDef) -> None:
+    """
+    Validate a graph-style workflow (which may have intentional cycles via routes).
+    Checks:
+      1. All step IDs are unique.
+      2. All depends_on references point to existing step IDs.
+      3. All route goto targets point to existing step IDs or "END".
+    Does NOT check for cycles — intentional loop-backs are valid.
+    """
+    step_ids = {s.id for s in wf.steps}
+
+    if len(step_ids) != len(wf.steps):
+        seen: set[str] = set()
+        for s in wf.steps:
+            if s.id in seen:
+                raise WorkflowParseError(f"Duplicate step id: {s.id!r}")
+            seen.add(s.id)
+
+    for step in wf.steps:
+        for dep in step.depends_on:
+            if dep not in step_ids:
+                raise WorkflowParseError(
+                    f"Step {step.id!r} depends on unknown step {dep!r}"
+                )
+        for route in step.routes:
+            if route.goto != "END" and route.goto not in step_ids:
+                raise WorkflowParseError(
+                    f"Step {step.id!r} route goes to unknown step {route.goto!r}"
+                )
 
 
 def _validate_dag(wf: WorkflowDef) -> None:

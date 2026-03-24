@@ -8,13 +8,17 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import Literal
 
+import os
+
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from src.api.agent_roles import router as agent_roles_router
 from src.api.evolution import router as evolution_router
+from src.api.integrations import router as integrations_router
 from src.api.api_keys import router as api_keys_router
 from src.api.ask import router as ask_router
 from src.api.documents import router as documents_router
@@ -53,6 +57,40 @@ async def lifespan(application: FastAPI):
     from src.agent.mcp_bridge import init_bridge
 
     await init_bridge()
+
+    # Initialise LangGraph PostgreSQL checkpointer for enterprise graph workflows
+    from src.workflows.graph_engine import init_graph_checkpointer
+
+    await init_graph_checkpointer()
+
+    # On startup, mark any runs that were left "running" from a previous process
+    # as failed. Background asyncio tasks are not durable — a server restart
+    # (including uvicorn --reload) kills them silently. This prevents runs from
+    # appearing stuck forever in the UI.
+    try:
+        from src.workflows.registry import list_runs, update_run_status
+        orphaned = await list_runs(limit=100)
+        for run in orphaned:
+            if run.get("status") == "running":
+                await update_run_status(
+                    run["id"],
+                    "failed",
+                    error_message=(
+                        "Run interrupted: the API server restarted while this run was active. "
+                        "Re-trigger the workflow to restart from the beginning."
+                    ),
+                )
+                logger.warning("startup: marked orphaned run %s as failed", run["id"])
+    except Exception as _sweep_exc:
+        logger.warning("startup: orphaned-run sweep failed: %s", _sweep_exc)
+
+    # Bootstrap integration credentials from env vars (non-fatal)
+    from src.integrations.auth.credential_store import bootstrap_from_config
+
+    try:
+        await bootstrap_from_config()
+    except Exception:
+        pass
 
     # Initialise event bus connection (non-fatal if Redis unavailable)
     from src.events.bus import EventBus
@@ -120,6 +158,7 @@ app.include_router(agent_roles_router)
 app.include_router(documents_router)
 app.include_router(api_keys_router)
 app.include_router(evolution_router)
+app.include_router(integrations_router)
 
 
 # ── MCP Streamable HTTP transport (MCP 2025-03-26 spec) ──────────────────────
@@ -377,6 +416,15 @@ async def stats_chunk_distribution() -> JSONResponse:
         rows = (await session.execute(sql)).mappings().all()
 
     return JSONResponse([dict(r) for r in rows])
+
+
+# ── Visual Workflow Builder (React + ReactFlow) ───────────────────────────────
+# Serves the built frontend at GET /builder/*
+# Build with: cd frontend && npm install && npm run build
+
+_FRONTEND_DIST = os.path.join(os.path.dirname(__file__), "..", "..", "frontend", "dist")
+if os.path.isdir(_FRONTEND_DIST):
+    app.mount("/builder", StaticFiles(directory=_FRONTEND_DIST, html=True), name="builder")
 
 
 # ── Root ──────────────────────────────────────────────────────────────────────

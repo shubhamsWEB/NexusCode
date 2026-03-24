@@ -55,6 +55,15 @@ pyvis>=0.3.2
 anthropic>=0.40.0
 openai>=1.30.0
 
+# Enterprise Workflow Orchestration (LangGraph + LangSmith)
+langgraph>=0.3.0
+langgraph-checkpoint-postgres>=2.0.0
+langsmith>=0.1.0
+langchain-core>=0.3.0            # ChatPromptTemplate, BaseTool, @traceable integration
+langchain-anthropic>=0.3.0       # Anthropic provider for LangChain chains
+psycopg[binary]>=3.1.0          # psycopg3 async — used by LangGraph checkpoint
+psycopg-pool>=3.1.0             # async connection pool for LangGraph checkpoint
+
 # PDF generation
 weasyprint>=60.0
 Pillow>=10.0                  # weasyprint dependency
