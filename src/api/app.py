@@ -29,7 +29,9 @@ from src.api.workflows import webhook_router as workflow_webhook_router
 from src.github.webhook import router as webhook_router
 from src.mcp.auth import router as auth_router
 from src.mcp.server import core_mcp_server, mcp_server
-from src.storage.db import get_index_stats
+from sqlalchemy import text
+from src.config import settings
+from src.storage.db import get_index_stats, AsyncSessionLocal
 
 
 @asynccontextmanager
@@ -136,10 +138,71 @@ app.mount("/mcp", core_mcp_server.streamable_http_app())
 # ── Health ────────────────────────────────────────────────────────────────────
 
 
+class DetailedHealthResponse(BaseModel):
+    status: Literal["ok", "degraded", "error"]
+    database: Literal["ok", "error"]
+    redis: Literal["ok", "error"]
+    indexed_repos: int
+    detail: dict[str, str] = Field(default_factory=dict)
+
+
 @app.get("/health", tags=["ops"])
 async def health() -> JSONResponse:
     stats = await get_index_stats()
     return JSONResponse({"status": "ok", **stats})
+
+
+@app.get("/health/detailed", response_model=DetailedHealthResponse, tags=["ops"])
+async def health_detailed() -> DetailedHealthResponse:
+    """
+    Extended health check.
+    Returns database connectivity, Redis connectivity, and the number of
+    indexed repositories. HTTP 200 is always returned so load-balancers
+    don't drop the instance; callers must inspect the `status` field.
+    """
+    errors: dict[str, str] = {}
+
+    # ── 1. Database check ────────────────────────────────────────────────
+    db_status: Literal["ok", "error"] = "ok"
+    indexed_repos: int = 0
+    try:
+        async with AsyncSessionLocal() as session:
+            await session.execute(text("SELECT 1"))
+        stats = await get_index_stats()
+        indexed_repos = stats.get("repos", 0)
+    except Exception as exc:
+        db_status = "error"
+        errors["database"] = str(exc)
+
+    # ── 2. Redis check ───────────────────────────────────────────────────
+    redis_status: Literal["ok", "error"] = "ok"
+    try:
+        import redis.asyncio as aioredis
+        r = aioredis.from_url(settings.redis_url)
+        try:
+            await r.ping()
+        finally:
+            await r.aclose()
+    except Exception as exc:
+        redis_status = "error"
+        errors["redis"] = str(exc)
+
+    # ── 3. Aggregate status ──────────────────────────────────────────────
+    failed = sum(s == "error" for s in (db_status, redis_status))
+    if failed == 0:
+        overall: Literal["ok", "degraded", "error"] = "ok"
+    elif failed == 1:
+        overall = "degraded"
+    else:
+        overall = "error"
+
+    return DetailedHealthResponse(
+        status=overall,
+        database=db_status,
+        redis=redis_status,
+        indexed_repos=indexed_repos,
+        detail=errors,
+    )
 
 
 # ── Available LLM models ─────────────────────────────────────────────────────
