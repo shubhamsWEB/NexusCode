@@ -5,6 +5,7 @@ Mounts: webhook receiver, health check, search endpoint, MCP server (Day 6).
 
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from typing import Literal
 
@@ -30,6 +31,8 @@ from src.github.webhook import router as webhook_router
 from src.mcp.auth import router as auth_router
 from src.mcp.server import core_mcp_server, mcp_server
 from src.storage.db import get_index_stats
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -140,6 +143,26 @@ app.mount("/mcp", core_mcp_server.streamable_http_app())
 async def health() -> JSONResponse:
     stats = await get_index_stats()
     return JSONResponse({"status": "ok", **stats})
+
+
+@app.get("/stats", tags=["ops"])
+async def stats() -> JSONResponse:
+    """Return aggregated database statistics (no authentication required)."""
+    try:
+        stats_data = await get_index_stats()
+        return JSONResponse(stats_data)
+    except TimeoutError:
+        logger.warning("Stats query timed out")
+        return JSONResponse(
+            {"error": "Statistics query timed out"},
+            status_code=504
+        )
+    except Exception as e:
+        logger.error(f"Failed to fetch stats: {type(e).__name__}")
+        return JSONResponse(
+            {"error": "Failed to fetch statistics"},
+            status_code=500
+        )
 
 
 # ── Available LLM models ─────────────────────────────────────────────────────
