@@ -1111,3 +1111,121 @@ async def get_plan_history_entry(plan_id: str) -> dict[str, Any] | None:
             "created_at": row.created_at.isoformat() if row.created_at else None,
             "plan": plan_data,
         }
+
+
+async def get_repo(owner: str, name: str) -> Repo | None:
+    """Get a single repository by owner and name.
+
+    Args:
+        owner: Repository owner
+        name: Repository name
+
+    Returns:
+        Repo object if found, None otherwise
+    """
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(Repo).where(Repo.owner == owner, Repo.name == name)
+        )
+        return result.scalars().first()
+
+
+async def get_dead_code(
+    repo_owner: str,
+    repo_name: str,
+    exclude_exported: bool = True,
+    kinds: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Identify functions/methods defined but never called in a repo.
+
+    Uses LEFT JOIN between symbols and kg_edges to find symbols with no
+    incoming call edges (target_type='symbol').
+
+    Args:
+        repo_owner: Repository owner (e.g., 'shubhamsWEB')
+        repo_name: Repository name (e.g., 'NexusCode')
+        exclude_exported: If True, exclude is_exported=True symbols (public API)
+        kinds: Filter to specific symbol kinds (e.g., ['function', 'method']).
+               If None, defaults to ['function', 'method'].
+
+    Returns:
+        List of dicts with keys:
+        - qualified_name: Full symbol name (e.g., 'ClassName.method_name')
+        - name: Short symbol name
+        - kind: Symbol kind (function, method, class, etc.)
+        - file_path: Path to file containing symbol
+        - start_line: Line number where symbol starts
+        - end_line: Line number where symbol ends
+        - signature: Function/method signature string
+    """
+    if kinds is None:
+        kinds = ["function", "method"]
+
+    async with AsyncSessionLocal() as session:
+        if exclude_exported:
+            sql = text("""
+                SELECT DISTINCT
+                    s.qualified_name,
+                    s.name,
+                    s.kind,
+                    s.file_path,
+                    s.start_line,
+                    s.end_line,
+                    s.signature
+                FROM symbols s
+                LEFT JOIN kg_edges e ON (
+                    e.target_id = s.qualified_name
+                    AND e.target_type = 'symbol'
+                    AND e.repo_owner = :owner
+                    AND e.repo_name = :name
+                )
+                WHERE s.repo_owner = :owner
+                  AND s.repo_name = :name
+                  AND s.kind = ANY(:kinds)
+                  AND s.is_exported = FALSE
+                  AND e.id IS NULL
+                ORDER BY s.file_path, s.start_line
+            """)
+        else:
+            sql = text("""
+                SELECT DISTINCT
+                    s.qualified_name,
+                    s.name,
+                    s.kind,
+                    s.file_path,
+                    s.start_line,
+                    s.end_line,
+                    s.signature
+                FROM symbols s
+                LEFT JOIN kg_edges e ON (
+                    e.target_id = s.qualified_name
+                    AND e.target_type = 'symbol'
+                    AND e.repo_owner = :owner
+                    AND e.repo_name = :name
+                )
+                WHERE s.repo_owner = :owner
+                  AND s.repo_name = :name
+                  AND s.kind = ANY(:kinds)
+                  AND e.id IS NULL
+                ORDER BY s.file_path, s.start_line
+            """)
+
+        result = await session.execute(
+            sql,
+            {"owner": repo_owner, "name": repo_name, "kinds": kinds},
+        )
+        rows = result.fetchall()
+
+    return [
+        {
+            "qualified_name": row[0],
+            "name": row[1],
+            "kind": row[2],
+            "file_path": row[3],
+            "start_line": row[4],
+            "end_line": row[5],
+            "signature": row[6],
+        }
+        for row in rows
+    ]
