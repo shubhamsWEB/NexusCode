@@ -722,3 +722,59 @@ async def check_webhook(owner: str, name: str) -> JSONResponse:
             "github_status": hook_status,
         }
     )
+
+
+@router.get("/repos/{owner}/{name}/dead-code", summary="Analyze dead code in a repository")
+async def get_dead_code_route(
+    owner: str,
+    name: str,
+    exclude_exported: bool = True,
+    kinds: str | None = None,
+) -> JSONResponse:
+    """
+    Analyze a repo and return functions/methods that are defined but never called.
+
+    Uses the knowledge graph (kg_edges table) to identify symbols with no incoming
+    CALLS edges — i.e., functions and methods that exist in the codebase but are
+    never invoked.
+
+    Query params:
+        exclude_exported: If true (default), exclude public/exported symbols
+        kinds: Comma-separated symbol kinds to include (default: function,method)
+
+    Returns:
+        {"repo": "owner/name", "dead_code_count": int, "dead_code": [...]}
+    """
+    from src.storage.db import get_dead_code, get_repo
+
+    try:
+        repo = await get_repo(owner, name)
+        if not repo:
+            return JSONResponse(
+                {"error": f"Repository {owner}/{name} not found"},
+                status_code=404,
+            )
+
+        kinds_list = [k.strip() for k in kinds.split(",")] if kinds else None
+
+        dead_code = await get_dead_code(
+            repo_owner=owner,
+            repo_name=name,
+            exclude_exported=exclude_exported,
+            kinds=kinds_list,
+        )
+
+        return JSONResponse({
+            "repo": f"{owner}/{name}",
+            "dead_code_count": len(dead_code),
+            "dead_code": dead_code,
+        })
+    except Exception as e:
+        logger.error(
+            "dead code analysis failed",
+            extra={"repo": f"{owner}/{name}", "error": sanitize_log(str(e))},
+        )
+        return JSONResponse(
+            {"error": "Failed to analyze dead code. Please try again."},
+            status_code=500,
+        )

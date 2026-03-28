@@ -79,7 +79,7 @@ class ExecutionContext:
         """Retrieve the output of a completed step."""
         return self._step_outputs.get(step_id)
 
-    def render(self, template_str: str) -> str:
+    def render(self, template_str: str, state: dict | None = None) -> str:
         """
         Render a Jinja2 template string with full execution context.
 
@@ -91,6 +91,7 @@ class ExecutionContext:
                                         tools with different schemas)
           - ``{{ context.KEY }}``     — workflow-level context values
           - ``{{ steps.ID.output }}`` — output of a prior step
+          - ``{{ state.FIELD }}``     — typed GraphState field (graph-style workflows)
 
         Missing trigger fields render as ``[MISSING: field_name]`` (via _MissingMarker)
         rather than raw Jinja2 syntax or silent empty strings.
@@ -104,6 +105,7 @@ class ExecutionContext:
                 trigger_json=json.dumps(self.trigger, indent=2, default=str),
                 context=self.context,
                 steps=_StepProxy(self._step_outputs),
+                state=state or {},
             )
         except UndefinedError as exc:
             # Shouldn't happen with _MissingMarker, but kept as safety net

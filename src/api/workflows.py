@@ -118,6 +118,29 @@ async def get_run(run_id: str) -> JSONResponse:
     return JSONResponse(run)
 
 
+@router.get("/runs/{run_id}/trace", response_model=None)
+async def get_run_trace(run_id: str) -> JSONResponse:
+    """Get full run trace including artifacts, graph_state snapshot, and step details."""
+    from src.workflows.registry import get_run as _get_run
+    run = await _get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Run {run_id!r} not found")
+    return JSONResponse(run)
+
+
+@router.post("/runs/{run_id}/evaluate", response_model=None)
+async def evaluate_run(run_id: str) -> JSONResponse:
+    """Run quality evaluation against the workflow outputs."""
+    from src.workflows.registry import get_run as _get_run
+    from src.observability.evaluators import run_workflow_evaluation
+    run = await _get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Run {run_id!r} not found")
+    graph_state = run.get("graph_state") or {}
+    result = await run_workflow_evaluation(graph_state, run.get("workflow_name", "unknown"))
+    return JSONResponse(result)
+
+
 @router.get("/runs/{run_id}/stream")
 async def stream_run(run_id: str) -> StreamingResponse:
     """
@@ -227,6 +250,67 @@ async def trigger_run(workflow_id: str, req: TriggerRunRequest) -> JSONResponse:
         },
         status_code=202,
     )
+
+
+@router.post("/from-graph", response_model=None)
+async def workflow_from_graph(request: Request) -> JSONResponse:
+    """
+    Convert a ReactFlow graph (nodes + edges) to a YAML WorkflowDef.
+
+    Accepts:
+        {
+          "name": "my-workflow",
+          "nodes": [{"id": "n1", "data": {"step_id": "pm_step", "type": "agent", "role": "pm_agent", "task": "..."}}],
+          "edges": [{"source": "n1", "target": "n2", "label": "review_verdict == 'approved'"}]
+        }
+
+    Returns:
+        { "yaml_definition": "..." }
+    """
+    body = await request.json()
+    name = body.get("name", "unnamed-workflow")
+    rf_nodes = body.get("nodes", [])
+    rf_edges = body.get("edges", [])
+
+    # Build step id → node map for route target lookup
+    id_to_step = {n["id"]: n.get("data", {}) for n in rf_nodes}
+
+    steps = []
+    for node in rf_nodes:
+        d = node.get("data", {})
+        step: dict[str, Any] = {"id": d.get("step_id") or node["id"]}
+        if d.get("type"): step["type"] = d["type"]
+        if d.get("role"): step["role"] = d["role"]
+        if d.get("task"): step["task"] = d["task"]
+        if d.get("max_iterations"): step["max_iterations"] = int(d["max_iterations"])
+        if d.get("timeout_hours"): step["timeout_hours"] = int(d["timeout_hours"])
+        if d.get("action"): step["action"] = d["action"]
+        if d.get("on_timeout"): step["on_timeout"] = d["on_timeout"]
+
+        out_edges = [e for e in rf_edges if e.get("source") == node["id"]]
+        if out_edges:
+            routes = []
+            for e in out_edges:
+                target_data = id_to_step.get(e.get("target"), {})
+                r = {}
+                if e.get("label"): r["condition"] = e["label"]
+                r["goto"] = target_data.get("step_id") or e.get("target", "")
+                routes.append(r)
+            step["routes"] = routes
+
+        steps.append(step)
+
+    import yaml as _yaml
+    yaml_def = _yaml.dump({"name": name, "steps": steps}, allow_unicode=True, sort_keys=False)
+
+    # Validate it parses cleanly
+    try:
+        from src.workflows.parser import parse_workflow
+        parse_workflow(yaml_def)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Generated YAML failed validation: {exc}") from exc
+
+    return JSONResponse({"yaml_definition": yaml_def, "name": name})
 
 
 @router.post("/checkpoints/{checkpoint_id}/respond", response_model=None)

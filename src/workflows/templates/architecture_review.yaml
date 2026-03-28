@@ -1,0 +1,95 @@
+---
+# Architecture Review — Deep Codebase Analysis → ADR → Recommendations
+#
+# Trigger payload fields:
+#   review_scope:    string — what to review ("authentication system", "entire codebase", etc.)
+#   repo_owner:      string
+#   repo_name:       string
+#   focus_areas:     string (optional) — "performance, security, scalability"
+#   slack_channel:   string (optional)
+
+name: architecture_review
+description: |
+  Deep architectural analysis with ADR (Architecture Decision Record) generation.
+  Searcher maps the architecture → Planner identifies improvements →
+  Supervisor writes ADRs and recommendations.
+version: 2
+
+trigger:
+  type: manual
+
+context:
+  repo_context: "{{ trigger.repo_owner }}/{{ trigger.repo_name }}"
+
+steps:
+
+  # ── 1. Deep architectural analysis ──────────────────────────────────────────
+  - id: architecture_searcher
+    type: agent
+    role: searcher
+    state_output_key: implementation_plan
+    task: |
+      Perform a comprehensive architectural analysis of: {{ trigger.review_scope }}
+
+      Repository: {{ context.repo_context }}
+      Focus Areas: {{ trigger.focus_areas }}
+
+      Map out:
+      1. Module boundaries and coupling
+      2. Data flow between components
+      3. External dependencies and their integration points
+      4. Database access patterns and query performance
+      5. Authentication and authorization patterns
+      6. Error handling strategies
+      7. Concurrency and async patterns
+
+      Use search_codebase broadly. Follow import chains. Read key interface files.
+      Document what you find with exact file references.
+
+  # ── 2. Planner identifies improvements ──────────────────────────────────────
+  - id: improvement_planner
+    type: agent
+    role: planner
+    depends_on: [architecture_searcher]
+    state_output_key: implementation_plan
+    task: |
+      Based on this architectural analysis, identify concrete improvements:
+
+      **Architecture Analysis:**
+      {{ state.implementation_plan }}
+
+      Focus Areas: {{ trigger.focus_areas }}
+      Repository: {{ context.repo_context }}
+
+      For each improvement:
+      - Describe the current problem with evidence (file paths)
+      - Propose the solution
+      - Estimate effort (S/M/L/XL)
+      - Estimate impact (High/Medium/Low)
+      - Flag any breaking changes
+
+      Prioritise by impact/effort ratio.
+
+  # ── 3. Supervisor writes ADRs and final report ───────────────────────────────
+  - id: adr_supervisor
+    type: agent
+    role: supervisor
+    depends_on: [improvement_planner]
+    state_output_key: final_report
+    task: |
+      Write Architecture Decision Records (ADRs) and an executive summary
+      for the top 3 improvements.
+
+      **Architecture Analysis:**
+      {{ state.implementation_plan }}
+
+      For each ADR use the standard format:
+      ## ADR-XXX: [Title]
+      **Status:** Proposed
+      **Context:** [Why this decision is needed]
+      **Decision:** [What we will do]
+      **Consequences:** [Trade-offs, risks, breaking changes]
+      **Implementation Plan:** [Concrete steps with file references]
+
+      Then write an executive summary for stakeholders.
+      Notify the team in {{ trigger.slack_channel }}.

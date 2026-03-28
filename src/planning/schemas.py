@@ -499,6 +499,42 @@ ANSWER_TOOL_SCHEMA: dict = {
     },
 }
 
+# ── Code generation output tool ───────────────────────────────────────────────
+# Used by coder and tester agents in workflows. Accepts FILE: block format only.
+CODE_OUTPUT_TOOL_SCHEMA: dict = {
+    "name": "submit_code_files",
+    "description": (
+        "Submit the complete code implementation. "
+        "Call this ONLY after reading all relevant files and writing complete implementations. "
+        "The 'files' field MUST contain every file in === FILE: path === ... === END FILE === format. "
+        "Do NOT put markdown text, descriptions, or summaries in 'files' — only FILE: blocks."
+    ),
+    "input_schema": {
+        "type": "object",
+        "required": ["files"],
+        "properties": {
+            "files": {
+                "type": "string",
+                "description": (
+                    "All file contents using EXACTLY this format — one block per file:\n\n"
+                    "=== FILE: path/to/file.py ===\n"
+                    "[complete file content — every line]\n"
+                    "=== END FILE ===\n\n"
+                    "Rules:\n"
+                    "- Include EVERY line of each file — never use ellipsis or 'unchanged'\n"
+                    "- Use the exact path relative to the repository root\n"
+                    "- Start with the first === FILE: line — no preamble text\n"
+                    "- Every file from the implementation plan must be present"
+                ),
+            },
+            "summary": {
+                "type": "string",
+                "description": "One-sentence summary of what was implemented (for logging only)",
+            },
+        },
+    },
+}
+
 
 # ── Analysis / improve tool — for "how to improve X", code review, audit ──────
 

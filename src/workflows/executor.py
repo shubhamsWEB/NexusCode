@@ -70,9 +70,15 @@ class WorkflowExecutor:
                 result = event
         return result
 
-    async def stream(self) -> AsyncIterator[dict[str, Any]]:
+    async def stream(self) -> AsyncIterator[dict[str, Any]]:  # type: ignore[override]
         """
         Execute the workflow, yielding SSE-compatible event dicts.
+
+        Routing logic:
+          - Graph-style workflows (any step has `routes`) → LangGraph engine
+            with conditional edges, shared GraphState, and PostgreSQL checkpoints.
+          - Simple DAG workflows (no routes) → existing topological wave executor
+            (parallel waves, retry, human checkpoints). Zero breaking changes.
 
         Event types:
           {"type": "workflow_started",  "run_id": "...", "workflow": "..."}
@@ -83,7 +89,7 @@ class WorkflowExecutor:
           {"type": "workflow_complete", "run_id": "...", "tokens_total": N}
           {"type": "workflow_error",    "run_id": "...", "error": "..."}
         """
-        # Use pre-created run record from the API, or create one now (e.g. standalone calls)
+        # ── Ensure run record exists ──────────────────────────────────────
         if self.run_id is None:
             # Resolve workflow_id if not provided
             wf_id = self.workflow_id
@@ -96,6 +102,13 @@ class WorkflowExecutor:
                 trigger_payload=self.trigger_payload,
             )
 
+        # ── Route: graph-style → LangGraph engine ────────────────────────
+        if self.wf_def.is_graph_style:
+            async for evt in self._stream_graph():
+                yield evt
+            return
+
+        # ── Route: simple DAG → existing wave executor ────────────────────
         await update_run_status(self.run_id, "running")
 
         yield {
@@ -261,6 +274,42 @@ class WorkflowExecutor:
                         "error": str(exc),
                     }
                     raise
+
+    async def _stream_graph(self) -> AsyncIterator[dict[str, Any]]:
+        """Delegate execution to the LangGraph graph engine."""
+        from src.workflows.graph_engine import get_graph_engine
+
+        engine = get_graph_engine()
+        if engine is None:
+            # Checkpointer not ready — fall back to DAG executor with a warning
+            logger.warning(
+                "executor: graph engine not initialised (checkpointer missing), "
+                "falling back to DAG executor for %r", self.wf_def.name,
+            )
+            await update_run_status(self.run_id, "running")
+            yield {
+                "type": "workflow_started",
+                "run_id": self.run_id,
+                "workflow": self.wf_def.name,
+                "warning": "graph engine unavailable, running as DAG",
+            }
+            # Run as linear DAG (conditions ignored)
+            from src.workflows.parser import topological_order
+            for wave in topological_order(self.wf_def):
+                for step in wave:
+                    async for evt in self._execute_step(step):
+                        yield evt
+            await update_run_status(self.run_id, "completed", total_tokens=self._total_tokens)
+            yield {"type": "workflow_complete", "run_id": self.run_id, "workflow": self.wf_def.name, "tokens_total": self._total_tokens}
+            return
+
+        async for evt in engine.stream(
+            wf_def=self.wf_def,
+            trigger_payload=self.trigger_payload,
+            run_id=self.run_id,
+            workflow_context=self.wf_def.context,
+        ):
+            yield evt
 
     async def _run_agent_step(self, step: StepDef) -> tuple[str, int]:
         """
